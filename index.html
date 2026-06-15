@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1E2B6B">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>IMF ProTrack — Sign In</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+</head>
+<body>
+
+  <!-- ── Loading screen (shown while checking for an existing session) ── -->
+  <div id="loading-screen" class="loading-screen">
+    <div class="loading-spinner"></div>
+    <div class="loading-label">Loading ProTrack...</div>
+  </div>
+
+  <!-- ── Login screen (hidden until session check completes) ── -->
+  <div id="login-wrap" class="login-wrap" style="display:none">
+    <div class="login-box">
+
+      <!-- Hero: company logo (contains company name) + product tagline -->
+      <div class="login-hero">
+        <img src="IMF_logo_jpg_2.jpg" alt="Indo Meta Forge Pvt. Ltd." class="login-logo-img">
+        <div class="login-tagline">IMF ProTrack · Manufacturing Execution System</div>
+      </div>
+
+      <!-- Sign-in card -->
+      <div class="login-card">
+        <h2>Sign in to your account</h2>
+
+        <!-- Inline error banner (hidden until an error occurs) -->
+        <div id="login-error" class="ebox" style="display:none" role="alert">
+          <i class="ti ti-alert-triangle" aria-hidden="true"></i>
+          <span id="login-error-msg"></span>
+        </div>
+
+        <form id="login-form" novalidate>
+          <div class="f">
+            <label for="login-email">Email address</label>
+            <input type="email" id="login-email" name="email"
+                   autocomplete="username" inputmode="email"
+                   placeholder="you@indometaforge.com" required>
+          </div>
+
+          <div class="f">
+            <label for="login-password">Password</label>
+            <input type="password" id="login-password" name="password"
+                   autocomplete="current-password"
+                   placeholder="Enter your password" required>
+          </div>
+
+          <button type="submit" id="login-btn" class="btn btn-p btn-full">
+            <span id="login-btn-label">
+              <i class="ti ti-login-2" aria-hidden="true"></i> Sign In
+            </span>
+            <span id="login-btn-spinner" style="display:none">
+              <span class="loading-spinner"
+                    style="width:18px;height:18px;border-width:2.5px;vertical-align:middle"></span>
+              Signing in…
+            </span>
+          </button>
+        </form>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
+  <!-- Shared core (Firebase init, session, auth, utilities) -->
+  <script src="core.js"></script>
+  <!-- Login module -->
+  <script src="index.js"></script>
+</body>
+</html>
