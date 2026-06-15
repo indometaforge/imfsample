@@ -20,7 +20,7 @@ const MODULES = [
 ];
 
 /** Pages that exist and are wired up. Everything else shows a "Soon" badge. */
-const BUILT = new Set(['masters']);
+const BUILT = new Set(['masters', 'store']);
 
 /* ══════════════════════════════════════════════════════════════════════
    INIT
@@ -43,7 +43,7 @@ async function init() {
    RENDER
    ══════════════════════════════════════════════════════════════════════ */
 function render() {
-  const showMgmtWidgets = S.sess?.role === 'admin' || S.sess?.role === 'plant_head';
+  const showMgmtWidgets = S.sess?.role === 'admin' || S.sess?.role === 'hod';
 
   const html = `
     ${renderWelcome()}
@@ -115,7 +115,7 @@ function moduleTile(m) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   QUICK STATS (admin / plant_head only)
+   QUICK STATS (admin / HOD only)
    ══════════════════════════════════════════════════════════════════════ */
 async function renderQuickStats() {
   const el = document.getElementById('quick-stats');
@@ -162,7 +162,7 @@ async function renderQuickStats() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   PENDING APPROVALS (admin / plant_head only)
+   PENDING APPROVALS (admin / HOD only)
    ══════════════════════════════════════════════════════════════════════ */
 async function renderPendingApprovals() {
   const el = document.getElementById('pending-approvals');

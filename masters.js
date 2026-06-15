@@ -16,8 +16,8 @@ let filterStage  = 'all';   /* 'all' or a stage/department value */
 let expandedPart = null;   /* partId whose routing panel is open */
 
 const TABS = [
-  { key: 'machines',   label: 'Machines',      icon: 'ti-settings' },
-  { key: 'parts',      label: 'Parts & Routing', icon: 'ti-gear' },
+  { key: 'machines',   label: 'Machines',      icon: 'ti-engine' },
+  { key: 'parts',      label: 'Parts & Routing', icon: 'ti-settings' },
   { key: 'operations', label: 'Operations',    icon: 'ti-adjustments' },
   { key: 'customers',  label: 'Customers',     icon: 'ti-building' },
   { key: 'suppliers',  label: 'Suppliers',     icon: 'ti-truck-delivery' },
@@ -251,7 +251,7 @@ function renderMachines() {
     ${recordCount(list.length)}
     ${list.length
       ? list.map(machineRow).join('')
-      : emptyState('ti-settings', 'No machines found', 'Add a machine to get started, or adjust your search.')}
+      : emptyState('ti-engine', 'No machines found', 'Add a machine to get started, or adjust your search.')}
   `;
 }
 
@@ -259,7 +259,7 @@ function machineRow(m) {
   const [cls, label] = STAGE_BADGE[m.stage] || STAGE_BADGE.general;
   return `
     <div class="li" onclick="openMachineModal('${m.id}')">
-      <div class="li-ic"><i class="ti ti-settings" aria-hidden="true"></i></div>
+      <div class="li-ic"><i class="ti ti-engine" aria-hidden="true"></i></div>
       <div class="li-body">
         <div class="li-name">${m.name || '—'}</div>
         <div class="li-sub">${m.id_code || '—'}</div>
@@ -395,7 +395,7 @@ function renderParts() {
     ${recordCount(list.length)}
     ${list.length
       ? list.map(partRow).join('')
-      : emptyState('ti-gear', 'No parts found', 'Add a part to get started, or adjust your search.')}
+      : emptyState('ti-settings', 'No parts found', 'Add a part to get started, or adjust your search.')}
   `;
 }
 
@@ -404,7 +404,7 @@ function partRow(p) {
   const isExpanded = expandedPart === p.id;
   return `
     <div class="li" style="cursor:default">
-      <div class="li-ic"><i class="ti ti-gear" aria-hidden="true"></i></div>
+      <div class="li-ic"><i class="ti ti-settings" aria-hidden="true"></i></div>
       <div class="li-body">
         <div class="li-name">${p.name || '—'}</div>
         <div class="li-sub">${p.no || '—'} · ${cust?.name || '—'}</div>
