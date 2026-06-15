@@ -668,6 +668,14 @@ input, select, textarea, button {
 .mod-tile-nm { font-size: 14px; font-weight: 700; color: var(--txt); }
 .mod-tile-sub { font-size: 12px; color: var(--txt-muted); }
 
+/* Module navigation grid (home dashboard) */
+.mod-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
 /* Progress banner (dark) */
 .progress-banner {
   background: var(--imf-navy);
@@ -1337,12 +1345,14 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
     padding-bottom: 40px;
   }
   #toast { bottom: 24px; }
+  .mod-grid { grid-template-columns: repeat(3, 1fr); }
 }
 
 /* ── Large desktop (≥ 1024px) ── */
 @media (min-width: 1024px) {
   .page { padding: 28px 36px; padding-bottom: 44px; }
   .stats-3 { grid-template-columns: repeat(3, 1fr); }
+  .mod-grid { grid-template-columns: repeat(4, 1fr); }
 }
 
 /* ── Wide desktop (≥ 1280px) ── */
