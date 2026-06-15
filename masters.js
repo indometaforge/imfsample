@@ -230,13 +230,18 @@ const deptStageLabel = (v) => (DEPT_STAGES.find(s => s.v === v) || {}).l || slbl
 
 /* ══════════════════════════════════════════════════════════════════════
    SECTION 1 — MACHINES
-   Collection: machines (doc ID = machineId, immutable)
+   Collection: machines (doc ID = system UID, auto-generated, immutable)
+   id_code is the human-facing "Asset Code" (e.g. IMF/SFT/01, IMF/HRD/02) —
+   the same field i-v3.html already stores this data under — shown
+   everywhere in the UI instead of the raw doc ID.
+   sortOrder controls list position within a stage: lower number = higher
+   up the list, so raising/lowering it moves the machine up/down.
    "Active" toggle lives ONLY inside the edit modal — never on the list.
    ══════════════════════════════════════════════════════════════════════ */
 function renderMachines() {
   const q = searchQ.trim().toLowerCase();
   let list = S.machines.filter(m =>
-    !q || (m.name || '').toLowerCase().includes(q) || (m.id || '').toLowerCase().includes(q));
+    !q || (m.name || '').toLowerCase().includes(q) || (m.id_code || '').toLowerCase().includes(q));
   if (filterStage !== 'all') list = list.filter(m => (m.stage || 'general') === filterStage);
   list = list.slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.name || '').localeCompare(b.name || ''));
 
@@ -257,7 +262,7 @@ function machineRow(m) {
       <div class="li-ic"><i class="ti ti-settings" aria-hidden="true"></i></div>
       <div class="li-body">
         <div class="li-name">${m.name || '—'}</div>
-        <div class="li-sub">${m.id}</div>
+        <div class="li-sub">${m.id_code || '—'}</div>
       </div>
       <div class="li-right flex items-center gap-12">
         <span class="bdg ${cls}"><span class="bdg-dot"></span>${label}</span>
@@ -268,18 +273,14 @@ function machineRow(m) {
 function openMachineModal(id) {
   const m = id ? S.machines.find(x => x.id === id) : null;
 
-  const idField = m
-    ? `<div class="mono" style="padding:10px 13px;background:var(--sur2);border:1.5px solid var(--bdr-mid);border-radius:var(--rs)">${m.id}</div>
-       <div class="text-xs text-muted mt-8">ID cannot be changed</div>`
-    : `<input type="text" id="mf-id" placeholder="e.g. CNC-01" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()">`;
-
   openModal(`
     <div class="modal-title">${m ? 'Edit Machine' : 'Add Machine'}</div>
     <div id="modal-err"></div>
 
     <div class="f">
-      <label for="mf-id" class="f-req">Machine ID</label>
-      ${idField}
+      <label for="mf-asset" class="f-req">Asset Code</label>
+      <input type="text" id="mf-asset" value="${m?.id_code || ''}" style="text-transform:uppercase"
+             oninput="this.value=this.value.toUpperCase()" placeholder="e.g. IMF/SFT/01">
     </div>
     <div class="f">
       <label for="mf-name" class="f-req">Machine Name</label>
@@ -297,6 +298,7 @@ function openMachineModal(id) {
     <div class="f">
       <label for="mf-sort">Display Order</label>
       <input type="number" id="mf-sort" value="${m?.sortOrder ?? 0}">
+      <div class="text-xs text-muted mt-8">Lower number = higher up the list. Raising or lowering this moves the machine up or down within its stage.</div>
     </div>
     <div class="utog">
       <span class="utog-label">Active</span>
@@ -327,18 +329,18 @@ async function deleteMachine(id) {
 }
 
 async function saveMachine(id) {
+  const id_code   = getField('mf-asset');
   const name      = getField('mf-name');
   const stage     = document.getElementById('mf-stage').value;
   const sortOrder = Number(getField('mf-sort')) || 0;
   const isActive  = document.getElementById('mf-active').checked;
-  const machineId = id || getField('mf-id');
 
-  if (!machineId || !name || !stage) {
-    showModalError('Machine ID, Name and Stage are required.');
+  if (!id_code || !name || !stage) {
+    showModalError('Asset Code, Name and Stage are required.');
     return;
   }
 
-  const data = { name, stage, sortOrder, isActive };
+  const data = { id_code, name, stage, sortOrder, isActive };
 
   try {
     if (id) {
@@ -346,15 +348,10 @@ async function saveMachine(id) {
       await db.collection('machines').doc(id).update(data);
       await logAudit('UPDATE_MACHINE', 'MASTERS', id, before, data);
     } else {
-      const existing = await db.collection('machines').doc(machineId).get();
-      if (existing.exists) {
-        showModalError(`Machine ID "${machineId}" already exists. Choose a different ID.`);
-        return;
-      }
-      await db.collection('machines').doc(machineId).set({
+      const ref = await db.collection('machines').add({
         ...data, createdAt: serverTS(), createdBy: S.sess.userId
       });
-      await logAudit('CREATE_MACHINE', 'MASTERS', machineId, null, data);
+      await logAudit('CREATE_MACHINE', 'MASTERS', ref.id, null, data);
     }
     closeModal();
     await refreshCollection('machines');
