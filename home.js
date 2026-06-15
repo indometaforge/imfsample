@@ -26,7 +26,14 @@ const BUILT = new Set(['masters']);
    INIT
    ══════════════════════════════════════════════════════════════════════ */
 async function init() {
-  await initShell();
+  try {
+    await initShell();
+  } catch (e) {
+    console.error('initShell failed:', e);
+    clearSess();
+    window.location.replace('index.html');
+    return;
+  }
   render();
   document.getElementById('loading-screen').style.display = 'none';
   document.getElementById('app').style.display = '';

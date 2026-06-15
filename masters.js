@@ -37,7 +37,14 @@ const COLL_TO_STATE = {
    INIT
    ══════════════════════════════════════════════════════════════════════ */
 async function init() {
-  await initShell();
+  try {
+    await initShell();
+  } catch (e) {
+    console.error('initShell failed:', e);
+    clearSess();
+    window.location.replace('index.html');
+    return;
+  }
 
   if (!canView('masters')) {
     window.location.replace('home.html');
