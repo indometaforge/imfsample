@@ -193,6 +193,15 @@ function modalActions(saveLabel, saveOnclick) {
     </div>`;
 }
 
+/** Standalone "Delete" button shown only to admins, when editing an existing record */
+function modalDeleteButton(onclick, label = 'Delete') {
+  if (S.sess?.role !== 'admin') return '';
+  return `
+    <button class="btn btn-d w-full mt-8" onclick="${onclick}">
+      <i class="ti ti-trash" aria-hidden="true"></i> ${label}
+    </button>`;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
    STAGE OPTION SETS
    - PROD_STAGES  → shop-floor production stages (Machines, Operations)
@@ -298,7 +307,23 @@ function openMachineModal(id) {
     </div>
 
     ${modalActions('Save Machine', `saveMachine(${m ? `'${m.id}'` : 'null'})`)}
+    ${m ? modalDeleteButton(`deleteMachine('${m.id}')`, 'Delete Machine') : ''}
   `);
+}
+
+async function deleteMachine(id) {
+  if (!confirm('Delete this machine? This cannot be undone.')) return;
+  try {
+    const before = S.machines.find(x => x.id === id);
+    await db.collection('machines').doc(id).delete();
+    await logAudit('DELETE_MACHINE', 'MASTERS', id, before, null);
+    closeModal();
+    await refreshCollection('machines');
+    renderSection();
+    toast('Machine deleted');
+  } catch (e) {
+    showModalError(e.message);
+  }
 }
 
 async function saveMachine(id) {
@@ -479,7 +504,28 @@ function openPartModal(id) {
     </div>
 
     ${modalActions('Save Part', `savePart(${p ? `'${p.id}'` : 'null'})`)}
+    ${p ? modalDeleteButton(`deletePart('${p.id}')`, 'Delete Part') : ''}
   `);
+}
+
+async function deletePart(id) {
+  if (!confirm('Delete this part? Its operations routing will also be removed. This cannot be undone.')) return;
+  try {
+    const before = S.parts.find(x => x.id === id);
+    const relatedOps = S.partOps.filter(po => po.partId === id);
+    const batch = db.batch();
+    batch.delete(db.collection('parts').doc(id));
+    relatedOps.forEach(po => batch.delete(db.collection('partOps').doc(po.id)));
+    await batch.commit();
+    await logAudit('DELETE_PART', 'MASTERS', id, before, null);
+    closeModal();
+    await refreshCollection('parts');
+    await refreshCollection('partOps');
+    renderSection();
+    toast('Part deleted');
+  } catch (e) {
+    showModalError(e.message);
+  }
 }
 
 async function savePart(id) {
@@ -711,7 +757,23 @@ function openOperationModal(id) {
     </div>
 
     ${modalActions('Save Operation', `saveOperation(${o ? `'${o.id}'` : 'null'})`)}
+    ${o ? modalDeleteButton(`deleteOperation('${o.id}')`, 'Delete Operation') : ''}
   `);
+}
+
+async function deleteOperation(id) {
+  if (!confirm('Delete this operation? This cannot be undone.')) return;
+  try {
+    const before = S.operations.find(x => x.id === id);
+    await db.collection('operations').doc(id).delete();
+    await logAudit('DELETE_OPERATION', 'MASTERS', id, before, null);
+    closeModal();
+    await refreshCollection('operations');
+    renderSection();
+    toast('Operation deleted');
+  } catch (e) {
+    showModalError(e.message);
+  }
 }
 
 async function saveOperation(id) {
@@ -834,7 +896,23 @@ function openCustomerModal(id) {
     </div>
 
     ${modalActions('Save Customer', `saveCustomer(${c ? `'${c.id}'` : 'null'})`)}
+    ${c ? modalDeleteButton(`deleteCustomer('${c.id}')`, 'Delete Customer') : ''}
   `);
+}
+
+async function deleteCustomer(id) {
+  if (!confirm('Delete this customer? This cannot be undone.')) return;
+  try {
+    const before = S.customers.find(x => x.id === id);
+    await db.collection('customers').doc(id).delete();
+    await logAudit('DELETE_CUSTOMER', 'MASTERS', id, before, null);
+    closeModal();
+    await refreshCollection('customers');
+    renderSection();
+    toast('Customer deleted');
+  } catch (e) {
+    showModalError(e.message);
+  }
 }
 
 async function saveCustomer(id) {
@@ -930,7 +1008,23 @@ function openSupplierModal(id) {
     </div>
 
     ${modalActions('Save Supplier', `saveSupplier(${s ? `'${s.id}'` : 'null'})`)}
+    ${s ? modalDeleteButton(`deleteSupplier('${s.id}')`, 'Delete Supplier') : ''}
   `);
+}
+
+async function deleteSupplier(id) {
+  if (!confirm('Delete this supplier? This cannot be undone.')) return;
+  try {
+    const before = S.suppliers.find(x => x.id === id);
+    await db.collection('suppliers').doc(id).delete();
+    await logAudit('DELETE_SUPPLIER', 'MASTERS', id, before, null);
+    closeModal();
+    await refreshCollection('suppliers');
+    renderSection();
+    toast('Supplier deleted');
+  } catch (e) {
+    showModalError(e.message);
+  }
 }
 
 async function saveSupplier(id) {
@@ -1022,7 +1116,23 @@ function openPersonnelModal(id) {
     </div>
 
     ${modalActions('Save Personnel', `savePersonnel(${u ? `'${u.id}'` : 'null'})`)}
+    ${u ? modalDeleteButton(`deletePersonnel('${u.id}')`, 'Delete Personnel') : ''}
   `);
+}
+
+async function deletePersonnel(id) {
+  if (!confirm('Delete this person? This cannot be undone.')) return;
+  try {
+    const before = S.users.find(x => x.id === id);
+    await db.collection('users').doc(id).delete();
+    await logAudit('DELETE_PERSONNEL', 'MASTERS', id, before, null);
+    closeModal();
+    await refreshCollection('users');
+    renderSection();
+    toast('Personnel deleted');
+  } catch (e) {
+    showModalError(e.message);
+  }
 }
 
 async function savePersonnel(id) {
@@ -1115,14 +1225,16 @@ function openUserAccessModal(id) {
       <div class="text-xs text-muted mt-8">User can change this after first login</div>
     </div>`;
 
-  const emailField = u
-    ? `<div class="mono" style="padding:10px 13px;background:var(--sur2);border:1.5px solid var(--bdr-mid);border-radius:var(--rs)">${u.email}</div>
-       <div class="text-xs text-muted mt-8">Email cannot be changed here</div>`
-    : `<input type="email" id="uf-email" placeholder="user@indometaforge.com" autocomplete="off">`;
+  const emailField = `<input type="email" id="uf-email" value="${u?.email || ''}" placeholder="user@indometaforge.com" autocomplete="off">`;
 
   const passNote = u
     ? `<div class="ibox"><i class="ti ti-info-circle" aria-hidden="true"></i>
-        <span>To reset this user's password, use the Firebase Console (or add a reset-password feature).</span></div>`
+        <span>The email above is this user's login email. Changing it here updates their Firestore
+        record but NOT their Firebase Authentication login — they will still sign in with
+        <strong>${u.email}</strong> until that is changed in the Firebase Console.</span></div>
+       <button class="btn btn-s w-full mt-8" onclick="sendUserPasswordReset('${u.email}')">
+         <i class="ti ti-mail" aria-hidden="true"></i> Send Password Reset Email
+       </button>`
     : '';
 
   /* If an existing user has a role outside USER_ROLES, keep it selectable
@@ -1185,11 +1297,43 @@ function openUserAccessModal(id) {
     ${passNote}
 
     ${modalActions('Save User', `saveUserAccess(${u ? `'${u.id}'` : 'null'})`)}
+    ${u ? modalDeleteButton(`deleteUserAccess('${u.id}')`, 'Delete User') : ''}
   `);
+}
+
+/** Send a password-reset link to the user's email via Firebase Auth (no Admin SDK needed) */
+async function sendUserPasswordReset(email) {
+  try {
+    await auth.sendPasswordResetEmail(email);
+    toast('Password reset email sent to ' + email);
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+async function deleteUserAccess(id) {
+  const u = S.users.find(x => x.id === id);
+  if (u && u.id === S.sess.userId) {
+    showModalError('You cannot delete your own account.');
+    return;
+  }
+  if (!confirm('Delete this user record? Their Firebase Authentication login will NOT be removed — delete it separately in the Firebase Console. This cannot be undone.')) return;
+  try {
+    const before = S.users.find(x => x.id === id);
+    await db.collection('users').doc(id).delete();
+    await logAudit('DELETE_USER', 'MASTERS', id, before, null);
+    closeModal();
+    await refreshCollection('users');
+    renderSection();
+    toast('User record deleted');
+  } catch (e) {
+    showModalError(e.message);
+  }
 }
 
 async function saveUserAccess(id) {
   const name  = getField('uf-name');
+  const email = getField('uf-email');
   const role  = document.getElementById('uf-role').value;
   const stage = document.getElementById('uf-stage').value;
   const isHOD = document.getElementById('uf-hod').checked;
@@ -1199,16 +1343,17 @@ async function saveUserAccess(id) {
     reports: document.getElementById('uf-perm-reports').value,
   };
 
-  if (!name || !role) {
-    showModalError('Full Name and Role are required.');
+  if (!name || !role || !email) {
+    showModalError('Full Name, Email and Role are required.');
     return;
   }
 
   try {
     if (id) {
-      /* Edit: name, role, stage, isHOD, permissions only — never touch email/password/Auth */
+      /* Edit: name, email, role, stage, isHOD, permissions — Firestore record only.
+         Does NOT change the Firebase Auth login email/password; see passNote above. */
       const before = S.users.find(x => x.id === id);
-      const data = { name, role, stage, isHOD, permissions };
+      const data = { name, email, role, stage, isHOD, permissions };
       await db.collection('users').doc(id).update(data);
       await logAudit('UPDATE_USER', 'MASTERS', id, before, data);
     } else {
