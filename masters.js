@@ -12,25 +12,25 @@
    ══════════════════════════════════════════════════════════════════════ */
 let activeTab    = 'machines';
 let searchQ      = '';
+let filterStage  = 'all';   /* 'all' or a stage/department value */
 let expandedPart = null;   /* partId whose routing panel is open */
 
 const TABS = [
-  { key: 'machines',    label: 'Machines',      icon: 'ti-settings' },
-  { key: 'parts',       label: 'Parts & Routing', icon: 'ti-gear' },
-  { key: 'operations',  label: 'Operations',    icon: 'ti-adjustments' },
-  { key: 'customers',   label: 'Customers',     icon: 'ti-building' },
-  { key: 'suppliers',   label: 'Suppliers',     icon: 'ti-truck-delivery' },
-  { key: 'users',       label: 'Users',         icon: 'ti-user' },
-  { key: 'defectCodes', label: 'Defect Codes',  icon: 'ti-alert-triangle' },
-  { key: 'spareParts',  label: 'Spare Parts',   icon: 'ti-tool' },
-  { key: 'shifts',      label: 'Shifts',        icon: 'ti-clock' },
+  { key: 'machines',   label: 'Machines',      icon: 'ti-settings' },
+  { key: 'parts',      label: 'Parts & Routing', icon: 'ti-gear' },
+  { key: 'operations', label: 'Operations',    icon: 'ti-adjustments' },
+  { key: 'customers',  label: 'Customers',     icon: 'ti-building' },
+  { key: 'suppliers',  label: 'Suppliers',     icon: 'ti-truck-delivery' },
+  { key: 'personnel',  label: 'Personnel',     icon: 'ti-users' },
+  { key: 'userAccess', label: 'User Access',   icon: 'ti-user-shield' },
+  { key: 'shifts',     label: 'Shifts',        icon: 'ti-clock' },
 ];
 
 /* Map a Firestore collection name to its S.* state array key */
 const COLL_TO_STATE = {
   machines: 'machines', parts: 'parts', operations: 'operations',
   partOps: 'partOps', customers: 'customers', suppliers: 'suppliers',
-  users: 'users', defectCodes: 'defectCodes', spareParts: 'spareParts'
+  users: 'users'
 };
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -58,24 +58,6 @@ async function init() {
 
   document.getElementById('loading-screen').style.display = 'none';
   document.getElementById('app').style.display = '';
-
-  /* Debug helpers — uncomment to confirm field names against live data:
-  await sniffFields('parts');
-  await sniffFields('machines');
-  await sniffFields('customers');
-  */
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   FIELD-NAME SNIFFER (debug utility — see prompt instructions)
-   ══════════════════════════════════════════════════════════════════════ */
-async function sniffFields(collection) {
-  const snap = await db.collection(collection).limit(1).get();
-  if (!snap.empty) {
-    console.log(collection, 'fields:', Object.keys(snap.docs[0].data()), snap.docs[0].data());
-  } else {
-    console.log(collection, 'is empty');
-  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -100,6 +82,7 @@ function render() {
 function switchTab(key) {
   activeTab    = key;
   searchQ      = '';
+  filterStage  = 'all';
   expandedPart = null;
   render();
 }
@@ -111,9 +94,8 @@ function renderSection() {
     operations:  renderOperations,
     customers:   renderCustomers,
     suppliers:   renderSuppliers,
-    users:       renderUsers,
-    defectCodes: renderDefectCodes,
-    spareParts:  renderSpareParts,
+    personnel:   renderPersonnel,
+    userAccess:  renderUserAccess,
     shifts:      renderShifts,
   };
   (map[activeTab] || renderMachines)();
@@ -153,6 +135,26 @@ function onSearchInput(val) {
   if (el) { el.focus(); el.setSelectionRange(val.length, val.length); }
 }
 
+/** Search box + a "Filter by stage" dropdown, side by side */
+function searchAndStageRow(placeholder, stages) {
+  return `
+    <div class="row-2">
+      ${searchBox(placeholder)}
+      <div class="f">
+        <label for="masters-stage-filter" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap">Filter by stage</label>
+        <select id="masters-stage-filter" onchange="onStageFilterChange(this.value)">
+          <option value="all" ${filterStage === 'all' ? 'selected' : ''}>All Stages</option>
+          ${buildOpts(stages, 'v', x => x.l, filterStage)}
+        </select>
+      </div>
+    </div>`;
+}
+
+function onStageFilterChange(val) {
+  filterStage = val;
+  renderSection();
+}
+
 /** Small muted record-count line */
 function recordCount(n) {
   return `<div class="text-muted text-sm mb-12">${n} record${n === 1 ? '' : 's'}</div>`;
@@ -166,30 +168,6 @@ function emptyState(icon, title, msg) {
       <h3>${title}</h3>
       <p>${msg}</p>
     </div>`;
-}
-
-/** isActive toggle switch — generic, works against any master collection */
-function activeToggle(collection, id, isActive) {
-  return `
-    <label class="tsw" onclick="event.stopPropagation()" title="${isActive ? 'Active' : 'Inactive'}">
-      <input type="checkbox" ${isActive ? 'checked' : ''}
-             onchange="toggleActive('${collection}','${id}',this.checked)">
-      <span class="tsl"></span>
-    </label>`;
-}
-
-async function toggleActive(collection, id, val) {
-  try {
-    const before = (S[COLL_TO_STATE[collection]] || []).find(x => x.id === id);
-    await db.collection(collection).doc(id).update({ isActive: val });
-    await logAudit(val ? 'ACTIVATE' : 'DEACTIVATE', 'MASTERS', id,
-      { isActive: before ? before.isActive !== false : true }, { isActive: val });
-    await refreshCollection(collection);
-    renderSection();
-    toast(val ? 'Activated' : (collection === 'users' ? 'User deactivated. They can no longer log in.' : 'Deactivated'));
-  } catch (e) {
-    toast('Error: ' + e.message);
-  }
 }
 
 /** Reload a single master collection into S */
@@ -216,8 +194,9 @@ function modalActions(saveLabel, saveOnclick) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   SECTION 1 — MACHINES
-   Collection: machines (doc ID = machineId, immutable)
+   STAGE OPTION SETS
+   - PROD_STAGES  → shop-floor production stages (Machines, Operations)
+   - DEPT_STAGES  → personnel/user departments (Personnel, User Access)
    ══════════════════════════════════════════════════════════════════════ */
 const STAGE_BADGE = {
   soft:    ['bdg-soft', 'Soft'],
@@ -226,15 +205,35 @@ const STAGE_BADGE = {
   general: ['bdg-gr',   'General'],
 };
 
+const PROD_STAGES = [
+  { v: 'soft', l: 'Soft' }, { v: 'hard', l: 'Hard' },
+  { v: 'ht', l: 'Heat Treatment' }, { v: 'general', l: 'General' },
+];
+
+const DEPT_STAGES = [
+  { v: 'general', l: 'General' }, { v: 'soft', l: 'Soft Machining' },
+  { v: 'ht', l: 'Heat Treatment' }, { v: 'hard', l: 'Hard Machining' },
+  { v: 'store', l: 'Store' }, { v: 'qc', l: 'Quality Control' },
+  { v: 'dispatch', l: 'Dispatch' }, { v: 'maintenance', l: 'Maintenance' },
+];
+
+const deptStageLabel = (v) => (DEPT_STAGES.find(s => s.v === v) || {}).l || slbl(v);
+
+/* ══════════════════════════════════════════════════════════════════════
+   SECTION 1 — MACHINES
+   Collection: machines (doc ID = machineId, immutable)
+   "Active" toggle lives ONLY inside the edit modal — never on the list.
+   ══════════════════════════════════════════════════════════════════════ */
 function renderMachines() {
   const q = searchQ.trim().toLowerCase();
   let list = S.machines.filter(m =>
     !q || (m.name || '').toLowerCase().includes(q) || (m.id || '').toLowerCase().includes(q));
+  if (filterStage !== 'all') list = list.filter(m => (m.stage || 'general') === filterStage);
   list = list.slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || (a.name || '').localeCompare(b.name || ''));
 
   document.getElementById('section-content').innerHTML = `
     ${sectionHeader('Machines', 'Add Machine', 'openMachineModal()')}
-    ${searchBox('Search machines...')}
+    ${searchAndStageRow('Search machines...', PROD_STAGES)}
     ${recordCount(list.length)}
     ${list.length
       ? list.map(machineRow).join('')
@@ -253,7 +252,6 @@ function machineRow(m) {
       </div>
       <div class="li-right flex items-center gap-12">
         <span class="bdg ${cls}"><span class="bdg-dot"></span>${label}</span>
-        ${activeToggle('machines', m.id, m.isActive !== false)}
       </div>
     </div>`;
 }
@@ -344,7 +342,7 @@ async function saveMachine(id) {
 
 /* ══════════════════════════════════════════════════════════════════════
    SECTION 2 — PARTS & ROUTING
-   Collection: parts    (no, name, custId, matGrade, isActive)
+   Collection: parts    (no, name, custId, matGrade)
    Collection: partOps  (partId, opId, seqNo, cycleTimeSecs,
                           isMandatory, finalOperation, workCenterType)
 
@@ -396,7 +394,6 @@ function partRow(p) {
         <button class="btn btn-s btn-sm" onclick="openPartModal('${p.id}')" title="Edit Part">
           <i class="ti ti-edit" aria-hidden="true"></i>
         </button>
-        ${activeToggle('parts', p.id, p.isActive !== false)}
       </div>
     </div>
     ${isExpanded ? routingPanel(p) : ''}
@@ -480,13 +477,6 @@ function openPartModal(id) {
       <label for="pf-mat">Material Grade</label>
       <input type="text" id="pf-mat" value="${p?.matGrade || ''}" placeholder="e.g. 20MnCr5">
     </div>
-    <div class="utog">
-      <span class="utog-label">Active</span>
-      <label class="tsw">
-        <input type="checkbox" id="pf-active" ${p?.isActive !== false ? 'checked' : ''}>
-        <span class="tsl"></span>
-      </label>
-    </div>
 
     ${modalActions('Save Part', `savePart(${p ? `'${p.id}'` : 'null'})`)}
   `);
@@ -497,14 +487,13 @@ async function savePart(id) {
   const name     = getField('pf-name');
   const custId   = document.getElementById('pf-cust').value;
   const matGrade = getField('pf-mat');
-  const isActive = document.getElementById('pf-active').checked;
 
   if (!no || !name || !custId) {
     showModalError('Part Number, Part Name and Customer are required.');
     return;
   }
 
-  const data = { no, name, custId, matGrade, isActive };
+  const data = { no, name, custId, matGrade };
   try {
     if (id) {
       const before = S.parts.find(x => x.id === id);
@@ -662,17 +651,18 @@ async function deleteRouting(poId, partId) {
 
 /* ══════════════════════════════════════════════════════════════════════
    SECTION 3 — OPERATIONS
-   Collection: operations (name, code, stage, isActive)
+   Collection: operations (name, code, stage)
    ══════════════════════════════════════════════════════════════════════ */
 function renderOperations() {
   const q = searchQ.trim().toLowerCase();
   let list = S.operations.filter(o =>
     !q || (o.name || '').toLowerCase().includes(q) || (o.code || '').toLowerCase().includes(q));
+  if (filterStage !== 'all') list = list.filter(o => (o.stage || 'general') === filterStage);
   list = list.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
   document.getElementById('section-content').innerHTML = `
     ${sectionHeader('Operations', 'Add Operation', 'openOperationModal()')}
-    ${searchBox('Search operations...')}
+    ${searchAndStageRow('Search operations...', PROD_STAGES)}
     ${recordCount(list.length)}
     ${list.length
       ? list.map(operationRow).join('')
@@ -691,7 +681,6 @@ function operationRow(o) {
       </div>
       <div class="li-right flex items-center gap-12">
         <span class="bdg ${cls}"><span class="bdg-dot"></span>${label}</span>
-        ${activeToggle('operations', o.id, o.isActive !== false)}
       </div>
     </div>`;
 }
@@ -720,13 +709,6 @@ function openOperationModal(id) {
         ], 'v', x => x.l, o?.stage || 'soft')}
       </select>
     </div>
-    <div class="utog">
-      <span class="utog-label">Active</span>
-      <label class="tsw">
-        <input type="checkbox" id="of-active" ${o?.isActive !== false ? 'checked' : ''}>
-        <span class="tsl"></span>
-      </label>
-    </div>
 
     ${modalActions('Save Operation', `saveOperation(${o ? `'${o.id}'` : 'null'})`)}
   `);
@@ -736,14 +718,13 @@ async function saveOperation(id) {
   const name  = getField('of-name');
   const code  = getField('of-code');
   const stage = document.getElementById('of-stage').value;
-  const isActive = document.getElementById('of-active').checked;
 
   if (!name || !code || !stage) {
     showModalError('Operation Name, Short Code and Stage are required.');
     return;
   }
 
-  const data = { name, code, stage, isActive };
+  const data = { name, code, stage };
   try {
     if (id) {
       const before = S.operations.find(x => x.id === id);
@@ -766,7 +747,7 @@ async function saveOperation(id) {
 
 /* ══════════════════════════════════════════════════════════════════════
    SECTION 4 — CUSTOMERS
-   Collection: customers (name, code, allowedStreams[], dotPunchingRequired, isActive)
+   Collection: customers (name, code, allowedStreams[], dotPunchingRequired)
    ══════════════════════════════════════════════════════════════════════ */
 const STREAM_BADGE = {
   OEM:    ['bdg-n', 'OEM'],
@@ -805,7 +786,6 @@ function customerRow(c) {
       </div>
       <div class="li-right flex items-center gap-12">
         <div class="flex gap-8">${streams}</div>
-        ${activeToggle('customers', c.id, c.isActive !== false)}
       </div>
     </div>`;
 }
@@ -852,13 +832,6 @@ function openCustomerModal(id) {
         <span class="tsl"></span>
       </label>
     </div>
-    <div class="utog">
-      <span class="utog-label">Active</span>
-      <label class="tsw">
-        <input type="checkbox" id="cf-active" ${c?.isActive !== false ? 'checked' : ''}>
-        <span class="tsl"></span>
-      </label>
-    </div>
 
     ${modalActions('Save Customer', `saveCustomer(${c ? `'${c.id}'` : 'null'})`)}
   `);
@@ -869,7 +842,6 @@ async function saveCustomer(id) {
   const code = getField('cf-code');
   const allowedStreams = Array.from(document.querySelectorAll('input[name="cf-stream"]:checked')).map(el => el.value);
   const dotPunchingRequired = document.getElementById('cf-dot').checked;
-  const isActive = document.getElementById('cf-active').checked;
 
   if (!name || !code) {
     showModalError('Customer Name and Customer Code are required.');
@@ -880,7 +852,7 @@ async function saveCustomer(id) {
     return;
   }
 
-  const data = { name, code, allowedStreams, dotPunchingRequired, isActive };
+  const data = { name, code, allowedStreams, dotPunchingRequired };
   try {
     if (id) {
       const before = S.customers.find(x => x.id === id);
@@ -903,7 +875,7 @@ async function saveCustomer(id) {
 
 /* ══════════════════════════════════════════════════════════════════════
    SECTION 5 — SUPPLIERS
-   Collection: suppliers (name, code, defaultMatGrade, contactInfo, isActive)
+   Collection: suppliers (name, code, defaultMatGrade, contactInfo)
    ══════════════════════════════════════════════════════════════════════ */
 function renderSuppliers() {
   const q = searchQ.trim().toLowerCase();
@@ -928,9 +900,6 @@ function supplierRow(s) {
       <div class="li-body">
         <div class="li-name">${s.name || '—'}</div>
         <div class="li-sub">${s.code || '—'}${s.defaultMatGrade ? ' · ' + s.defaultMatGrade : ''}</div>
-      </div>
-      <div class="li-right flex items-center gap-12">
-        ${activeToggle('suppliers', s.id, s.isActive !== false)}
       </div>
     </div>`;
 }
@@ -959,13 +928,6 @@ function openSupplierModal(id) {
       <label for="sf-contact">Contact Info</label>
       <textarea id="sf-contact" placeholder="Phone, email, address...">${s?.contactInfo || ''}</textarea>
     </div>
-    <div class="utog">
-      <span class="utog-label">Active</span>
-      <label class="tsw">
-        <input type="checkbox" id="sf-active" ${s?.isActive !== false ? 'checked' : ''}>
-        <span class="tsl"></span>
-      </label>
-    </div>
 
     ${modalActions('Save Supplier', `saveSupplier(${s ? `'${s.id}'` : 'null'})`)}
   `);
@@ -976,14 +938,13 @@ async function saveSupplier(id) {
   const code = getField('sf-code');
   const defaultMatGrade = getField('sf-mat');
   const contactInfo = document.getElementById('sf-contact').value.trim();
-  const isActive = document.getElementById('sf-active').checked;
 
   if (!name || !code) {
     showModalError('Supplier Name and Supplier Code are required.');
     return;
   }
 
-  const data = { name, code, defaultMatGrade, contactInfo, isActive };
+  const data = { name, code, defaultMatGrade, contactInfo };
   try {
     if (id) {
       const before = S.suppliers.find(x => x.id === id);
@@ -1005,52 +966,147 @@ async function saveSupplier(id) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   SECTION 6 — USERS
-   Collection: users (doc ID = Firebase Auth UID)
+   SECTION 6 — PERSONNEL
+   Collection: users — docs where appUser === false
+   Shop-floor operators tracked for production logs. No app login,
+   minimal fields (name, role:'operator', stage, appUser:false).
+   ══════════════════════════════════════════════════════════════════════ */
+function renderPersonnel() {
+  const q = searchQ.trim().toLowerCase();
+  let list = S.users.filter(u => u.appUser === false);
+  if (filterStage !== 'all') list = list.filter(u => (u.stage || 'general') === filterStage);
+  if (q) list = list.filter(u => (u.name || '').toLowerCase().includes(q));
+  list = list.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+  document.getElementById('section-content').innerHTML = `
+    ${sectionHeader('Personnel', 'Add Personnel', 'openPersonnelModal()')}
+    <div class="text-xs text-muted mb-12">Shop-floor operators tracked for production logs — these people do not log into the app.</div>
+    ${searchAndStageRow('Search personnel...', DEPT_STAGES)}
+    ${recordCount(list.length)}
+    ${list.length
+      ? list.map(personnelRow).join('')
+      : emptyState('ti-users', 'No personnel found', 'Add a person to get started, or adjust your search.')}
+  `;
+}
+
+function personnelRow(u) {
+  return `
+    <div class="li" onclick="openPersonnelModal('${u.id}')">
+      <div class="li-ic" style="font-size:12px;font-weight:700">${initials(u.name || '?')}</div>
+      <div class="li-body">
+        <div class="li-name">${u.name || '—'}</div>
+        <div class="li-sub">${deptStageLabel(u.stage || 'general')}</div>
+      </div>
+      <div class="li-right flex items-center gap-12">
+        <span class="bdg ${sbdg(u.stage)}">${deptStageLabel(u.stage || 'general')}</span>
+      </div>
+    </div>`;
+}
+
+function openPersonnelModal(id) {
+  const u = id ? S.users.find(x => x.id === id) : null;
+
+  openModal(`
+    <div class="modal-title">${u ? 'Edit Personnel' : 'Add Personnel'}</div>
+    <div id="modal-err"></div>
+
+    <div class="f">
+      <label for="pf-name" class="f-req">Full Name</label>
+      <input type="text" id="pf-name" value="${u?.name || ''}" placeholder="e.g. Suresh Kumar">
+    </div>
+    <div class="f">
+      <label for="pf-stage" class="f-req">Department / Stage</label>
+      <select id="pf-stage">
+        ${buildOpts(DEPT_STAGES, 'v', x => x.l, u?.stage || 'general')}
+      </select>
+    </div>
+
+    ${modalActions('Save Personnel', `savePersonnel(${u ? `'${u.id}'` : 'null'})`)}
+  `);
+}
+
+async function savePersonnel(id) {
+  const name  = getField('pf-name');
+  const stage = document.getElementById('pf-stage').value;
+
+  if (!name) {
+    showModalError('Full Name is required.');
+    return;
+  }
+
+  const data = { name, role: 'operator', stage, appUser: false };
+  try {
+    if (id) {
+      const before = S.users.find(x => x.id === id);
+      await db.collection('users').doc(id).update(data);
+      await logAudit('UPDATE_PERSONNEL', 'MASTERS', id, before, data);
+    } else {
+      const ref = await db.collection('users').add({
+        ...data, createdAt: serverTS(), createdBy: S.sess.userId
+      });
+      await logAudit('CREATE_PERSONNEL', 'MASTERS', ref.id, null, data);
+    }
+    closeModal();
+    await refreshCollection('users');
+    renderSection();
+    toast('Saved successfully');
+  } catch (e) {
+    showModalError(e.message);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   SECTION 7 — USER ACCESS
+   Collection: users — docs where appUser !== false
+   App logins for supervisors, managers, dispatch, store, admin, etc.
+   Full fields: name, role, stage, email, isHOD, permissions{plan,actual,reports}.
    ══════════════════════════════════════════════════════════════════════ */
 const USER_ROLES = [
   'admin', 'plant_head', 'supervisor', 'store',
   'qc', 'quality_hod', 'maintenance', 'dispatch',
 ];
-const USER_STAGES = [
-  { v: 'general', l: 'General' }, { v: 'soft', l: 'Soft' },
-  { v: 'hard', l: 'Hard' }, { v: 'ht', l: 'Heat Treatment' },
+
+const PERM_LEVELS = [
+  { v: 'full', l: 'Full' }, { v: 'view', l: 'View' }, { v: 'hidden', l: 'Hidden' },
 ];
 
-function renderUsers() {
+function renderUserAccess() {
   const q = searchQ.trim().toLowerCase();
-  let list = S.users.filter(u =>
-    !q || (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q));
+  let list = S.users.filter(u => u.appUser !== false);
+  if (filterStage !== 'all') list = list.filter(u => (u.stage || 'general') === filterStage);
+  if (q) list = list.filter(u =>
+    (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q));
   list = list.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
   document.getElementById('section-content').innerHTML = `
-    ${sectionHeader('Users', 'Add User', 'openUserModal()')}
-    ${searchBox('Search users...')}
+    ${sectionHeader('User Access', 'Add User', 'openUserAccessModal()')}
+    <div class="text-xs text-muted mb-12">App logins, roles and permissions for office &amp; supervisory staff.</div>
+    ${searchAndStageRow('Search users...', DEPT_STAGES)}
     ${recordCount(list.length)}
     ${list.length
-      ? list.map(userRow).join('')
-      : emptyState('ti-user', 'No users found', 'Add a user to get started, or adjust your search.')}
+      ? list.map(userAccessRow).join('')
+      : emptyState('ti-user-shield', 'No users found', 'Add a user to get started, or adjust your search.')}
   `;
 }
 
-function userRow(u) {
+function userAccessRow(u) {
   return `
-    <div class="li" onclick="openUserModal('${u.id}')">
+    <div class="li" onclick="openUserAccessModal('${u.id}')">
       <div class="li-ic" style="font-size:12px;font-weight:700">${initials(u.name || u.email || '?')}</div>
       <div class="li-body">
-        <div class="li-name">${u.name || '—'}</div>
+        <div class="li-name">${u.name || '—'}${u.isHOD ? ' <span class="bdg bdg-n">HOD</span>' : ''}</div>
         <div class="li-sub">${u.email || '—'}</div>
       </div>
       <div class="li-right flex items-center gap-12">
         <span class="bdg bdg-n">${rlbl(u.role)}</span>
-        <span class="bdg ${sbdg(u.stage)}">${slbl(u.stage)}</span>
-        ${activeToggle('users', u.id, u.isActive !== false)}
+        <span class="bdg ${sbdg(u.stage)}">${deptStageLabel(u.stage || 'general')}</span>
       </div>
     </div>`;
 }
 
-function openUserModal(id) {
+function openUserAccessModal(id) {
   const u = id ? S.users.find(x => x.id === id) : null;
+  const perms = u?.permissions || { plan: 'full', actual: 'full', reports: 'full' };
 
   const passwordField = u ? '' : `
     <div class="f">
@@ -1096,30 +1152,52 @@ function openUserModal(id) {
         </select>
       </div>
       <div class="f">
-        <label for="uf-stage">Stage</label>
+        <label for="uf-stage">Department / Stage</label>
         <select id="uf-stage">
-          ${buildOpts(USER_STAGES, 'v', x => x.l, u?.stage || 'general')}
+          ${buildOpts(DEPT_STAGES, 'v', x => x.l, u?.stage || 'general')}
         </select>
       </div>
     </div>
-    ${passNote}
     <div class="utog">
-      <span class="utog-label">Active</span>
+      <span class="utog-label">Department Head (HOD)</span>
       <label class="tsw">
-        <input type="checkbox" id="uf-active" ${u?.isActive !== false ? 'checked' : ''}>
+        <input type="checkbox" id="uf-hod" ${u?.isHOD ? 'checked' : ''}>
         <span class="tsl"></span>
       </label>
     </div>
+    <div class="f">
+      <label>Permissions</label>
+      <div class="row-2">
+        <div class="f">
+          <label for="uf-perm-plan" style="font-size:11px">Plans</label>
+          <select id="uf-perm-plan">${buildOpts(PERM_LEVELS, 'v', x => x.l, perms.plan || 'full')}</select>
+        </div>
+        <div class="f">
+          <label for="uf-perm-actual" style="font-size:11px">Actuals</label>
+          <select id="uf-perm-actual">${buildOpts(PERM_LEVELS, 'v', x => x.l, perms.actual || 'full')}</select>
+        </div>
+      </div>
+      <div class="f">
+        <label for="uf-perm-reports" style="font-size:11px">Reports</label>
+        <select id="uf-perm-reports">${buildOpts(PERM_LEVELS, 'v', x => x.l, perms.reports || 'full')}</select>
+      </div>
+    </div>
+    ${passNote}
 
-    ${modalActions('Save User', `saveUser(${u ? `'${u.id}'` : 'null'})`)}
+    ${modalActions('Save User', `saveUserAccess(${u ? `'${u.id}'` : 'null'})`)}
   `);
 }
 
-async function saveUser(id) {
+async function saveUserAccess(id) {
   const name  = getField('uf-name');
   const role  = document.getElementById('uf-role').value;
   const stage = document.getElementById('uf-stage').value;
-  const isActive = document.getElementById('uf-active').checked;
+  const isHOD = document.getElementById('uf-hod').checked;
+  const permissions = {
+    plan:    document.getElementById('uf-perm-plan').value,
+    actual:  document.getElementById('uf-perm-actual').value,
+    reports: document.getElementById('uf-perm-reports').value,
+  };
 
   if (!name || !role) {
     showModalError('Full Name and Role are required.');
@@ -1128,9 +1206,9 @@ async function saveUser(id) {
 
   try {
     if (id) {
-      /* Edit: name, role, stage, isActive only — never touch email/password/Auth */
+      /* Edit: name, role, stage, isHOD, permissions only — never touch email/password/Auth */
       const before = S.users.find(x => x.id === id);
-      const data = { name, role, stage, isActive };
+      const data = { name, role, stage, isHOD, permissions };
       await db.collection('users').doc(id).update(data);
       await logAudit('UPDATE_USER', 'MASTERS', id, before, data);
     } else {
@@ -1146,20 +1224,20 @@ async function saveUser(id) {
          whichever auth instance it's called on). */
       const secondaryApp = firebase.initializeApp(firebase.app().options, 'Secondary_' + Date.now());
       const secondaryAuth = secondaryApp.auth();
-      let uid;
+      let newUid;
       try {
         const cred = await secondaryAuth.createUserWithEmailAndPassword(email, pass);
-        uid = cred.user.uid;
+        newUid = cred.user.uid;
         await secondaryAuth.signOut();
       } finally {
         await secondaryApp.delete();
       }
 
-      const data = { name, email, role, stage, isActive: true };
-      await db.collection('users').doc(uid).set({
+      const data = { name, email, role, stage, isHOD, permissions, appUser: true };
+      await db.collection('users').doc(newUid).set({
         ...data, createdAt: serverTS(), createdBy: S.sess.userId
       });
-      await logAudit('CREATE_USER', 'MASTERS', uid, null, data);
+      await logAudit('CREATE_USER', 'MASTERS', newUid, null, data);
     }
     closeModal();
     await refreshCollection('users');
@@ -1171,242 +1249,7 @@ async function saveUser(id) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   SECTION 7 — DEFECT CODES
-   Collection: defectCodes (code, description, category, stage, isActive)
-   May not exist yet — empty state allowed, never pre-populated.
-   ══════════════════════════════════════════════════════════════════════ */
-const DEFECT_CATEGORY_BADGE = {
-  DIMENSIONAL:   'bdg-b',
-  METALLURGICAL: 'bdg-r',
-  VISUAL:        'bdg-a',
-  PROCESS:       'bdg-n',
-};
-const DEFECT_STAGE_LABEL = { soft: 'Soft', hard: 'Hard', ht: 'Heat Treatment', any: 'Any Stage' };
-
-function renderDefectCodes() {
-  const q = searchQ.trim().toLowerCase();
-  let list = S.defectCodes.filter(d =>
-    !q || (d.description || '').toLowerCase().includes(q)
-       || (d.code || '').toLowerCase().includes(q)
-       || (d.category || '').toLowerCase().includes(q));
-  list = list.slice().sort((a, b) =>
-    (a.category || '').localeCompare(b.category || '') || (a.code || '').localeCompare(b.code || ''));
-
-  document.getElementById('section-content').innerHTML = `
-    ${sectionHeader('Defect Codes', 'Add Defect Code', 'openDefectModal()')}
-    ${searchBox('Search defect codes...')}
-    ${recordCount(list.length)}
-    ${list.length
-      ? list.map(defectRow).join('')
-      : emptyState('ti-alert-triangle', 'No defect codes yet', 'Add a defect code to build the QC library.')}
-  `;
-}
-
-function defectRow(d) {
-  const cls = DEFECT_CATEGORY_BADGE[d.category] || 'bdg-gr';
-  return `
-    <div class="li" onclick="openDefectModal('${d.id}')">
-      <div class="li-ic"><i class="ti ti-alert-triangle" aria-hidden="true"></i></div>
-      <div class="li-body">
-        <div class="li-name">${d.description || '—'}</div>
-        <div class="li-sub">${d.code || '—'} · ${d.category || '—'}</div>
-      </div>
-      <div class="li-right flex items-center gap-12">
-        <span class="bdg ${cls}">${d.category || '—'}</span>
-        ${activeToggle('defectCodes', d.id, d.isActive !== false)}
-      </div>
-    </div>`;
-}
-
-function openDefectModal(id) {
-  const d = id ? S.defectCodes.find(x => x.id === id) : null;
-
-  openModal(`
-    <div class="modal-title">${d ? 'Edit Defect Code' : 'Add Defect Code'}</div>
-    <div id="modal-err"></div>
-
-    <div class="f">
-      <label for="df-code" class="f-req">Defect Code</label>
-      <input type="text" id="df-code" value="${d?.code || ''}" style="text-transform:uppercase"
-             oninput="this.value=this.value.toUpperCase()" placeholder="e.g. HC-01">
-    </div>
-    <div class="f">
-      <label for="df-desc" class="f-req">Description</label>
-      <input type="text" id="df-desc" value="${d?.description || ''}" placeholder="e.g. Surface Hardness Low">
-    </div>
-    <div class="row-2">
-      <div class="f">
-        <label for="df-cat" class="f-req">Category</label>
-        <select id="df-cat">
-          ${buildOpts([
-            { v: 'DIMENSIONAL', l: 'Dimensional' }, { v: 'METALLURGICAL', l: 'Metallurgical' },
-            { v: 'VISUAL', l: 'Visual' }, { v: 'PROCESS', l: 'Process' },
-          ], 'v', x => x.l, d?.category || 'DIMENSIONAL')}
-        </select>
-      </div>
-      <div class="f">
-        <label for="df-stage" class="f-req">Applicable Stage</label>
-        <select id="df-stage">
-          ${buildOpts([
-            { v: 'soft', l: 'Soft' }, { v: 'hard', l: 'Hard' },
-            { v: 'ht', l: 'Heat Treatment' }, { v: 'any', l: 'Any Stage' },
-          ], 'v', x => x.l, d?.stage || 'any')}
-        </select>
-      </div>
-    </div>
-    <div class="utog">
-      <span class="utog-label">Active</span>
-      <label class="tsw">
-        <input type="checkbox" id="df-active" ${d?.isActive !== false ? 'checked' : ''}>
-        <span class="tsl"></span>
-      </label>
-    </div>
-
-    ${modalActions('Save Defect Code', `saveDefect(${d ? `'${d.id}'` : 'null'})`)}
-  `);
-}
-
-async function saveDefect(id) {
-  const code        = getField('df-code');
-  const description = getField('df-desc');
-  const category    = document.getElementById('df-cat').value;
-  const stage       = document.getElementById('df-stage').value;
-  const isActive    = document.getElementById('df-active').checked;
-
-  if (!code || !description || !category || !stage) {
-    showModalError('Defect Code, Description, Category and Applicable Stage are required.');
-    return;
-  }
-
-  const data = { code, description, category, stage, isActive };
-  try {
-    if (id) {
-      const before = S.defectCodes.find(x => x.id === id);
-      await db.collection('defectCodes').doc(id).update(data);
-      await logAudit('UPDATE_DEFECT_CODE', 'MASTERS', id, before, data);
-    } else {
-      const ref = await db.collection('defectCodes').add({
-        ...data, createdAt: serverTS(), createdBy: S.sess.userId
-      });
-      await logAudit('CREATE_DEFECT_CODE', 'MASTERS', ref.id, null, data);
-    }
-    closeModal();
-    await refreshCollection('defectCodes');
-    renderSection();
-    toast('Saved successfully');
-  } catch (e) {
-    showModalError(e.message);
-  }
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   SECTION 8 — SPARE PARTS
-   Collection: spareParts (itemCode, name, unit, standardUnitCost, isActive)
-   May not exist yet — empty state allowed, never pre-populated.
-   ══════════════════════════════════════════════════════════════════════ */
-function renderSpareParts() {
-  const q = searchQ.trim().toLowerCase();
-  let list = S.spareParts.filter(sp =>
-    !q || (sp.name || '').toLowerCase().includes(q) || (sp.itemCode || '').toLowerCase().includes(q));
-  list = list.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-
-  document.getElementById('section-content').innerHTML = `
-    ${sectionHeader('Spare Parts', 'Add Spare Part', 'openSpareModal()')}
-    ${searchBox('Search spare parts...')}
-    ${recordCount(list.length)}
-    ${list.length
-      ? list.map(spareRow).join('')
-      : emptyState('ti-tool', 'No spare parts yet', 'Add a spare part to build the maintenance catalog.')}
-  `;
-}
-
-function spareRow(sp) {
-  return `
-    <div class="li" onclick="openSpareModal('${sp.id}')">
-      <div class="li-ic"><i class="ti ti-tool" aria-hidden="true"></i></div>
-      <div class="li-body">
-        <div class="li-name">${sp.name || '—'}</div>
-        <div class="li-sub">${sp.itemCode || '—'} · ${sp.unit || '—'} · ${fmtINR(sp.standardUnitCost)}</div>
-      </div>
-      <div class="li-right flex items-center gap-12">
-        ${activeToggle('spareParts', sp.id, sp.isActive !== false)}
-      </div>
-    </div>`;
-}
-
-function openSpareModal(id) {
-  const sp = id ? S.spareParts.find(x => x.id === id) : null;
-
-  openModal(`
-    <div class="modal-title">${sp ? 'Edit Spare Part' : 'Add Spare Part'}</div>
-    <div id="modal-err"></div>
-
-    <div class="f">
-      <label for="spf-code" class="f-req">Item Code</label>
-      <input type="text" id="spf-code" value="${sp?.itemCode || ''}" style="text-transform:uppercase"
-             oninput="this.value=this.value.toUpperCase()" placeholder="e.g. BRG-6204">
-    </div>
-    <div class="f">
-      <label for="spf-name" class="f-req">Spare Part Name</label>
-      <input type="text" id="spf-name" value="${sp?.name || ''}" placeholder="e.g. Ball Bearing 6204">
-    </div>
-    <div class="row-2">
-      <div class="f">
-        <label for="spf-unit" class="f-req">Unit</label>
-        <input type="text" id="spf-unit" value="${sp?.unit || ''}" placeholder="e.g. Nos, Metres, Kg">
-      </div>
-      <div class="f">
-        <label for="spf-cost" class="f-req">Standard Cost (₹)</label>
-        <input type="number" id="spf-cost" value="${sp?.standardUnitCost ?? ''}" min="0" step="0.01">
-      </div>
-    </div>
-    <div class="utog">
-      <span class="utog-label">Active</span>
-      <label class="tsw">
-        <input type="checkbox" id="spf-active" ${sp?.isActive !== false ? 'checked' : ''}>
-        <span class="tsl"></span>
-      </label>
-    </div>
-
-    ${modalActions('Save Spare Part', `saveSpare(${sp ? `'${sp.id}'` : 'null'})`)}
-  `);
-}
-
-async function saveSpare(id) {
-  const itemCode = getField('spf-code');
-  const name = getField('spf-name');
-  const unit = getField('spf-unit');
-  const standardUnitCost = Number(getField('spf-cost'));
-  const isActive = document.getElementById('spf-active').checked;
-
-  if (!itemCode || !name || !unit || !getField('spf-cost')) {
-    showModalError('Item Code, Spare Part Name, Unit and Standard Cost are required.');
-    return;
-  }
-
-  const data = { itemCode, name, unit, standardUnitCost, isActive };
-  try {
-    if (id) {
-      const before = S.spareParts.find(x => x.id === id);
-      await db.collection('spareParts').doc(id).update(data);
-      await logAudit('UPDATE_SPARE_PART', 'MASTERS', id, before, data);
-    } else {
-      const ref = await db.collection('spareParts').add({
-        ...data, createdAt: serverTS(), createdBy: S.sess.userId
-      });
-      await logAudit('CREATE_SPARE_PART', 'MASTERS', ref.id, null, data);
-    }
-    closeModal();
-    await refreshCollection('spareParts');
-    renderSection();
-    toast('Saved successfully');
-  } catch (e) {
-    showModalError(e.message);
-  }
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   SECTION 9 — SHIFTS
+   SECTION 8 — SHIFTS
    Collection: config, doc: shifts — single document, edited as 3 cards.
    ══════════════════════════════════════════════════════════════════════ */
 function renderShifts() {

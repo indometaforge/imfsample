@@ -70,8 +70,6 @@ const S = {
   partOps:    [],      /* { partId, opId, seqNo, cycleTimeSecs, isMandatory, finalOperation, workCenterType } */
   customers:  [],
   suppliers:  [],
-  defectCodes:[],
-  spareParts: [],
   shifts:     {
     s1: { label: 'Shift 1', start: '06:30', end: '15:00' },
     s2: { label: 'Shift 2', start: '15:00', end: '23:30' },
@@ -260,7 +258,7 @@ const canView = (action) => getPerm(action) !== 'hidden';
 async function loadMasters() {
   const [
     usersSnap, machinesSnap, partsSnap, opsSnap, partOpsSnap,
-    custsSnap, suppsSnap, defectsSnap, sparesSnap, shiftDoc
+    custsSnap, suppsSnap, shiftDoc
   ] = await Promise.all([
     db.collection('users').get(),
     db.collection('machines').get(),
@@ -269,8 +267,6 @@ async function loadMasters() {
     db.collection('partOps').get(),
     db.collection('customers').get(),
     db.collection('suppliers').get(),
-    db.collection('defectCodes').get(),
-    db.collection('spareParts').get(),
     db.collection('config').doc('shifts').get()
   ]);
 
@@ -281,8 +277,6 @@ async function loadMasters() {
   S.partOps     = partOpsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   S.customers   = custsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   S.suppliers   = suppsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-  S.defectCodes = defectsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-  S.spareParts  = sparesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
   if (shiftDoc.exists) S.shifts = shiftDoc.data();
 }
