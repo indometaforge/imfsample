@@ -144,10 +144,7 @@ const sbdg = (s) => ({ soft: 'bdg-soft', ht: 'bdg-ht', hard: 'bdg-hard' }[s] || 
 
 /** Role display label */
 const rlbl = (r) => ({
-  admin: 'Admin', supervisor: 'Supervisor', operator: 'Operator',
-  manager: 'Manager', dispatch: 'Dispatch', store: 'Store',
-  production: 'Production', qc: 'Quality Control', maintenance: 'Maintenance',
-  plant_head: 'Plant Head', quality_hod: 'Quality HOD'
+  admin: 'Admin', supervisor: 'Supervisor', operator: 'Operator', hod: 'HOD'
 }[r] || r || '—');
 
 /** Initials from name */
@@ -181,71 +178,60 @@ const clearSess = () => sessionStorage.removeItem(SESS_KEY);
    ══════════════════════════════════════════════════════════════════════ */
 
 /**
- * Permission map — defines what each role can do.
+ * Permission model — roles are: operator, supervisor, hod, admin.
+ * A user's department/stage (DEPT_STAGES in masters.js) determines which
+ * module is their "home area"; their role determines how much access they
+ * get to it (and to cross-cutting actions like reports/approvals).
  * Values: 'full' | 'view' | 'hidden'
  */
+const STAGE_PERM_AREA = {
+  soft: 'production', hard: 'production', general: 'production', ht: 'ht',
+  store: 'inward', qc: 'qc', dispatch: 'dispatch', maintenance: 'maintenance',
+};
+
 const PERMS = {
-  plant_head: {
-    masters: 'view', inward: 'view', requisition_approve: 'full',
-    production: 'view', ht: 'view', qc: 'view',
-    maintenance: 'view', spares_approve: 'full',
-    deviation_approve: 'full', dispatch: 'view', reports: 'full',
-    breakdown_report: 'hidden'
-  },
   admin: {
     masters: 'full', inward: 'full', requisition_approve: 'full',
     production: 'full', ht: 'full', qc: 'full',
     maintenance: 'full', spares_approve: 'full',
     deviation_approve: 'full', dispatch: 'full', reports: 'full',
     breakdown_report: 'full'
-  },
-  supervisor: {
-    masters: 'hidden', inward: 'hidden', requisition_approve: 'hidden',
-    production: 'full', ht: 'full', qc: 'hidden',
-    maintenance: 'hidden', spares_approve: 'hidden',
-    deviation_approve: 'hidden', dispatch: 'hidden', reports: 'view',
-    breakdown_report: 'full'
-  },
-  store: {
-    masters: 'hidden', inward: 'full', requisition_approve: 'hidden',
-    production: 'hidden', ht: 'hidden', qc: 'hidden',
-    maintenance: 'hidden', spares_approve: 'hidden',
-    deviation_approve: 'hidden', dispatch: 'hidden', reports: 'hidden',
-    breakdown_report: 'hidden'
-  },
-  qc: {
-    masters: 'hidden', inward: 'hidden', requisition_approve: 'hidden',
-    production: 'view', ht: 'view', qc: 'full',
-    maintenance: 'hidden', spares_approve: 'hidden',
-    deviation_approve: 'hidden', dispatch: 'hidden', reports: 'view',
-    breakdown_report: 'hidden'
-  },
-  quality_hod: {
-    masters: 'hidden', inward: 'hidden', requisition_approve: 'hidden',
-    production: 'view', ht: 'view', qc: 'full',
-    maintenance: 'hidden', spares_approve: 'hidden',
-    deviation_approve: 'hidden', dispatch: 'hidden', reports: 'full',
-    breakdown_report: 'hidden'
-  },
-  maintenance: {
-    masters: 'hidden', inward: 'hidden', requisition_approve: 'hidden',
-    production: 'hidden', ht: 'hidden', qc: 'hidden',
-    maintenance: 'full', spares_approve: 'hidden',
-    deviation_approve: 'hidden', dispatch: 'hidden', reports: 'view',
-    breakdown_report: 'hidden'
-  },
-  dispatch: {
-    masters: 'hidden', inward: 'hidden', requisition_approve: 'hidden',
-    production: 'hidden', ht: 'hidden', qc: 'hidden',
-    maintenance: 'hidden', spares_approve: 'hidden',
-    deviation_approve: 'hidden', dispatch: 'full', reports: 'view',
-    breakdown_report: 'hidden'
   }
 };
 
 const getPerm = (action) => {
-  const role = S.sess?.role || '';
-  return (PERMS[role] || {})[action] || 'hidden';
+  const role  = S.sess?.role  || '';
+  const stage = S.sess?.stage || 'general';
+
+  if (role === 'admin') return PERMS.admin[action] || 'hidden';
+
+  const area = STAGE_PERM_AREA[stage] || 'production';
+
+  if (role === 'hod') {
+    if (action === area) return 'full';
+    if (action === 'reports') return 'full';
+    if (action === 'breakdown_report') return 'full';
+    if (action === 'requisition_approve' && area === 'inward') return 'full';
+    if (action === 'spares_approve' && area === 'maintenance') return 'full';
+    if (action === 'deviation_approve' && area === 'qc') return 'full';
+    if ((action === 'production' || action === 'ht') && (area === 'production' || area === 'ht')) return 'view';
+    return 'hidden';
+  }
+
+  if (role === 'supervisor') {
+    if (action === area) return 'full';
+    if (action === 'reports') return 'view';
+    if (action === 'breakdown_report') return 'full';
+    if ((action === 'production' || action === 'ht') && (area === 'production' || area === 'ht')) return 'view';
+    return 'hidden';
+  }
+
+  if (role === 'operator') {
+    if (action === area) return 'view';
+    return 'hidden';
+  }
+
+  return 'hidden';
 };
 
 const canDo = (action) => getPerm(action) === 'full';

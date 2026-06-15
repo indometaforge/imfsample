@@ -953,7 +953,7 @@ async function saveCustomer(id) {
 
 /* ══════════════════════════════════════════════════════════════════════
    SECTION 5 — SUPPLIERS
-   Collection: suppliers (name, code, defaultMatGrade, contactInfo)
+   Collection: suppliers (name, code, contactPerson, contactPhone)
    ══════════════════════════════════════════════════════════════════════ */
 function renderSuppliers() {
   const q = searchQ.trim().toLowerCase();
@@ -977,7 +977,7 @@ function supplierRow(s) {
       <div class="li-ic"><i class="ti ti-truck-delivery" aria-hidden="true"></i></div>
       <div class="li-body">
         <div class="li-name">${s.name || '—'}</div>
-        <div class="li-sub">${s.code || '—'}${s.defaultMatGrade ? ' · ' + s.defaultMatGrade : ''}</div>
+        <div class="li-sub">${s.code || '—'}${s.contactPerson ? ' · ' + s.contactPerson : ''}${s.contactPhone ? ' · ' + s.contactPhone : ''}</div>
       </div>
     </div>`;
 }
@@ -998,13 +998,15 @@ function openSupplierModal(id) {
       <input type="text" id="sf-code" value="${s?.code || ''}" style="text-transform:uppercase"
              oninput="this.value=this.value.toUpperCase()" placeholder="e.g. SRI">
     </div>
-    <div class="f">
-      <label for="sf-mat">Default Material Grade (e.g. 20MnCr5)</label>
-      <input type="text" id="sf-mat" value="${s?.defaultMatGrade || ''}" placeholder="e.g. 20MnCr5">
-    </div>
-    <div class="f">
-      <label for="sf-contact">Contact Info</label>
-      <textarea id="sf-contact" placeholder="Phone, email, address...">${s?.contactInfo || ''}</textarea>
+    <div class="row-2">
+      <div class="f">
+        <label for="sf-contact-name">Contact Person</label>
+        <input type="text" id="sf-contact-name" value="${s?.contactPerson || ''}" placeholder="e.g. Ramesh Patil">
+      </div>
+      <div class="f">
+        <label for="sf-contact-phone">Contact Phone Number</label>
+        <input type="tel" id="sf-contact-phone" value="${s?.contactPhone || ''}" placeholder="e.g. 9876543210">
+      </div>
     </div>
 
     ${modalActions('Save Supplier', `saveSupplier(${s ? `'${s.id}'` : 'null'})`)}
@@ -1030,15 +1032,15 @@ async function deleteSupplier(id) {
 async function saveSupplier(id) {
   const name = getField('sf-name');
   const code = getField('sf-code');
-  const defaultMatGrade = getField('sf-mat');
-  const contactInfo = document.getElementById('sf-contact').value.trim();
+  const contactPerson = getField('sf-contact-name');
+  const contactPhone = getField('sf-contact-phone');
 
   if (!name || !code) {
     showModalError('Supplier Name and Supplier Code are required.');
     return;
   }
 
-  const data = { name, code, defaultMatGrade, contactInfo };
+  const data = { name, code, contactPerson, contactPhone };
   try {
     if (id) {
       const before = S.suppliers.find(x => x.id === id);
@@ -1168,13 +1170,13 @@ async function savePersonnel(id) {
 /* ══════════════════════════════════════════════════════════════════════
    SECTION 7 — USER ACCESS
    Collection: users — docs where appUser !== false
-   App logins for supervisors, managers, dispatch, store, admin, etc.
-   Full fields: name, role, stage, email, isHOD, permissions{plan,actual,reports}.
+   App logins for operators, supervisors, HODs and admins.
+   Full fields: name, role, stage, email, permissions{plan,actual,reports}.
+   Role is one of: operator, supervisor, hod, admin — combined with the
+   department/stage (DEPT_STAGES) this fully describes the user (e.g.
+   role=hod + stage=qc = "Quality HOD"). No separate HOD toggle needed.
    ══════════════════════════════════════════════════════════════════════ */
-const USER_ROLES = [
-  'admin', 'plant_head', 'supervisor', 'store',
-  'qc', 'quality_hod', 'maintenance', 'dispatch',
-];
+const USER_ROLES = ['operator', 'supervisor', 'hod', 'admin'];
 
 const PERM_LEVELS = [
   { v: 'full', l: 'Full' }, { v: 'view', l: 'View' }, { v: 'hidden', l: 'Hidden' },
@@ -1204,7 +1206,7 @@ function userAccessRow(u) {
     <div class="li" onclick="openUserAccessModal('${u.id}')">
       <div class="li-ic" style="font-size:12px;font-weight:700">${initials(u.name || u.email || '?')}</div>
       <div class="li-body">
-        <div class="li-name">${u.name || '—'}${u.isHOD ? ' <span class="bdg bdg-n">HOD</span>' : ''}</div>
+        <div class="li-name">${u.name || '—'}</div>
         <div class="li-sub">${u.email || '—'}</div>
       </div>
       <div class="li-right flex items-center gap-12">
@@ -1270,13 +1272,6 @@ function openUserAccessModal(id) {
         </select>
       </div>
     </div>
-    <div class="utog">
-      <span class="utog-label">Department Head (HOD)</span>
-      <label class="tsw">
-        <input type="checkbox" id="uf-hod" ${u?.isHOD ? 'checked' : ''}>
-        <span class="tsl"></span>
-      </label>
-    </div>
     <div class="f">
       <label>Permissions</label>
       <div class="row-2">
@@ -1336,7 +1331,6 @@ async function saveUserAccess(id) {
   const email = getField('uf-email');
   const role  = document.getElementById('uf-role').value;
   const stage = document.getElementById('uf-stage').value;
-  const isHOD = document.getElementById('uf-hod').checked;
   const permissions = {
     plan:    document.getElementById('uf-perm-plan').value,
     actual:  document.getElementById('uf-perm-actual').value,
@@ -1350,10 +1344,10 @@ async function saveUserAccess(id) {
 
   try {
     if (id) {
-      /* Edit: name, email, role, stage, isHOD, permissions — Firestore record only.
+      /* Edit: name, email, role, stage, permissions — Firestore record only.
          Does NOT change the Firebase Auth login email/password; see passNote above. */
       const before = S.users.find(x => x.id === id);
-      const data = { name, email, role, stage, isHOD, permissions };
+      const data = { name, email, role, stage, permissions };
       await db.collection('users').doc(id).update(data);
       await logAudit('UPDATE_USER', 'MASTERS', id, before, data);
     } else {
@@ -1378,7 +1372,7 @@ async function saveUserAccess(id) {
         await secondaryApp.delete();
       }
 
-      const data = { name, email, role, stage, isHOD, permissions, appUser: true };
+      const data = { name, email, role, stage, permissions, appUser: true };
       await db.collection('users').doc(newUid).set({
         ...data, createdAt: serverTS(), createdBy: S.sess.userId
       });
