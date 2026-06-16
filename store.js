@@ -33,14 +33,14 @@ let _issTags     = [];  /* [{tagId, qty, issueDate}] */
 let _issBatchCode = '';
 
 const TABS = [
-  { key: 'inward',       label: 'Inward',        icon: 'ti-package-import' },
-  { key: 'requisitions', label: 'Requisitions',  icon: 'ti-clipboard-list' },
-  { key: 'approvals',    label: 'Approvals',     icon: 'ti-checklist',     show: () => canDo('requisition_approve') },
-  { key: 'issue',        label: 'Issue to WIP',  icon: 'ti-scan',          show: () => canDo('inward') },
-  { key: 'stock',        label: 'Stock Balance', icon: 'ti-chart-pie' },
-  { key: 'routeCards',   label: 'Route Cards',   icon: 'ti-tags' },
-  { key: 'tags',         label: 'TAG Registry',  icon: 'ti-qrcode',        show: () => S.sess?.role === 'admin' },
+  { key: 'inward',     label: 'Inward',        icon: 'ti-package-import' },
+  { key: 'issue',      label: 'Issue to WIP',  icon: 'ti-scan',   show: () => canDo('inward') },
+  { key: 'stock',      label: 'Stock Balance', icon: 'ti-chart-pie' },
+  { key: 'routeCards', label: 'Route Cards',   icon: 'ti-tags' },
+  { key: 'tags',       label: 'TAG Registry',  icon: 'ti-qrcode', show: () => S.sess?.role === 'admin' },
 ];
+/* NOTE: Requisitions tab moved → Production module (production guys initiate requests).
+         Approvals tab moved → centralized Approvals page (approvals.html, built separately). */
 
 /* ══════════════════════════════════════════════════════════════════════
    INIT
@@ -1227,14 +1227,46 @@ function renderStock() {
     if (lots[rc.masterLotCode]) lots[rc.masterLotCode].issued += (+rc.issuedQty || 0);
   });
 
+  /* Summary calculations */
+  const lotEntries = Object.values(lots);
+  const totalAvailable = lotEntries.reduce((s, { rec, issued }) => {
+    const total = (rec.parts || []).reduce((a, p) => a + (+p.qty || 0), 0) || (+rec.qty || 0);
+    return s + Math.max(0, total - issued);
+  }, 0);
+  const totalReceived = lotEntries.reduce((s, { rec }) => {
+    const total = (rec.parts || []).reduce((a, p) => a + (+p.qty || 0), 0) || (+rec.qty || 0);
+    return s + total;
+  }, 0);
+  /* Unique components: distinct partId (or partName as fallback) across all inward parts */
+  const uniqueParts = new Set();
+  S.inward.forEach(r => (r.parts || []).forEach(p => uniqueParts.add(p.partId || p.partName)));
+  const uniqueCount = uniqueParts.size;
+
   document.getElementById('section-content').innerHTML = `
     <div style="font-size:16px;font-weight:700;margin-bottom:12px">Stock Balance</div>
-    ${Object.keys(lots).length ? '' : emptyState('ti-chart-pie', 'No stock yet', 'Add inward receipts to start tracking stock.')}
+    ${lotEntries.length ? `
+      <div class="stats-3" style="margin-bottom:14px">
+        <div class="stat-card ok">
+          <div class="stat-lbl">Available</div>
+          <div class="stat-val">${totalAvailable}</div>
+          <div class="stat-sub">pcs in store</div>
+        </div>
+        <div class="stat-card info">
+          <div class="stat-lbl">Total Received</div>
+          <div class="stat-val">${totalReceived}</div>
+          <div class="stat-sub">pcs (all time)</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-lbl">Component Types</div>
+          <div class="stat-val">${uniqueCount}</div>
+          <div class="stat-sub">unique varieties</div>
+        </div>
+      </div>` : emptyState('ti-chart-pie', 'No stock yet', 'Add inward receipts to start tracking stock.')}
     <div id="stock-body"></div>
   `;
 
   const bySup = {};
-  Object.values(lots).forEach(({ rec, issued }) => {
+  lotEntries.forEach(({ rec, issued }) => {
     const sn = rec.supplierName || 'Unknown';
     if (!bySup[sn]) bySup[sn] = [];
     const total = (rec.parts || []).reduce((s, p) => s + (+p.qty || 0), 0) || (+rec.qty || 0);
@@ -1316,15 +1348,16 @@ function renderRouteCards() {
 
 function routeCardRow(rc) {
   const lastOp = rc.opHistory && rc.opHistory.length ? rc.opHistory[rc.opHistory.length - 1] : null;
+  const canDelete = S.sess?.email === 'tanmay@indometaforge.in';
   return `
     <div class="card" style="margin-bottom:10px">
       <div class="flex justify-between items-center mb-8">
-        <div>
+        <div style="flex:1;min-width:0">
           <div class="mono font-bold" style="font-size:14px;color:var(--imf-navy)">${rc.tagId}</div>
           <div style="font-weight:600;font-size:13px;margin-top:2px">${rc.partName || '—'}</div>
           <div class="text-sm text-muted">${rc.partNo || ''}${rc.customerName ? ' · ' + rc.customerName : ''}</div>
         </div>
-        <div style="text-align:right">
+        <div style="text-align:right;flex-shrink:0">
           <span class="bdg ${RC_BADGE[rc.status] || 'bdg-gr'}"><span class="bdg-dot"></span>${RC_LABEL[rc.status] || rc.status}</span>
           <div class="font-num mt-4" style="font-size:15px">${rc.currentQty} pcs</div>
         </div>
@@ -1333,7 +1366,81 @@ function routeCardRow(rc) {
       ${rc.heatCode ? `<div class="text-xs mb-4" style="color:var(--ok)"><i class="ti ti-flame" aria-hidden="true"></i> Heat: ${rc.heatCode}</div>` : ''}
       ${lastOp ? `<div class="text-sm text-muted">Last op: ${lastOp.opName} · ${fmtDate(lastOp.date)}</div>` : ''}
       <div class="text-sm text-muted mt-4">Issued: ${fmtDate(rc.issueDate)} · ${rc.issuedByName || '—'}</div>
+      ${canDelete ? `
+        <button class="btn btn-d btn-sm w-full mt-8" onclick="confirmDeleteRouteCard('${rc.tagId}')">
+          <i class="ti ti-trash" aria-hidden="true"></i> Delete Route Card
+        </button>` : ''}
     </div>`;
+}
+
+function confirmDeleteRouteCard(tagId) {
+  const rc = S.routeCards.find(x => x.tagId === tagId || x.id === tagId);
+  if (!rc) return;
+  openModal(`
+    <div class="modal-title" style="color:var(--err)"><i class="ti ti-alert-triangle"></i> Delete Route Card</div>
+    <div class="ebox mb-12">
+      <i class="ti ti-alert-triangle" aria-hidden="true"></i>
+      <span>This will permanently delete <strong>${tagId}</strong> and reverse all its issued quantity back to store stock. All process history on this card will be lost. This cannot be undone.</span>
+    </div>
+    <div style="background:var(--sur2);border-radius:var(--rs);padding:10px 12px;margin-bottom:14px">
+      <div class="text-sm"><strong>Part:</strong> ${rc.partName} (${rc.partNo})</div>
+      <div class="text-sm"><strong>Qty:</strong> ${rc.issuedQty} pcs</div>
+      <div class="text-sm"><strong>Status:</strong> ${RC_LABEL[rc.status] || rc.status}</div>
+      <div class="text-sm"><strong>Batch:</strong> <span class="mono">${rc.batchCode}</span></div>
+    </div>
+    <div class="f">
+      <label for="del-rc-reason" class="f-req">Reason for deletion</label>
+      <input id="del-rc-reason" type="text" placeholder="e.g. Entered by mistake, duplicate issue...">
+    </div>
+    <div class="flex gap-8 mt-16">
+      <button class="btn btn-d flex-1" onclick="deleteRouteCard('${tagId}')">
+        <i class="ti ti-trash" aria-hidden="true"></i> Confirm Delete
+      </button>
+      <button class="btn btn-s flex-1" onclick="closeModal()">Cancel</button>
+    </div>
+  `);
+}
+
+async function deleteRouteCard(tagId) {
+  const reason = getField('del-rc-reason');
+  if (!reason) { showModalError('Please enter a reason for deletion.'); return; }
+
+  const rc = S.routeCards.find(x => x.tagId === tagId || x.id === tagId);
+  if (!rc) { showModalError('Route card not found.'); return; }
+
+  try {
+    const batch = db.batch();
+
+    /* Delete the route card doc */
+    batch.delete(db.collection('routeCards').doc(tagId));
+
+    /* Reverse qtyIssued on the requisition line so stock falls back to store */
+    if (rc.requisitionId && rc.lineNo != null) {
+      const req = S.requisitions.find(r => r.id === rc.requisitionId);
+      if (req) {
+        const updatedLines = req.lines.map(l => {
+          if (l.lineNo !== rc.lineNo) return l;
+          return { ...l, qtyIssued: Math.max(0, (+l.qtyIssued || 0) - (+rc.issuedQty || 0)) };
+        });
+        const allFulfilled = updatedLines.every(l => l.qtyIssued >= l.qtyApproved);
+        const anyIssued    = updatedLines.some(l => l.qtyIssued > 0);
+        const newStatus    = allFulfilled ? 'fulfilled' : anyIssued ? 'partial' : 'approved';
+        batch.update(db.collection('requisitions').doc(rc.requisitionId), {
+          lines: updatedLines, status: newStatus, updatedAt: serverTS()
+        });
+      }
+    }
+
+    await batch.commit();
+    await logAudit('DELETE_ROUTE_CARD', 'STORE', tagId, rc, { reason, deletedBy: S.sess.email });
+
+    closeModal();
+    await Promise.all([refreshStore('routeCards'), refreshStore('requisitions')]);
+    renderSection();
+    toast(`${tagId} deleted — qty returned to store stock`);
+  } catch (e) {
+    showModalError(e.message);
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════

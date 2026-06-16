@@ -10,10 +10,11 @@
 /* ══════════════════════════════════════════════════════════════════════
    STATE
    ══════════════════════════════════════════════════════════════════════ */
-let activeTab    = 'machines';
-let searchQ      = '';
-let filterStage  = 'all';   /* 'all' or a stage/department value */
-let expandedPart = null;   /* partId whose routing panel is open */
+let activeTab      = 'machines';
+let searchQ        = '';
+let filterStage    = 'all';   /* 'all' or a stage/department value */
+let expandedPart   = null;    /* partId whose routing panel is open */
+let _partCustFilter = '';     /* customer filter for Parts & Routing */
 
 const TABS = [
   { key: 'machines',   label: 'Machines',      icon: 'ti-engine' },
@@ -381,17 +382,30 @@ function partCustomer(p) {
 function renderParts() {
   const q = searchQ.trim().toLowerCase();
   let list = S.parts.filter(p => {
-    if (!q) return true;
     const cust = partCustomer(p);
+    if (_partCustFilter && (p.custId || p.cust) !== _partCustFilter &&
+        cust?.id !== _partCustFilter) return false;
+    if (!q) return true;
     return (p.no   || '').toLowerCase().includes(q)
         || (p.name || '').toLowerCase().includes(q)
         || (cust?.name || '').toLowerCase().includes(q);
   });
   list = list.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
+  const custOpts = S.customers.slice()
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+    .map(c => `<option value="${c.id}" ${_partCustFilter === c.id ? 'selected' : ''}>${c.name}</option>`)
+    .join('');
+
   document.getElementById('section-content').innerHTML = `
     ${sectionHeader('Parts & Routing', 'Add Part', 'openPartModal()')}
     ${searchBox('Search parts...')}
+    <div class="f" style="margin-bottom:10px">
+      <select onchange="_partCustFilter=this.value;expandedPart=null;renderParts()" style="font-size:13px">
+        <option value="">All Customers</option>
+        ${custOpts}
+      </select>
+    </div>
     ${recordCount(list.length)}
     ${list.length
       ? list.map(partRow).join('')
@@ -437,7 +451,7 @@ function routingPanel(p) {
     <div class="card" style="margin-top:-4px">
       <div class="card-hd">Operations Routing — ${p.name || p.id}</div>
       ${rows.length
-        ? rows.map(routingRow).join('')
+        ? rows.map((po, i) => routingRow(po, i + 1, rows.length)).join('')
         : '<div class="text-muted text-sm mb-12">No routing defined for this part yet.</div>'}
       <button class="btn btn-add w-full mt-12" onclick="openRoutingModal('${p.id}')">
         <i class="ti ti-plus" aria-hidden="true"></i> Add Operation to Routing
@@ -445,14 +459,14 @@ function routingPanel(p) {
     </div>`;
 }
 
-function routingRow(po) {
+function routingRow(po, stepNum, totalSteps) {
   const op   = S.operations.find(o => o.id === po.opId);
   const mins = ((po.cycleTimeSecs || 0) / 60).toFixed(2);
   return `
     <div class="rrow">
       <div class="flex-1">
         <div style="font-weight:600;font-size:13px">
-          <span class="bdg bdg-n">#${po.seqNo ?? '—'}</span> ${op?.name || po.opId}
+          <span class="bdg bdg-n">Step ${stepNum}/${totalSteps}</span> ${op?.name || po.opId}
         </div>
         <div class="li-sub mt-8">
           ${po.cycleTimeSecs ?? 0} sec/pc · ${mins} min/pc
@@ -559,15 +573,26 @@ async function savePart(id) {
 
 function openRoutingModal(partId, poId) {
   const po = poId ? S.partOps.find(x => x.id === poId) : null;
-  const siblingSeqs = S.partOps
+  const siblings = S.partOps
     .filter(x => x.partId === partId && x.id !== poId)
-    .map(x => x.seqNo || 0);
-  const suggestedSeq = siblingSeqs.length ? Math.max(...siblingSeqs) + 10 : 10;
+    .sort((a, b) => (a.seqNo || 0) - (b.seqNo || 0));
+  const siblingSeqs = siblings.map(x => x.seqNo || 0);
+  const autoSeq = siblingSeqs.length ? Math.max(...siblingSeqs) + 10 : 10;
+  const isAdd = !po;
+  const stepNum = isAdd ? siblings.length + 1 : (siblings.filter(s => (s.seqNo || 0) < (po.seqNo || 0)).length + 1);
+  const totalSteps = siblings.length + (isAdd ? 1 : 0);
   const opOpts = S.operations.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const cycleVal = po?.cycleTimeSecs ?? '';
 
+  // Build reorder options for edit mode (swap positions with siblings)
+  const reorderOpts = isAdd ? '' : siblings.map((s, i) => {
+    const op = S.operations.find(o => o.id === s.opId);
+    const pos = i + 1;
+    return `<option value="${s.seqNo}" ${pos === stepNum - 1 ? 'selected' : ''}>Step ${pos} — before ${op?.name || s.opId}</option>`;
+  }).join('');
+
   openModal(`
-    <div class="modal-title">${po ? 'Edit Routing Step' : 'Add Operation to Routing'}</div>
+    <div class="modal-title">${isAdd ? 'Add Operation to Routing' : 'Edit Routing Step'}</div>
     <div id="modal-err"></div>
 
     <div class="f">
@@ -577,19 +602,30 @@ function openRoutingModal(partId, poId) {
         ${buildOpts(opOpts, 'id', x => x.name, po?.opId || '')}
       </select>
     </div>
-    <div class="row-2">
-      <div class="f">
-        <label for="rf-seq" class="f-req">Sequence No.</label>
-        <input type="number" id="rf-seq" value="${po?.seqNo ?? suggestedSeq}">
-      </div>
-      <div class="f">
-        <label for="rf-wc" class="f-req">Work Center</label>
-        <select id="rf-wc">
-          ${buildOpts([
-            { v: 'soft', l: 'Soft' }, { v: 'hard', l: 'Hard' }, { v: 'ht', l: 'Heat Treatment' },
-          ], 'v', x => x.l, po?.workCenterType || 'soft')}
-        </select>
-      </div>
+
+    ${isAdd
+      ? `<div class="ibox" style="background:var(--acc3,#eef2ff);border-color:var(--acc2,#c7d2fe);margin-bottom:4px;font-size:12.5px">
+           <i class="ti ti-sort-ascending-numbers"></i>
+           Step position: <strong>Step ${stepNum} of ${totalSteps}</strong> — assigned automatically
+           <input type="hidden" id="rf-seq" value="${autoSeq}">
+         </div>`
+      : `<div class="f">
+           <label for="rf-seq-reorder">Step Order</label>
+           <select id="rf-seq-reorder" onchange="document.getElementById('rf-seq').value=this.value">
+             <option value="${po.seqNo}">Keep at Step ${stepNum} of ${totalSteps} (current)</option>
+             ${reorderOpts}
+             <option value="${Math.max(...[...siblingSeqs, po.seqNo]) + 10}">Move to last</option>
+           </select>
+           <input type="hidden" id="rf-seq" value="${po.seqNo}">
+         </div>`}
+
+    <div class="f">
+      <label for="rf-wc" class="f-req">Work Center</label>
+      <select id="rf-wc">
+        ${buildOpts([
+          { v: 'soft', l: 'Soft' }, { v: 'hard', l: 'Hard' }, { v: 'ht', l: 'Heat Treatment' },
+        ], 'v', x => x.l, po?.workCenterType || 'soft')}
+      </select>
     </div>
     <div class="f">
       <label for="rf-cycle" class="f-req">Cycle Time (seconds per piece)</label>
@@ -835,16 +871,20 @@ function customerRow(c) {
     const [cls, label] = STREAM_BADGE[s] || ['bdg-gr', s];
     return `<span class="bdg ${cls}">${label}</span>`;
   }).join(' ');
+  const partsCount = S.parts.filter(p => p.custId === c.id || p.cust === c.code || p.cust === c.name).length;
 
   return `
-    <div class="li" onclick="openCustomerModal('${c.id}')">
-      <div class="li-ic"><i class="ti ti-building" aria-hidden="true"></i></div>
-      <div class="li-body">
+    <div class="li">
+      <div class="li-ic" onclick="openCustomerModal('${c.id}')" style="cursor:pointer"><i class="ti ti-building" aria-hidden="true"></i></div>
+      <div class="li-body" onclick="openCustomerModal('${c.id}')" style="cursor:pointer">
         <div class="li-name">${c.name || '—'}</div>
-        <div class="li-sub">${c.code || '—'}</div>
+        <div class="li-sub">${c.code || '—'} · ${partsCount} part${partsCount !== 1 ? 's' : ''}</div>
       </div>
-      <div class="li-right flex items-center gap-12">
+      <div class="li-right flex items-center gap-8">
         <div class="flex gap-8">${streams}</div>
+        <button class="btn btn-s btn-sm" onclick="event.stopPropagation();openMergeModal('${c.id}')" title="Merge into another customer">
+          <i class="ti ti-git-merge" aria-hidden="true"></i> Merge
+        </button>
       </div>
     </div>`;
 }
@@ -909,6 +949,98 @@ async function deleteCustomer(id) {
     toast('Customer deleted');
   } catch (e) {
     showModalError(e.message);
+  }
+}
+
+/* ── CUSTOMER MERGE ───────────────────────────────────────────────── */
+function openMergeModal(deleteId) {
+  const del = S.customers.find(x => x.id === deleteId);
+  if (!del) return;
+  const others = S.customers
+    .filter(c => c.id !== deleteId)
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const opts = others.map(c => `<option value="${c.id}">${c.name} (${c.code || '—'})</option>`).join('');
+
+  openModal(`
+    <div class="modal-title"><i class="ti ti-git-merge"></i> Merge Customer</div>
+    <div id="modal-err"></div>
+    <p style="font-size:13px;color:var(--txt-muted);margin-bottom:12px">
+      All parts, inward records, and route cards linked to
+      <strong>${del.name}</strong> will be moved to the customer you select below,
+      then <strong>${del.name}</strong> will be deleted.
+    </p>
+    <div class="f">
+      <label class="f-req">Keep this customer (merge INTO)</label>
+      <select id="mg-keep">
+        <option value="">— Select customer to keep —</option>
+        ${opts}
+      </select>
+    </div>
+    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rs);padding:10px 12px;margin:10px 0;font-size:12px;color:#991b1b">
+      ⚠ This cannot be undone. Check carefully before confirming.
+    </div>
+    <div style="display:flex;gap:8px;margin-top:4px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
+      <button class="btn" style="flex:1;background:#dc2626;color:#fff;border-color:#dc2626"
+        onclick="confirmMergeCustomer('${deleteId}')">Merge &amp; Delete</button>
+    </div>
+  `);
+}
+
+async function confirmMergeCustomer(deleteId) {
+  const keepId = document.getElementById('mg-keep')?.value;
+  if (!keepId) { showModalError('Select the customer to keep.'); return; }
+
+  const keepCust = S.customers.find(x => x.id === keepId);
+  const delCust  = S.customers.find(x => x.id === deleteId);
+  if (!keepCust || !delCust) { showModalError('Customer not found.'); return; }
+
+  const btn = document.querySelector('#modal-content button[onclick^="confirmMerge"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Merging...'; }
+
+  try {
+    const batch = db.batch();
+
+    // Update parts
+    const partsToUpdate = S.parts.filter(p =>
+      p.custId === deleteId || p.cust === delCust.code || p.cust === delCust.name);
+    partsToUpdate.forEach(p => {
+      batch.update(db.collection('parts').doc(p.id), {
+        custId: keepId, cust: keepCust.code,
+      });
+    });
+
+    // Update inward records
+    const inwSnap = await db.collection('inward').where('customerId', '==', deleteId).get();
+    inwSnap.docs.forEach(d => {
+      batch.update(d.ref, { customerId: keepId, customerName: keepCust.name });
+    });
+
+    // Update route cards
+    const rcSnap = await db.collection('routeCards').where('customerId', '==', deleteId).get();
+    rcSnap.docs.forEach(d => {
+      batch.update(d.ref, { customerId: keepId, customerName: keepCust.name });
+    });
+
+    // Delete the duplicate customer doc
+    batch.delete(db.collection('customers').doc(deleteId));
+
+    await batch.commit();
+    await logAudit('MERGE_CUSTOMER', 'MASTERS', deleteId,
+      { deletedCustomer: delCust }, { mergedInto: keepId, keepName: keepCust.name });
+
+    // Refresh masters
+    await Promise.all([
+      refreshCollection('customers'),
+      refreshCollection('parts'),
+    ]);
+
+    closeModal();
+    toast(`Merged "${delCust.name}" → "${keepCust.name}" ✓`);
+    renderSection();
+  } catch (e) {
+    showModalError('Merge failed: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Merge & Delete'; }
   }
 }
 

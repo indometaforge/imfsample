@@ -20,7 +20,7 @@ const MODULES = [
 ];
 
 /** Pages that exist and are wired up. Everything else shows a "Soon" badge. */
-const BUILT = new Set(['masters', 'store']);
+const BUILT = new Set(['masters', 'store', 'production']);
 
 /* ══════════════════════════════════════════════════════════════════════
    INIT
