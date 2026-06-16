@@ -784,9 +784,10 @@ function showPartDrop(inputEl, onSelect) {
 
 function _gdropSelect(partId) {
   const p = S.parts.find(x => x.id === partId);
+  const cb = _gdropCb;
   if (p && _gdropTarget) _gdropTarget.value = p.name;
   hidePartDrop();
-  if (_gdropCb && p) _gdropCb(p);
+  if (cb && p) cb(p);
 }
 
 function hidePartDrop() {

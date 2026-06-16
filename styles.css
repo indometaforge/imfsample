@@ -1367,3 +1367,23 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
   .topbar { padding-top: env(safe-area-inset-top); height: calc(var(--topbar-h) + env(safe-area-inset-top)); }
   .sidebar { padding-top: env(safe-area-inset-top); }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   GLOBAL DROPDOWN (searchable part picker — #gdrop / .gdrop-item)
+   ══════════════════════════════════════════════════════════════════════ */
+#gdrop {
+  padding: 4px;
+}
+.gdrop-item {
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.gdrop-item:hover,
+.gdrop-item:active {
+  background: var(--imf-navy-hover);
+}
+.gdrop-item + .gdrop-item {
+  margin-top: 2px;
+}

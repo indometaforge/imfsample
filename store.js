@@ -63,8 +63,14 @@ async function init() {
   const pill = document.getElementById('role-pill');
   if (pill) pill.textContent = rlbl(S.sess.role);
 
-  await loadStoreData();
-  render();
+  try {
+    await loadStoreData();
+    render();
+  } catch (e) {
+    console.error('Store data load failed:', e);
+    toast('Error loading store data: ' + e.message, 5000);
+    render();
+  }
 
   document.getElementById('loading-screen').style.display = 'none';
   document.getElementById('app').style.display = '';
@@ -72,6 +78,11 @@ async function init() {
 
 /* Load all transactional Store collections into S */
 async function loadStoreData() {
+  S.inward = S.inward || [];
+  S.requisitions = S.requisitions || [];
+  S.routeCards = S.routeCards || [];
+  S.tagConfig = S.tagConfig || { totalPrinted: 0, lastTagNum: 0 };
+
   const [inwSnap, reqSnap, rcSnap, tagDoc] = await Promise.all([
     db.collection('inward').get(),
     db.collection('requisitions').get(),
@@ -1380,3 +1391,8 @@ async function saveTagConfig() {
     showModalError(e.message);
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   BOOT
+   ══════════════════════════════════════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', init);
