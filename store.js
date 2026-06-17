@@ -23,6 +23,12 @@ let _inwFilt = 'all';   /* supplier filter for Inward list */
 let _reqFilt = 'all';   /* status filter for Requisitions list */
 let _rcFilt  = 'all';   /* status filter for Route Cards list */
 
+let _stockSearch   = '';    /* Stock Balance search query */
+let _stockCustFilt = 'all'; /* Stock Balance customer filter */
+let _stockExpanded = {};    /* partId → bool (lot rows expanded) */
+let _rcvdPeriod    = 'all'; /* Received stat period: all|today|month|year */
+let _issdPeriod    = 'today'; /* Issued stat period: today|month|year|all */
+
 let _inwParts = [];     /* [{partId,partNo,partName,qty,rate}] — Inward modal */
 let _reqLines = [];     /* [{lineNo,partId,partNo,partName,customerId,customerName,masterLotCode,qtyRequested,qtyApproved,qtyIssued}] */
 
@@ -131,6 +137,8 @@ function switchTab(key) {
   activeTab = key;
   searchQ   = '';
   _issReq = null; _issLine = null; _issTags = []; _issBatchCode = '';
+  _stockSearch = ''; _stockCustFilt = 'all'; _stockExpanded = {};
+  _rcvdPeriod = 'all'; _issdPeriod = 'today';
   render();
 }
 
@@ -266,12 +274,16 @@ const RC_LABEL = {
 function renderInward() {
   const q = searchQ.trim().toLowerCase();
   const activeSups = S.suppliers.filter(s => s.active !== false);
+  const invPendingCount = S.inward.filter(r => r.dcNo && !r.invoiceNo && !isInterCompany(r.supplierName)).length;
 
   let list = S.inward.filter(r => {
+    if (_inwFilt === '__inv_pending__') return r.dcNo && !r.invoiceNo;
     if (_inwFilt !== 'all' && r.supplierId !== _inwFilt) return false;
     if (!q) return true;
     return (r.supplierName || '').toLowerCase().includes(q)
       || (r.masterLotCode || '').toLowerCase().includes(q)
+      || (r.dcNo || '').toLowerCase().includes(q)
+      || (r.invoiceNo || '').toLowerCase().includes(q)
       || (r.parts || []).some(p => (p.partName || '').toLowerCase().includes(q) || (p.partNo || '').toLowerCase().includes(q));
   });
   list = list.slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
@@ -279,35 +291,53 @@ function renderInward() {
   document.getElementById('section-content').innerHTML = `
     ${sectionHeader('Inward Receipts', 'Add Receipt', canDo('inward') ? 'openInwardModal()' : '')}
     <div class="row-2">
-      ${searchBox('Search by supplier, lot code or part...')}
+      ${searchBox('Search by supplier, lot code, DC or invoice...')}
       <div class="f">
-        <label for="store-filter" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap">Filter by supplier</label>
+        <label for="store-filter" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap">Filter</label>
         <select id="store-filter" onchange="_inwFilt=this.value;renderSection()">
-          <option value="all" ${_inwFilt === 'all' ? 'selected' : ''}>All Suppliers</option>
+          <option value="all" ${_inwFilt === 'all' ? 'selected' : ''}>All Receipts</option>
+          ${invPendingCount ? `<option value="__inv_pending__" ${_inwFilt === '__inv_pending__' ? 'selected' : ''}>Invoice Pending (${invPendingCount})</option>` : ''}
           ${activeSups.map(s => `<option value="${s.id}" ${s.id === _inwFilt ? 'selected' : ''}>${s.name}</option>`).join('')}
         </select>
       </div>
     </div>
+    ${invPendingCount && _inwFilt !== '__inv_pending__' ? `
+      <div onclick="_inwFilt='__inv_pending__';renderSection()" style="display:flex;align-items:center;gap:8px;background:#fef9c3;border:1px solid #fde68a;border-radius:6px;padding:8px 12px;margin-bottom:10px;cursor:pointer;font-size:12px;color:#92400e">
+        <i class="ti ti-alert-triangle"></i>
+        <span><strong>${invPendingCount}</strong> receipt${invPendingCount!==1?'s':''} awaiting invoice — tap to view</span>
+      </div>` : ''}
     ${recordCount(list.length)}
     ${list.length
       ? list.map(inwardRow).join('')
-      : emptyState('ti-package-import', 'No inward receipts found', 'Add a receipt to record material coming in from a supplier.')}
+      : emptyState('ti-package-import', 'No inward receipts found', _inwFilt === '__inv_pending__' ? 'No receipts with pending invoices.' : 'Add a receipt to record material coming in from a supplier.')}
   `;
 }
 
 function inwardRow(r) {
   const parts = r.parts || [];
   const totalPcs = parts.reduce((s, p) => s + (+p.qty || 0), 0);
+  const totalVal = parts.reduce((s, p) => s + ((+p.qty || 0) * (+p.rate || 0)), 0);
   const onclick = canDo('inward') ? `onclick="openInwardModal('${r.id}')"` : '';
+  const invPending = r.dcNo && !r.invoiceNo && !isInterCompany(r.supplierName);
+  const docLine = [
+    r.dcNo    ? `DC: ${r.dcNo}` : '',
+    r.invoiceNo ? `INV: ${r.invoiceNo}` : '',
+  ].filter(Boolean).join(' · ');
   return `
     <div class="li" ${onclick}>
-      <div class="li-ic"><i class="ti ti-package-import" aria-hidden="true"></i></div>
+      <div class="li-ic" style="${invPending ? 'background:#fef9c3;color:#92400e' : ''}">
+        <i class="ti ${invPending ? 'ti-alert-triangle' : 'ti-package-import'}" aria-hidden="true"></i>
+      </div>
       <div class="li-body">
-        <div class="li-name">${r.supplierName || '—'}</div>
-        <div class="li-sub">${fmtDate(r.date)} · ${parts.length} part type${parts.length !== 1 ? 's' : ''}${r.masterLotCode ? ' · ' + r.masterLotCode : ''}</div>
+        <div class="li-name" style="display:flex;align-items:center;gap:8px">
+          ${r.supplierName || '—'}
+          ${invPending ? `<span style="font-size:10px;font-weight:700;background:#fef9c3;color:#92400e;border:1px solid #fde68a;border-radius:4px;padding:1px 6px">Invoice Pending</span>` : ''}
+        </div>
+        <div class="li-sub">${fmtDate(r.date)} · ${parts.length} part type${parts.length !== 1 ? 's' : ''}${r.masterLotCode ? ' · ' + r.masterLotCode : ''}${docLine ? ' · ' + docLine : ''}</div>
       </div>
       <div class="li-right">
         <div class="font-num" style="font-size:15px">${totalPcs} pcs</div>
+        ${totalVal > 0 ? `<div style="font-size:11px;color:var(--txt-muted)">${fmtINR(totalVal)}</div>` : ''}
       </div>
     </div>`;
 }
@@ -361,6 +391,21 @@ function openInwardModal(id) {
     <div id="iw-parts-list"></div>
     <div id="iw-parts-total" class="text-sm mb-12" style="display:none"></div>
 
+    <div class="row-2">
+      <div class="f">
+        <label for="iw-dc">Delivery Challan No.</label>
+        <input type="text" id="iw-dc" value="${r?.dcNo || ''}" placeholder="e.g. DC/2024/001" autocomplete="off" oninput="toggleInvHint()">
+      </div>
+      <div class="f">
+        <label for="iw-inv">Invoice No.</label>
+        <input type="text" id="iw-inv" value="${r?.invoiceNo || ''}" placeholder="e.g. INV/2024/001" autocomplete="off" oninput="toggleInvHint()">
+      </div>
+    </div>
+    <div id="iw-inv-hint" style="display:${r?.dcNo && !r?.invoiceNo && !isInterCompany(r?.supplierName) ? 'flex' : 'none'};align-items:center;gap:6px;background:#fef9c3;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12px;color:#92400e">
+      <i class="ti ti-alert-triangle"></i>
+      DC entered without invoice — invoice can be added later when received.
+    </div>
+
     <div class="f">
       <label for="iw-notes">Notes</label>
       <input type="text" id="iw-notes" value="${r?.notes || ''}" placeholder="Optional">
@@ -372,6 +417,21 @@ function openInwardModal(id) {
 
   if (r && r.supplierId) setTimeout(() => previewLotCode(r), 50);
   setTimeout(() => inwRenderParts(), 50);
+}
+
+/* Inter-company suppliers (own group) transact on DC only — no invoice required. */
+function isInterCompany(supplierName) {
+  return /indo.?meta.?forge/i.test(supplierName || '');
+}
+
+function toggleInvHint() {
+  const dc  = (document.getElementById('iw-dc')?.value  || '').trim();
+  const inv = (document.getElementById('iw-inv')?.value || '').trim();
+  const hint = document.getElementById('iw-inv-hint');
+  if (!hint) return;
+  const sel = document.getElementById('iw-supplier');
+  const supName = sel ? (sel.options[sel.selectedIndex]?.text || '') : '';
+  hint.style.display = (dc && !inv && !isInterCompany(supName)) ? 'flex' : 'none';
 }
 
 function inwShowAddRow() {
@@ -512,6 +572,8 @@ async function saveInward(editId) {
     parts: _inwParts.map(p => ({ ...p })),
     qty: totalPcs, unit: 'pcs', materialType: matSummary,
     notes: getField('iw-notes'),
+    dcNo:      (getField('iw-dc')  || '').trim(),
+    invoiceNo: (getField('iw-inv') || '').trim(),
     masterLotCode, deliveryNum
   };
 
@@ -1187,6 +1249,14 @@ async function issSubmitSession() {
     });
 
     const totalNewlyIssued = _issTags.reduce((s, t) => s + (+t.qty || 0), 0);
+
+    // Stock guard — prevent issuing more than physically available
+    const stockAvail = reqCalcStock(_issLine.partId);
+    if (totalNewlyIssued > stockAvail) {
+      showModalError(`Insufficient stock. Available: ${stockAvail} pcs, trying to issue: ${totalNewlyIssued} pcs.`);
+      return;
+    }
+
     const updatedLines = _issReq.lines.map(l => {
       if (l.lineNo !== _issLine.lineNo) return l;
       const alreadyIssued = issLineIssued(_issReq.id, l.lineNo);
@@ -1213,92 +1283,295 @@ async function issSubmitSession() {
 
 /* ══════════════════════════════════════════════════════════════════════
    SECTION 5 — STOCK BALANCE
-   Groups inward receipts by masterLotCode and subtracts issued qty
-   (from routeCards.issuedQty) to show remaining balance per lot.
+   Aggregates per individual part (not per delivery lot).
+   Available = max(0, total received − total issued to WIP).
    ══════════════════════════════════════════════════════════════════════ */
+
+const PERIOD_RCVD_CYCLE = ['all', 'today', 'month', 'year'];
+const PERIOD_ISSD_CYCLE = ['today', 'month', 'year', 'all'];
+const PERIOD_LABEL = { all: 'All Time', today: 'Today', month: 'This Month', year: 'This Year' };
+
+function cycleRcvdPeriod() {
+  const i = PERIOD_RCVD_CYCLE.indexOf(_rcvdPeriod);
+  _rcvdPeriod = PERIOD_RCVD_CYCLE[(i + 1) % PERIOD_RCVD_CYCLE.length];
+  renderStock();
+}
+function cycleIssdPeriod() {
+  const i = PERIOD_ISSD_CYCLE.indexOf(_issdPeriod);
+  _issdPeriod = PERIOD_ISSD_CYCLE[(i + 1) % PERIOD_ISSD_CYCLE.length];
+  renderStock();
+}
+
+function inPeriod(dateStr_, period) {
+  if (!dateStr_ || period === 'all') return true;
+  const today = dateStr();
+  const [y, m] = today.split('-');
+  if (period === 'today') return dateStr_ === today;
+  if (period === 'month') return dateStr_.startsWith(`${y}-${m}`);
+  if (period === 'year')  return dateStr_.startsWith(y);
+  return true;
+}
+
+function tsToDateStr(ts) {
+  if (!ts) return '';
+  const d = ts.toDate ? ts.toDate() : new Date(ts);
+  return d.toISOString().slice(0, 10);
+}
+
+function periodPill(label, onclick, active) {
+  return `<button onclick="${onclick}" class="period-pill${active ? ' active' : ''}">
+    ${label} <i class="ti ti-refresh"></i>
+  </button>`;
+}
+
 function renderStock() {
-  const lots = {};
+  /* ── 1. Aggregate per part ─────────────────────────────────────── */
+  const byPart = {};
+
   S.inward.forEach(r => {
-    if (!r.masterLotCode) return;
-    if (!lots[r.masterLotCode]) lots[r.masterLotCode] = { rec: r, issued: 0 };
-  });
-  S.routeCards.forEach(rc => {
-    if (!rc.masterLotCode) return;
-    if (lots[rc.masterLotCode]) lots[rc.masterLotCode].issued += (+rc.issuedQty || 0);
+    (r.parts || []).forEach(p => {
+      const key = p.partId || p.partName;
+      if (!key) return;
+      if (!byPart[key]) {
+        const masterPart = (S.parts || []).find(mp => mp.id === p.partId);
+        byPart[key] = {
+          partId:   p.partId   || '',
+          partName: p.partName || '—',
+          partNo:   p.partNo   || '',
+          custId:   masterPart?.custId   || '',
+          custName: masterPart?.custName || '',
+          received: 0,
+          lots:     [],
+        };
+      }
+      const qty = +p.qty || 0;
+      byPart[key].received += qty;
+      byPart[key].lots.push({
+        lotCode:      r.masterLotCode || '',
+        supplierName: r.supplierName  || '',
+        date:         r.date          || '',
+        qty,
+        rate:         +p.rate || 0,
+        dcNo:         r.dcNo      || '',
+        invoiceNo:    r.invoiceNo || '',
+      });
+    });
   });
 
-  /* Summary calculations */
-  const lotEntries = Object.values(lots);
-  const totalAvailable = lotEntries.reduce((s, { rec, issued }) => {
-    const total = (rec.parts || []).reduce((a, p) => a + (+p.qty || 0), 0) || (+rec.qty || 0);
-    return s + Math.max(0, total - issued);
+  /* ── 2. Issued per part (all time, for stock level) ──────────── */
+  const issuedByPart = {};
+  S.routeCards.forEach(rc => {
+    const key = rc.partId || rc.partName;
+    if (!key) return;
+    issuedByPart[key] = (issuedByPart[key] || 0) + (+rc.issuedQty || 0);
+  });
+
+  /* ── 3. Build part list ───────────────────────────────────────── */
+  let partList = Object.entries(byPart).map(([key, p]) => {
+    const issued     = issuedByPart[key] || 0;
+    const overIssued = issued > p.received;
+    const available  = Math.max(0, p.received - issued);
+    const value      = p.lots.reduce((s, l) => s + l.qty * l.rate, 0);
+    return { ...p, key, issued, available, value, overIssued };
+  });
+
+  /* ── 4. Period-filtered stat card values ─────────────────────── */
+  const rcvdFiltered = S.inward.reduce((s, r) => {
+    if (!inPeriod(r.date, _rcvdPeriod)) return s;
+    return s + (r.parts || []).reduce((a, p) => a + (+p.qty || 0), 0);
   }, 0);
-  const totalReceived = lotEntries.reduce((s, { rec }) => {
-    const total = (rec.parts || []).reduce((a, p) => a + (+p.qty || 0), 0) || (+rec.qty || 0);
-    return s + total;
+
+  const issdFiltered = S.routeCards.reduce((s, rc) => {
+    if (!inPeriod(tsToDateStr(rc.issuedAt), _issdPeriod)) return s;
+    return s + (+rc.issuedQty || 0);
   }, 0);
-  /* Unique components: distinct partId (or partName as fallback) across all inward parts */
-  const uniqueParts = new Set();
-  S.inward.forEach(r => (r.parts || []).forEach(p => uniqueParts.add(p.partId || p.partName)));
-  const uniqueCount = uniqueParts.size;
+
+  /* ── 5. Overall stats ─────────────────────────────────────────── */
+  const totalAvailable = partList.reduce((s, p) => s + p.available, 0);
+  const totalValue     = partList.reduce((s, p) => s + p.value,     0);
+  const overIssuedCount = partList.filter(p => p.overIssued).length;
+
+  /* ── 6. Filter + sort the table ──────────────────────────────── */
+  const q = _stockSearch.trim().toLowerCase();
+  if (_stockCustFilt !== 'all') partList = partList.filter(p => p.custId === _stockCustFilt);
+  if (q) partList = partList.filter(p =>
+    (p.partName || '').toLowerCase().includes(q) ||
+    (p.partNo   || '').toLowerCase().includes(q) ||
+    (p.custName || '').toLowerCase().includes(q)
+  );
+  // Over-issued first, then by available desc
+  partList.sort((a, b) => {
+    if (a.overIssued !== b.overIssued) return a.overIssued ? -1 : 1;
+    return b.available - a.available;
+  });
+
+  /* ── 7. Customer filter dropdown ─────────────────────────────── */
+  const custMap = {};
+  Object.values(byPart).forEach(p => { if (p.custId) custMap[p.custId] = p.custName; });
+  const custOpts = Object.entries(custMap).map(([id, name]) =>
+    `<option value="${id}" ${_stockCustFilt===id?'selected':''}>${name}</option>`).join('');
+
+  /* ── 8. Stat cards ────────────────────────────────────────────── */
+  const statCard = (opts) => `
+    <div style="background:var(--sur);border:1px solid var(--bdr);border-radius:var(--rs);
+                padding:14px 16px;border-top:3px solid ${opts.accent};
+                display:flex;flex-direction:column;min-height:112px;box-sizing:border-box">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div style="font-size:10px;font-weight:800;letter-spacing:.07em;color:${opts.accent}">${opts.label}</div>
+        ${opts.pill || '<div></div>'}
+      </div>
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;flex:1">
+        <div>
+          <div style="font-size:26px;font-weight:900;line-height:1;color:var(--txt)">${opts.value}</div>
+          <div style="font-size:11px;color:var(--txt-muted);margin-top:4px">${opts.sub}</div>
+        </div>
+        <i class="ti ${opts.icon}" style="font-size:32px;color:${opts.accent};opacity:.15;flex-shrink:0;margin-left:8px"></i>
+      </div>
+      ${opts.extra ? `<div style="font-size:11px;color:var(--txt-muted);border-top:1px solid var(--bdr);padding-top:6px;margin-top:8px">${opts.extra}</div>` : ''}
+    </div>`;
+
+  const rcvdPill = periodPill(PERIOD_LABEL[_rcvdPeriod], 'cycleRcvdPeriod()', _rcvdPeriod !== 'all');
+  const issdPill = periodPill(PERIOD_LABEL[_issdPeriod], 'cycleIssdPeriod()', _issdPeriod !== 'today');
+
+  const statsHtml = `
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
+      ${statCard({
+        label: 'AVAILABLE',
+        value: totalAvailable.toLocaleString('en-IN'),
+        sub:   'pcs in store right now',
+        icon:  'ti-package',
+        accent:'#16a34a',
+        extra: totalValue > 0 ? `${fmtINR(totalValue)} total stock value` : '',
+      })}
+      ${statCard({
+        label: 'RECEIVED',
+        value: rcvdFiltered.toLocaleString('en-IN'),
+        sub:   `pcs · ${PERIOD_LABEL[_rcvdPeriod].toLowerCase()}`,
+        icon:  'ti-package-import',
+        accent:'#2563eb',
+        pill:  rcvdPill,
+      })}
+      ${statCard({
+        label: 'ISSUED TO WIP',
+        value: issdFiltered.toLocaleString('en-IN'),
+        sub:   `pcs · ${PERIOD_LABEL[_issdPeriod].toLowerCase()}`,
+        icon:  'ti-arrow-bar-right',
+        accent:'#7c3aed',
+        pill:  issdPill,
+      })}
+    </div>`;
 
   document.getElementById('section-content').innerHTML = `
     <div style="font-size:16px;font-weight:700;margin-bottom:12px">Stock Balance</div>
-    ${lotEntries.length ? `
-      <div class="stats-3" style="margin-bottom:14px">
-        <div class="stat-card ok">
-          <div class="stat-lbl">Available</div>
-          <div class="stat-val">${totalAvailable}</div>
-          <div class="stat-sub">pcs in store</div>
-        </div>
-        <div class="stat-card info">
-          <div class="stat-lbl">Total Received</div>
-          <div class="stat-val">${totalReceived}</div>
-          <div class="stat-sub">pcs (all time)</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-lbl">Component Types</div>
-          <div class="stat-val">${uniqueCount}</div>
-          <div class="stat-sub">unique varieties</div>
-        </div>
-      </div>` : emptyState('ti-chart-pie', 'No stock yet', 'Add inward receipts to start tracking stock.')}
-    <div id="stock-body"></div>
+
+    ${statsHtml}
+
+    ${overIssuedCount ? `
+      <div style="display:flex;align-items:center;gap:8px;background:#fef2f2;border:1px solid #fca5a5;
+                  border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#991b1b">
+        <i class="ti ti-alert-triangle" style="flex-shrink:0"></i>
+        <span><strong>${overIssuedCount} component${overIssuedCount>1?'s':''}</strong> show issued qty exceeding received qty — possible data entry error. Review highlighted rows below.</span>
+      </div>` : ''}
+
+    <div class="row-2" style="margin-bottom:10px">
+      <div class="f" style="margin:0">
+        <input type="text" placeholder="Search part name, no. or customer..."
+          value="${_stockSearch}" oninput="_stockSearch=this.value;renderStock()" style="font-size:13px">
+      </div>
+      <div class="f" style="margin:0">
+        <select onchange="_stockCustFilt=this.value;renderStock()">
+          <option value="all" ${_stockCustFilt==='all'?'selected':''}>All Customers</option>
+          ${custOpts}
+        </select>
+      </div>
+    </div>
+
+    ${partList.length === 0
+      ? emptyState('ti-chart-pie', 'No stock found', q || _stockCustFilt!=='all' ? 'Try clearing the filter.' : 'Add inward receipts to start tracking stock.')
+      : `<div style="display:grid;grid-template-columns:1fr 64px 64px 64px;gap:4px;padding:6px 10px;
+                     font-size:10px;font-weight:700;color:var(--txt-muted);letter-spacing:.05em;
+                     border-bottom:2px solid var(--bdr);margin-bottom:4px">
+           <div>COMPONENT</div>
+           <div style="text-align:right">RCVD</div>
+           <div style="text-align:right">ISSUED</div>
+           <div style="text-align:right">AVAIL</div>
+         </div>
+         <div id="stock-body"></div>`}
   `;
 
-  const bySup = {};
-  lotEntries.forEach(({ rec, issued }) => {
-    const sn = rec.supplierName || 'Unknown';
-    if (!bySup[sn]) bySup[sn] = [];
-    const total = (rec.parts || []).reduce((s, p) => s + (+p.qty || 0), 0) || (+rec.qty || 0);
-    bySup[sn].push({ rec, bal: total - issued, issued, total });
-  });
-
+  if (!partList.length) return;
   const w = document.getElementById('stock-body');
-  let html = '';
-  Object.entries(bySup).forEach(([sn, items]) => {
-    html += `<div class="slbl mb-8">${sn}</div>`;
-    items.forEach(({ rec, bal, issued, total }) => {
-      const pct = total > 0 ? Math.round((bal / total) * 100) : 0;
-      const parts = rec.parts && rec.parts.length ? rec.parts.map(p => p.partName).join(', ') : (rec.materialType || '—');
-      html += `
-        <div class="card" style="margin-bottom:8px">
-          <div class="flex justify-between items-center mb-8">
-            <div style="flex:1;min-width:0">
-              <div style="font-size:13px;font-weight:700">${parts}</div>
-              <div class="text-xs text-muted mt-4">${fmtDate(rec.date)}</div>
+  if (!w) return;
+
+  w.innerHTML = partList.map(p => {
+    const isOver = p.overIssued;
+    const pct    = p.received > 0 ? Math.round((p.available / p.received) * 100) : 0;
+    const isOut  = p.available === 0 && !isOver;
+    const isLow  = !isOut && !isOver && pct < 20;
+    const barColor  = isOver ? '#dc2626' : isOut ? '#dc2626' : isLow ? '#f59e0b' : 'var(--ok)';
+    const availColor = isOver || isOut ? '#dc2626' : isLow ? '#f59e0b' : 'var(--ok)';
+    const expanded  = _stockExpanded[p.key];
+
+    const lotRows = p.lots.map(l => {
+      const lotIssued = S.routeCards.filter(rc =>
+        (rc.partId || rc.partName) === p.key && rc.masterLotCode === l.lotCode
+      ).reduce((s, rc) => s + (+rc.issuedQty || 0), 0);
+      const lotAvail = Math.max(0, l.qty - lotIssued);
+      const lotPct   = l.qty > 0 ? Math.round((lotAvail / l.qty) * 100) : 0;
+      return `
+        <div style="padding:8px 10px 8px 14px;border-left:3px solid var(--bdr-mid);margin-left:10px;
+                    margin-bottom:4px;background:var(--bg);border-radius:0 6px 6px 0">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+            <div>
+              <div class="lot-badge" style="font-size:11px;margin-bottom:4px">
+                <i class="ti ti-tag"></i> ${l.lotCode}
+              </div>
+              <div style="font-size:11px;color:var(--txt-muted)">
+                ${l.supplierName} · ${fmtDate(l.date)}
+                ${l.dcNo ? ` · DC: ${l.dcNo}` : ''}
+                ${l.invoiceNo ? ` · INV: ${l.invoiceNo}` : (!l.dcNo || isInterCompany(l.supplierName) ? '' : ` · <span style="color:#92400e">Invoice pending</span>`)}
+              </div>
             </div>
-            <div style="text-align:right;flex-shrink:0;margin-left:8px">
-              <div class="font-num" style="color:${bal > 0 ? 'var(--ok)' : 'var(--err)'};font-size:15px">${bal} pcs</div>
-              <div class="text-xs text-muted">${issued} issued</div>
+            <div style="text-align:right;flex-shrink:0;font-size:12px">
+              <div style="font-weight:700;color:${lotAvail>0?'var(--ok)':'#dc2626'}">
+                ${lotAvail} <span style="font-weight:400;color:var(--txt-muted)">avail</span>
+              </div>
+              <div style="color:var(--txt-muted)">${lotIssued} issued of ${l.qty}</div>
             </div>
           </div>
-          <div class="lot-badge mb-8" style="font-size:11px"><i class="ti ti-tag" aria-hidden="true"></i> ${rec.masterLotCode}</div>
-          <div class="prog"><div class="pf ${pct > 50 ? 'pg' : pct > 20 ? 'pa' : 'pr'}" style="width:${pct}%"></div></div>
-          <div class="text-xs text-muted mt-4">Received: ${total} pcs · ${pct}% remaining</div>
+          <div class="prog" style="margin-top:6px">
+            <div class="pf ${lotPct>50?'pg':lotPct>20?'pa':'pr'}" style="width:${Math.min(100,lotPct)}%"></div>
+          </div>
         </div>`;
-    });
-  });
-  if (w) w.innerHTML = html;
+    }).join('');
+
+    return `
+      <div style="border-bottom:1px solid var(--bdr);${isOver?'background:#fff5f5;':''}">
+        <div onclick="_stockExpanded['${p.key}']=!_stockExpanded['${p.key}'];renderStock()"
+          style="display:grid;grid-template-columns:1fr 64px 64px 64px;gap:4px;align-items:center;
+                 padding:11px 10px;cursor:pointer;user-select:none">
+          <div style="min-width:0">
+            <div style="font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.partName}</div>
+            <div style="font-size:11px;color:var(--txt-muted);margin-top:2px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+              ${p.partNo ? `<span style="font-family:monospace">${p.partNo}</span>` : ''}
+              ${p.custName ? `<span>· ${p.custName}</span>` : ''}
+              ${isOver ? `<span style="color:#dc2626;font-weight:700">· ⚠ OVER-ISSUED by ${p.issued - p.received} pcs</span>`
+                       : isOut ? `<span style="color:#dc2626;font-weight:700">· OUT OF STOCK</span>`
+                       : isLow ? `<span style="color:#f59e0b;font-weight:700">· LOW STOCK</span>` : ''}
+            </div>
+            <div style="margin-top:5px;height:4px;background:var(--bdr);border-radius:2px;overflow:hidden">
+              <div style="height:100%;width:${isOver?100:pct}%;background:${barColor};border-radius:2px"></div>
+            </div>
+          </div>
+          <div style="text-align:right;font-size:13px;font-weight:600;color:var(--txt-muted)">${p.received}</div>
+          <div style="text-align:right;font-size:13px;font-weight:600;color:${isOver?'#dc2626':'var(--txt-muted)'}">
+            ${p.issued}${isOver?'<div style="font-size:9px;color:#dc2626">exceeds</div>':''}
+          </div>
+          <div style="text-align:right;font-size:14px;font-weight:800;color:${availColor}">${p.available}</div>
+        </div>
+        ${expanded ? `<div style="padding:0 0 10px">${lotRows}</div>` : ''}
+      </div>`;
+  }).join('');
 }
 
 /* ══════════════════════════════════════════════════════════════════════

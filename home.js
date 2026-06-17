@@ -15,12 +15,13 @@ const MODULES = [
   { page: 'qc',          icon: 'ti-clipboard-check',    name: 'Quality Control', sub: 'Inspections & deviations',    perm: 'qc' },
   { page: 'maintenance', icon: 'ti-tool',               name: 'Maintenance',     sub: 'Breakdowns & PM logs',        perm: 'maintenance' },
   { page: 'dispatch',    icon: 'ti-truck',              name: 'Dispatch',        sub: 'Finished goods & outward',    perm: 'dispatch' },
+  { page: 'approvals',   icon: 'ti-checks',             name: 'Approvals',       sub: 'Pending actions & reviews',   perm: 'production' },
   { page: 'reports',     icon: 'ti-chart-bar',          name: 'Reports',         sub: 'Analytics & summaries',       perm: 'reports' },
   { page: 'masters',     icon: 'ti-database',           name: 'Master Data',     sub: 'System configuration',        perm: 'masters' },
 ];
 
 /** Pages that exist and are wired up. Everything else shows a "Soon" badge. */
-const BUILT = new Set(['masters', 'store', 'production']);
+const BUILT = new Set(['masters', 'store', 'production', 'approvals', 'qc', 'maintenance', 'dispatch', 'ht']);
 
 /* ══════════════════════════════════════════════════════════════════════
    INIT

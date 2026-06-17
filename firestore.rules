@@ -1,0 +1,473 @@
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  IMF ProTrack — Firestore Security Rules (DRAFT)                        ║
+// ║                                                                          ║
+// ║  STATUS: DRAFT — not yet deployed. Review before deploying.             ║
+// ║                                                                          ║
+// ║  PURPOSE: Mirrors the JS PERMS model in core.js at the database layer.  ║
+// ║  Frontend canDo() / getPerm() are UX guards only; these rules are the   ║
+// ║  real enforcement boundary (CLAUDE.md §6 Known Issue #1).               ║
+// ║                                                                          ║
+// ║  DEPLOY STEPS (when ready):                                             ║
+// ║    1. Install Firebase CLI:  npm i -g firebase-tools                    ║
+// ║    2. firebase login                                                     ║
+// ║    3. firebase init firestore   (select existing project)               ║
+// ║    4. Copy this file to the path firebase.json points at (or rename).   ║
+// ║    5. firebase deploy --only firestore:rules                            ║
+// ║                                                                          ║
+// ║  TEST_MODE NOTE: When TEST_MODE=true in core.js, all transactional      ║
+// ║  writes go to TEST_-prefixed collections. This file includes matching   ║
+// ║  TEST_ rules so test traffic is also enforced correctly.                ║
+// ║  Remember to flip TEST_MODE=false in core.js before going to prod.      ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ────────────────────────────────────────────────────────────────────────
+    // HELPER FUNCTIONS
+    // Mirrors the role/stage/area logic in core.js:PERMS + STAGE_PERM_AREA
+    // ────────────────────────────────────────────────────────────────────────
+
+    // Read the caller's user profile from the master users collection.
+    // NOTE: This costs one extra read per rule evaluation. Firestore
+    // caches get() calls within the same request, so the overhead is
+    // one read per request (not per match block).
+    function udata() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAuth()   { return request.auth != null; }
+    function isActive() { return isAuth() && udata().isActive == true; }
+
+    // Role helpers — mirror PERMS role keys in core.js
+    function role()    { return udata().role; }
+    function isAdmin() { return isActive() && role() == 'admin'; }
+    function isHod()   { return isActive() && role() == 'hod'; }
+    function isSup()   { return isActive() && role() == 'supervisor'; }
+    function isOp()    { return isActive() && role() == 'operator'; }
+
+    // Stage/area helpers — mirror STAGE_PERM_AREA in core.js
+    // stage values: soft, hard, general, ht, store, qc, dispatch, maintenance
+    function stg() { return udata().stage; }
+
+    function area() {
+      return stg() == 'ht'          ? 'ht'
+           : stg() == 'store'       ? 'inward'
+           : stg() == 'qc'          ? 'qc'
+           : stg() == 'dispatch'    ? 'dispatch'
+           : stg() == 'maintenance' ? 'maintenance'
+           : 'production'; // soft, hard, general
+    }
+
+    // Area membership predicates
+    function inStore()  { return isActive() && area() == 'inward'; }
+    function inProd()   { return isActive() && area() == 'production'; }
+    function inHt()     { return isActive() && area() == 'ht'; }
+    function inQc()     { return isActive() && area() == 'qc'; }
+    function inMaint()  { return isActive() && area() == 'maintenance'; }
+    function inDisp()   { return isActive() && area() == 'dispatch'; }
+
+    // Convenience: supervisor or HOD in an area (the "full" permission tier)
+    function srInStore() { return inStore() && (isSup() || isHod()); }
+    function srInProd()  { return inProd()  && (isSup() || isHod()); }
+    function srInHt()    { return inHt()    && (isSup() || isHod()); }
+    function srInQc()    { return inQc()    && (isSup() || isHod()); }
+    function srInMaint() { return inMaint() && (isSup() || isHod()); }
+    function srInDisp()  { return inDisp()  && (isSup() || isHod()); }
+
+    // Production-or-HT (these two areas share visibility in the PERMS model)
+    function inProdOrHt()   { return inProd() || inHt(); }
+    function srInProdOrHt() { return inProdOrHt() && (isSup() || isHod()); }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // MASTER COLLECTIONS
+    // (always live — never TEST_ prefixed, regardless of TEST_MODE)
+    // ────────────────────────────────────────────────────────────────────────
+
+    // users — every active user reads their own doc; admin reads/writes all.
+    // Profile updates (name, stage, role, isActive) must be admin-only.
+    match /users/{userId} {
+      allow read:   if isActive() && (request.auth.uid == userId || isAdmin());
+      allow write:  if isAdmin();
+    }
+
+    // All authenticated active users must read these masters (loaded via loadMasters()).
+    // Only admin may write.
+    match /machines/{id} {
+      allow read:  if isActive();
+      allow write: if isAdmin();
+    }
+
+    match /parts/{id} {
+      allow read:  if isActive();
+      allow write: if isAdmin();
+    }
+
+    match /operations/{id} {
+      allow read:  if isActive();
+      allow write: if isAdmin();
+    }
+
+    match /partOps/{id} {
+      allow read:  if isActive();
+      allow write: if isAdmin();
+    }
+
+    match /customers/{id} {
+      allow read:  if isActive();
+      allow write: if isAdmin();
+    }
+
+    match /suppliers/{id} {
+      allow read:  if isActive();
+      allow write: if isAdmin();
+    }
+
+    // config/{shifts, tags} — read by all; write admin only
+    match /config/{doc} {
+      allow read:  if isActive();
+      allow write: if isAdmin();
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // TRANSACTIONAL COLLECTIONS — live (TEST_MODE=false)
+    // ────────────────────────────────────────────────────────────────────────
+
+    // inward — store team records inward receipts
+    match /inward/{id} {
+      allow read:   if isAdmin() || inStore();
+      allow create: if isAdmin() || srInStore();
+      allow update: if isAdmin() || srInStore();
+      allow delete: if isAdmin();
+    }
+
+    // iqcResults — QC performs IQC on inward batches
+    match /iqcResults/{id} {
+      allow read:   if isAdmin() || inQc() || inStore();
+      allow create: if isAdmin() || srInQc();
+      allow update: if isAdmin() || srInQc();
+      allow delete: if isAdmin();
+    }
+
+    // requisitions — created by anyone active; approved by store hod
+    match /requisitions/{id} {
+      allow read:   if isActive();
+      allow create: if isActive(); // any department raises a requisition
+      allow update: if isAdmin() || (inStore() && isHod()) || srInProdOrHt();
+      allow delete: if isAdmin();
+    }
+
+    // routeCards — the central nervous system (TAG UID = doc ID)
+    // Created by store on TAG issuance; updated by production/ht/qc/dispatch
+    // on stage transitions. heatCode must be write-once — enforce in Security
+    // Rules by checking !('heatCode' in resource.data) before allowing a write
+    // that includes heatCode (see inline comment below).
+    match /routeCards/{tagId} {
+      allow read: if isActive();
+
+      // TAGs are born in the store during multi-TAG issuance
+      allow create: if isAdmin() || srInStore();
+
+      // Stage transitions may come from store, production, ht, qc, dispatch.
+      // Operators are view-only on route cards; supervisors/HODs drive transitions.
+      // heatCode immutability: if the incoming write sets heatCode AND the doc
+      // already has heatCode, deny it — only admin override allowed.
+      allow update: if isAdmin()
+        || (
+          (srInStore() || srInProdOrHt() || srInQc() || srInDisp())
+          && (
+            // Block re-writing heatCode once it is set (write-once invariant)
+            !('heatCode' in request.resource.data)
+            || !('heatCode' in resource.data)
+            || resource.data.heatCode == request.resource.data.heatCode
+          )
+        );
+
+      // Route cards are never deleted — they are scrapped or archived
+      allow delete: if isAdmin();
+    }
+
+    // shiftDrafts — auto-save during shift-end checklist (production/ht sup+)
+    match /shiftDrafts/{id} {
+      allow read:   if isAdmin() || inProdOrHt();
+      allow write:  if isAdmin() || srInProdOrHt();
+    }
+
+    // setupApprovals — operator/sup creates setup gate records; sup/hod approves
+    match /setupApprovals/{id} {
+      allow read:   if isAdmin() || inProdOrHt();
+      allow create: if isAdmin() || inProdOrHt(); // operators can create
+      allow update: if isAdmin() || srInProdOrHt(); // approval is sup+
+      allow delete: if isAdmin();
+    }
+
+    // setupDeviations — sequence deviation requests (PERMS: deviation_approve → qc HOD)
+    match /setupDeviations/{id} {
+      allow read:   if isAdmin() || inProdOrHt() || inQc();
+      allow create: if isAdmin() || inProdOrHt();
+      allow update: if isAdmin() || (inQc() && isHod()); // only QC HOD approves
+      allow delete: if isAdmin();
+    }
+
+    // actuals — shift actuals matrix (sup+ in production/ht)
+    match /actuals/{id} {
+      allow read:   if isAdmin() || inProdOrHt();
+      allow write:  if isAdmin() || srInProdOrHt();
+    }
+
+    // plans — production plans (HOD-level planning)
+    match /plans/{id} {
+      allow read:   if isAdmin() || inProdOrHt();
+      allow write:  if isAdmin() || (inProdOrHt() && isHod());
+    }
+
+    // prodDrafts — in-progress shift drafts (auto-saved by supervisor)
+    match /prodDrafts/{id} {
+      allow read:   if isAdmin() || inProdOrHt();
+      allow write:  if isAdmin() || srInProdOrHt();
+    }
+
+    // planDrafts — planning drafts (HOD)
+    match /planDrafts/{id} {
+      allow read:   if isAdmin() || inProdOrHt();
+      allow write:  if isAdmin() || (inProdOrHt() && isHod());
+    }
+
+    // htCharges — furnace charge batch records (HT team; production reads)
+    match /htCharges/{id} {
+      allow read:   if isAdmin() || inHt() || inProd();
+      allow create: if isAdmin() || srInHt();
+      // heat-code marriage is written ONCE per charge — same invariant as routeCards
+      allow update: if isAdmin() || srInHt();
+      allow delete: if isAdmin();
+    }
+
+    // qcInspections — final inspection records (QC sup/hod)
+    match /qcInspections/{id} {
+      allow read:   if isAdmin() || inQc();
+      allow create: if isAdmin() || srInQc();
+      allow update: if isAdmin() || srInQc();
+      allow delete: if isAdmin();
+    }
+
+    // scrapLedger — append-only ledger; no updates after creation
+    match /scrapLedger/{id} {
+      allow read:   if isAdmin() || inQc() || isHod();
+      allow create: if isAdmin() || srInQc();
+      allow update: if false; // immutable ledger — updates are never legitimate
+      allow delete: if isAdmin();
+    }
+
+    // finishedGoods — QC clears stock; dispatch reads to gate shipments
+    match /finishedGoods/{id} {
+      allow read:   if isAdmin() || inQc() || inDisp();
+      allow write:  if isAdmin() || srInQc();
+    }
+
+    // breakdowns — any active user can report; maintenance/production updates the steps
+    match /breakdowns/{id} {
+      allow read:   if isActive();
+      allow create: if isActive(); // 4-step: Report can come from any department
+      allow update: if isAdmin() || srInMaint() || srInProdOrHt(); // Acknowledge/Diagnose/Release
+      allow delete: if isAdmin();
+    }
+
+    // machineStatus — maintenance writes machine up/down; all read for OEE dashboards
+    match /machineStatus/{id} {
+      allow read:   if isActive();
+      allow write:  if isAdmin() || srInMaint();
+    }
+
+    // sparesRequests — maintenance creates; admin/maintenance HOD approves
+    // (PERMS: spares_approve → maintenance HOD / admin)
+    match /sparesRequests/{id} {
+      allow read:   if isAdmin() || inMaint();
+      allow create: if isAdmin() || inMaint(); // any maintenance staff creates
+      allow update: if isAdmin() || (inMaint() && isHod()); // HOD approves
+      allow delete: if isAdmin();
+    }
+
+    // pmLogs — preventive maintenance records
+    match /pmLogs/{id} {
+      allow read:   if isAdmin() || inMaint();
+      allow write:  if isAdmin() || srInMaint();
+    }
+
+    // dispatches — dispatch sessions (sup/hod drives; admin)
+    // PRD §7.5: Dispatch MUST NOT operate offline — enforced in the client,
+    // but the DB rules here ensure no writes bypass the online check.
+    match /dispatches/{id} {
+      allow read:   if isAdmin() || inDisp();
+      allow create: if isAdmin() || srInDisp();
+      allow update: if isAdmin() || srInDisp();
+      allow delete: if isAdmin();
+    }
+
+    // pos — purchase orders (dispatch HOD books monthly POs)
+    match /pos/{id} {
+      allow read:   if isAdmin() || inDisp();
+      allow write:  if isAdmin() || (inDisp() && isHod());
+    }
+
+    // auditLogs — append-only; all modules write; only admin reads
+    match /auditLogs/{id} {
+      allow read:   if isAdmin();
+      allow create: if isActive(); // logAudit() is called by every module
+      allow update: if false; // immutable
+      allow delete: if false;
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // TEST_ PREFIXED VARIANTS  (active when TEST_MODE=true in core.js)
+    // These rules mirror the live rules above exactly — same access model,
+    // different collection name. Keep these in sync whenever you change the
+    // live rules above or add a new transactional collection.
+    // ────────────────────────────────────────────────────────────────────────
+
+    match /TEST_inward/{id} {
+      allow read:   if isAdmin() || inStore();
+      allow create: if isAdmin() || srInStore();
+      allow update: if isAdmin() || srInStore();
+      allow delete: if isAdmin();
+    }
+
+    match /TEST_iqcResults/{id} {
+      allow read:   if isAdmin() || inQc() || inStore();
+      allow create: if isAdmin() || srInQc();
+      allow update: if isAdmin() || srInQc();
+      allow delete: if isAdmin();
+    }
+
+    match /TEST_requisitions/{id} {
+      allow read:   if isActive();
+      allow create: if isActive();
+      allow update: if isAdmin() || (inStore() && isHod()) || srInProdOrHt();
+      allow delete: if isAdmin();
+    }
+
+    match /TEST_routeCards/{tagId} {
+      allow read: if isActive();
+      allow create: if isAdmin() || srInStore();
+      allow update: if isAdmin()
+        || (
+          (srInStore() || srInProdOrHt() || srInQc() || srInDisp())
+          && (
+            !('heatCode' in request.resource.data)
+            || !('heatCode' in resource.data)
+            || resource.data.heatCode == request.resource.data.heatCode
+          )
+        );
+      allow delete: if isAdmin();
+    }
+
+    match /TEST_shiftDrafts/{id} {
+      allow read:   if isAdmin() || inProdOrHt();
+      allow write:  if isAdmin() || srInProdOrHt();
+    }
+
+    match /TEST_setupApprovals/{id} {
+      allow read:   if isAdmin() || inProdOrHt();
+      allow create: if isAdmin() || inProdOrHt();
+      allow update: if isAdmin() || srInProdOrHt();
+      allow delete: if isAdmin();
+    }
+
+    match /TEST_setupDeviations/{id} {
+      allow read:   if isAdmin() || inProdOrHt() || inQc();
+      allow create: if isAdmin() || inProdOrHt();
+      allow update: if isAdmin() || (inQc() && isHod());
+      allow delete: if isAdmin();
+    }
+
+    match /TEST_actuals/{id} {
+      allow read:   if isAdmin() || inProdOrHt();
+      allow write:  if isAdmin() || srInProdOrHt();
+    }
+
+    match /TEST_plans/{id} {
+      allow read:   if isAdmin() || inProdOrHt();
+      allow write:  if isAdmin() || (inProdOrHt() && isHod());
+    }
+
+    match /TEST_prodDrafts/{id} {
+      allow read:   if isAdmin() || inProdOrHt();
+      allow write:  if isAdmin() || srInProdOrHt();
+    }
+
+    match /TEST_planDrafts/{id} {
+      allow read:   if isAdmin() || inProdOrHt();
+      allow write:  if isAdmin() || (inProdOrHt() && isHod());
+    }
+
+    match /TEST_htCharges/{id} {
+      allow read:   if isAdmin() || inHt() || inProd();
+      allow create: if isAdmin() || srInHt();
+      allow update: if isAdmin() || srInHt();
+      allow delete: if isAdmin();
+    }
+
+    match /TEST_qcInspections/{id} {
+      allow read:   if isAdmin() || inQc();
+      allow create: if isAdmin() || srInQc();
+      allow update: if isAdmin() || srInQc();
+      allow delete: if isAdmin();
+    }
+
+    match /TEST_scrapLedger/{id} {
+      allow read:   if isAdmin() || inQc() || isHod();
+      allow create: if isAdmin() || srInQc();
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /TEST_finishedGoods/{id} {
+      allow read:   if isAdmin() || inQc() || inDisp();
+      allow write:  if isAdmin() || srInQc();
+    }
+
+    match /TEST_breakdowns/{id} {
+      allow read:   if isActive();
+      allow create: if isActive();
+      allow update: if isAdmin() || srInMaint() || srInProdOrHt();
+      allow delete: if isAdmin();
+    }
+
+    match /TEST_machineStatus/{id} {
+      allow read:   if isActive();
+      allow write:  if isAdmin() || srInMaint();
+    }
+
+    match /TEST_sparesRequests/{id} {
+      allow read:   if isAdmin() || inMaint();
+      allow create: if isAdmin() || inMaint();
+      allow update: if isAdmin() || (inMaint() && isHod());
+      allow delete: if isAdmin();
+    }
+
+    match /TEST_pmLogs/{id} {
+      allow read:   if isAdmin() || inMaint();
+      allow write:  if isAdmin() || srInMaint();
+    }
+
+    match /TEST_dispatches/{id} {
+      allow read:   if isAdmin() || inDisp();
+      allow create: if isAdmin() || srInDisp();
+      allow update: if isAdmin() || srInDisp();
+      allow delete: if isAdmin();
+    }
+
+    match /TEST_pos/{id} {
+      allow read:   if isAdmin() || inDisp();
+      allow write:  if isAdmin() || (inDisp() && isHod());
+    }
+
+    match /TEST_auditLogs/{id} {
+      allow read:   if isAdmin();
+      allow create: if isActive();
+      allow update: if false;
+      allow delete: if false;
+    }
+
+  }
+}

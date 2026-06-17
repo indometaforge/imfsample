@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1E2B6B">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>IMF ProTrack — Heat Treatment</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+</head>
+<body>
+  <div id="loading-screen" class="loading-screen">
+    <div class="loading-spinner"></div>
+    <div class="loading-label">Loading ProTrack...</div>
+  </div>
+
+  <div id="app" class="shell" style="display:none">
+    <div id="sb-overlay" class="sb-overlay"></div>
+    <nav id="sidebar" class="sidebar" aria-label="Main navigation"></nav>
+
+    <div class="main">
+      <header class="topbar">
+        <button id="topbar-menu-btn" class="topbar-menu-btn" aria-label="Open menu">
+          <i class="ti ti-menu-2" aria-hidden="true"></i>
+        </button>
+        <div class="topbar-info">
+          <div class="topbar-title">Heat Treatment</div>
+          <div class="topbar-sub">Furnace charges &amp; process logs</div>
+        </div>
+        <div class="topbar-actions">
+          <span class="topbar-role-pill" id="role-pill"></span>
+        </div>
+      </header>
+
+      <div id="offline-bar" class="offline-bar">
+        <i class="ti ti-wifi-off"></i> You are offline. Data cannot be saved until reconnected.
+      </div>
+
+      <main class="page" id="page-content">
+        <!-- Rendered by ht.js -->
+      </main>
+    </div>
+  </div>
+
+  <nav class="bnav" id="bottom-nav" aria-label="Bottom navigation"></nav>
+
+  <div id="modal-overlay" class="mov">
+    <div class="modal" id="modal-content"></div>
+  </div>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <div id="gdrop" style="position:fixed;display:none;background:var(--sur);border:1px solid var(--bdr-mid);border-radius:var(--rs);box-shadow:var(--shadow-md);z-index:9000;max-height:240px;overflow-y:auto"></div>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
+  <!-- QR scanner -->
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <!-- Shared core -->
+  <script src="core.js"></script>
+  <!-- Module script -->
+  <script src="ht.js"></script>
+</body>
+</html>

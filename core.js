@@ -34,11 +34,11 @@ db.enablePersistence({ synchronizeTabs: true }).catch(() => {});
  * When true, all transactional writes go to TEST_ prefixed collections.
  * Master data (users, machines, parts, etc.) always reads from live collections.
  */
-const TEST_MODE = true;
+const TEST_MODE = false;
 
 const TRANSACTIONAL_COLLECTIONS = new Set([
   'inward', 'iqcResults', 'requisitions', 'routeCards', 'shiftDrafts',
-  'setupApprovals', 'deviationRequests', 'actuals', 'plans',
+  'setupApprovals', 'setupDeviations', 'actuals', 'plans', 'prodDrafts', 'planDrafts',
   'htCharges', 'qcInspections', 'scrapLedger', 'finishedGoods',
   'breakdowns', 'machineStatus', 'sparesRequests', 'pmLogs',
   'dispatches', 'pos', 'auditLogs'
@@ -406,6 +406,7 @@ function buildSidebar() {
   ];
 
   const mgmtItems = [
+    { page: 'approvals',   icon: 'ti-checks',              label: 'Approvals',        perm: 'production' },
     { page: 'reports',     icon: 'ti-chart-bar',           label: 'Reports',          perm: 'reports' },
     { page: 'masters',     icon: 'ti-database',            label: 'Masters',          perm: 'masters' },
   ];
@@ -775,10 +776,12 @@ function showPartDrop(inputEl, onSelect) {
   drop.style.top    = (rect.bottom + window.scrollY + 4) + 'px';
   drop.style.left   = (rect.left + window.scrollX) + 'px';
   drop.style.width  = rect.width + 'px';
-  drop.innerHTML = results.map(p => `
-    <div class="gdrop-item" onclick="_gdropSelect('${p.id}')">
-      <div style="font-size:13px;font-weight:600">${p.name}</div>
-      <div style="font-size:11px;color:var(--txt-muted)">${p.no} · ${p.cust}</div>
+  drop.innerHTML = results.map((p, i) => `
+    <div class="gdrop-item" onclick="_gdropSelect('${p.id}')" style="${i===0?'background:var(--imf-navy-hover)':''}">
+      <div style="font-size:13px;font-weight:700;color:var(--txt)">${p.name}</div>
+      <div style="font-size:11px;color:var(--txt-muted);margin-top:1px">
+        <span style="font-family:monospace">${p.no}</span>${p.cust ? ' · ' + p.cust : ''}
+      </div>
     </div>`).join('');
 }
 

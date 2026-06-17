@@ -621,7 +621,7 @@ function openRoutingModal(partId, poId) {
 
     <div class="f">
       <label for="rf-wc" class="f-req">Work Center</label>
-      <select id="rf-wc">
+      <select id="rf-wc" onchange="if(document.getElementById('rf-final')?.checked)checkFinalOpWarning('${partId}','${poId||''}',true)">
         ${buildOpts([
           { v: 'soft', l: 'Soft' }, { v: 'hard', l: 'Hard' }, { v: 'ht', l: 'Heat Treatment' },
         ], 'v', x => x.l, po?.workCenterType || 'soft')}
@@ -666,14 +666,22 @@ function checkFinalOpWarning(partId, poId, checked) {
   if (!warnEl) return;
   if (!checked) { warnEl.innerHTML = ''; return; }
 
-  const existing = S.partOps.find(x => x.partId === partId && x.finalOperation && x.id !== poId);
+  // Scope the check to the same work center (stage) — soft and hard each have their own final op.
+  const currentWC = document.getElementById('rf-wc')?.value || '';
+  const existing = S.partOps.find(x =>
+    x.partId === partId &&
+    x.finalOperation &&
+    x.id !== poId &&
+    x.workCenterType === currentWC
+  );
   if (existing) {
     const op = S.operations.find(o => o.id === existing.opId);
+    const wcLabel = currentWC === 'soft' ? 'Soft Stage' : currentWC === 'hard' ? 'Hard Stage' : currentWC;
     warnEl.innerHTML = `
       <div class="wbox">
         <i class="ti ti-alert-triangle" aria-hidden="true"></i>
         <span>Warning: "${op?.name || existing.opId}" is already set as the Final Operation
-        for this part. Only one operation should be the final step before QC.</span>
+        for <strong>${wcLabel}</strong>. Only one operation per stage should be the final step.</span>
       </div>`;
   } else {
     warnEl.innerHTML = '';

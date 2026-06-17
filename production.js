@@ -34,14 +34,17 @@ let _autoSaveTimers = {};       // machineId → setTimeout handle
 let _autoSaveStatus = {};       // machineId → 'saved' | 'saving' | 'error'
 
 // Plan Entry state
-let _planStage = '';
-let _planDate  = '';
-let _planData  = {}; // machineId → { partId, partName, partNo, plannedQty }
+let _planStage          = '';
+let _planDate           = '';
+let _planData           = {};  // machineId → { partId, partName, partNo, plannedQty }
+let _planAutoSaveTimers = {};  // machineId → setTimeout handle
+let _planSaveStatus     = {};  // machineId → 'saved' | 'saving' | 'error' | ''
 
 // Setup state
-let _setupCard  = null;
-let _setupTagId = '';
-let _setupStage = '';
+let _setupCard             = null;
+let _setupTagId            = '';
+let _setupStage            = '';
+let _setupDeviationCleared = false; // set to true after plant-head deviation request confirmed
 
 // Requisition state
 let _reqLines = [];
@@ -1039,9 +1042,11 @@ function backToHub() {
    PLAN ENTRY
    ══════════════════════════════════════════════════════════════════════ */
 function enterPlanStage(stage) {
-  _planStage  = stage;
-  _activeView = 'plan';
-  _planData   = {};
+  _planStage          = stage;
+  _activeView         = 'plan';
+  _planData           = {};
+  _planAutoSaveTimers = {};
+  _planSaveStatus     = {};
 
   // Load existing plan drafts
   const today = dateStr();
@@ -1061,94 +1066,155 @@ function renderPlanEntry() {
   const stageColor = _planStage === 'soft' ? 'var(--acc)' : '#7c3aed';
 
   const machCardsHtml = machines.map(m => {
-    const pd = _planData[m.id] || { partId: '', partName: '', plannedQty: '', notes: '' };
+    const pd     = _planData[m.id] || { partId: '', partName: '', plannedQty: '', notes: '' };
+    const status = _planSaveStatus[m.id] || '';
+    const saveLbl = status === 'saving' ? '⟳ Saving…' : status === 'saved' ? '✓ Saved' : status === 'error' ? '✗ Error' : '';
+    const saveCol = status === 'error' ? 'var(--err)' : status === 'saving' ? 'var(--warn)' : 'var(--ok)';
     return `
       <div class="card" style="margin-bottom:10px">
-        <div style="font-weight:700;margin-bottom:10px">${m.name} <span style="font-size:11px;font-weight:400;color:var(--txt-muted)">${m.code || ''}</span></div>
-        <div class="f">
-          <label>Part to Run</label>
-          <input type="text" id="plan-part-${m.id}" placeholder="Type to search part..."
-            value="${pd.partName || ''}"
-            oninput="planPartSearch(this,'${m.id}')"
-            onblur="setTimeout(hidePartDrop,150)"
-            autocomplete="off">
-          <input type="hidden" id="plan-pid-${m.id}" value="${pd.partId || ''}">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div>
+            <div style="font-weight:800;font-size:14px">${m.name}</div>
+            <div style="font-size:11px;color:var(--txt-muted)">${m.code || ''}</div>
+          </div>
+          <div id="plan-save-lbl-${m.id}"
+            style="font-size:10px;font-weight:700;color:${saveCol};min-width:56px;text-align:right">${saveLbl}</div>
         </div>
+
+        <!-- Part search -->
+        <div class="f" style="margin-bottom:8px">
+          <label>Part to Run</label>
+          <div style="position:relative">
+            <i class="ti ti-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);
+               color:var(--txt-muted);font-size:14px;pointer-events:none"></i>
+            <input type="text" id="plan-part-${m.id}" placeholder="Type part name or number…"
+              value="${pd.partName || ''}"
+              class="part-search-input"
+              style="padding-left:32px"
+              oninput="planPartSearch(this,'${m.id}')"
+              onfocus="planPartSearch(this,'${m.id}')"
+              onblur="setTimeout(hidePartDrop,220)"
+              autocomplete="off">
+          </div>
+          <input type="hidden" id="plan-pid-${m.id}" value="${pd.partId || ''}">
+          ${pd.partName ? `<div style="font-size:11px;color:var(--ok);margin-top:3px"><i class="ti ti-circle-check"></i> ${pd.partName} (${pd.partNo || ''})</div>` : ''}
+        </div>
+
         <div class="row-2">
           <div class="f">
             <label>Planned Qty (pcs)</label>
-            <input type="number" id="plan-qty-${m.id}" min="1" placeholder="0" value="${pd.plannedQty || ''}">
+            <input type="number" id="plan-qty-${m.id}" min="1" placeholder="0" value="${pd.plannedQty || ''}"
+              oninput="planOnChange('${m.id}')"
+              style="font-size:18px;font-weight:700;text-align:center">
           </div>
           <div class="f">
             <label>Notes</label>
-            <input type="text" id="plan-notes-${m.id}" placeholder="Optional" value="${pd.notes || ''}">
+            <input type="text" id="plan-notes-${m.id}" placeholder="Optional notes" value="${pd.notes || ''}"
+              oninput="planOnChange('${m.id}')">
           </div>
         </div>
-        <button class="btn btn-s btn-sm mt8" onclick="savePlanDraft('${m.id}')">
-          <i class="ti ti-device-floppy"></i> Save Draft
-        </button>
       </div>`;
   }).join('');
 
   document.getElementById('page-content').innerHTML = `
     <div style="padding-bottom:80px">
-      <div style="display:flex;align-items:center;gap:12px;padding:12px 0 8px;border-bottom:1px solid var(--bdr);margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:10px;padding:12px 0 10px;border-bottom:1px solid var(--bdr);margin-bottom:14px">
         <button class="btn btn-s btn-sm" onclick="backToHub()" style="flex-shrink:0">
           <i class="ti ti-arrow-left"></i> Back
         </button>
         <div style="flex:1">
           <div style="font-weight:800;font-size:15px;color:${stageColor}">${stageLabel} — Plan Entry</div>
-          <div style="font-size:11px;color:var(--txt-muted)">Day plan for each machine</div>
+          <div style="font-size:11px;color:var(--txt-muted)">Autosaves as you type · Submit when all machines are filled</div>
         </div>
       </div>
 
-      <div class="card" style="margin-bottom:12px">
-        <div class="row-2">
-          <div class="f">
-            <label>Plan Date</label>
-            <input type="date" id="plan-date" value="${_planDate}" onchange="_planDate=this.value">
-          </div>
+      <div class="card" style="margin-bottom:14px">
+        <div class="f" style="margin-bottom:0">
+          <label>Plan Date</label>
+          <input type="date" id="plan-date" value="${_planDate}"
+            onchange="_planDate=this.value" style="font-size:14px;font-weight:700">
         </div>
       </div>
 
-      <div class="card-hd">Machine Plan (${machines.length} machines)</div>
+      <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:8px">
+        MACHINES (${machines.length})
+      </div>
       ${machines.length ? machCardsHtml : emptyState('ti-tool', 'No Machines', `No active machines for ${stageLabel}.`)}
 
-      ${machines.length ? `<button class="btn btn-p" style="width:100%;margin-top:12px" onclick="submitPlanEntry()"><i class="ti ti-check"></i> Submit Plan</button>` : ''}
+      ${machines.length ? `
+        <button class="btn btn-p" style="width:100%;margin-top:14px;font-size:15px;padding:14px" onclick="submitPlanEntry()">
+          <i class="ti ti-check"></i> Submit Day Plan
+        </button>` : ''}
     </div>`;
 }
 
 function planPartSearch(inp, machId) {
   showPartDrop(inp, p => {
-    document.getElementById(`plan-pid-${machId}`).value = p.id;
+    const hidEl = document.getElementById(`plan-pid-${machId}`);
+    if (hidEl) hidEl.value = p.id;
     inp.value = p.name;
     if (!_planData[machId]) _planData[machId] = {};
     _planData[machId].partId   = p.id;
     _planData[machId].partName = p.name;
     _planData[machId].partNo   = p.no;
+    // Show confirmation line under the search input
+    const confEl = inp.closest('.f')?.querySelector('div[id]');
+    if (!confEl) {
+      const note = document.createElement('div');
+      note.style.cssText = 'font-size:11px;color:var(--ok);margin-top:3px';
+      note.innerHTML = `<i class="ti ti-circle-check"></i> ${p.name} (${p.no || ''})`;
+      inp.closest('.f')?.appendChild(note);
+    }
+    planAutoSave(machId);
   });
 }
 
-async function savePlanDraft(machId) {
-  const partId   = document.getElementById(`plan-pid-${machId}`)?.value || '';
-  const partName = document.getElementById(`plan-part-${machId}`)?.value.trim() || '';
-  const qty      = parseInt(document.getElementById(`plan-qty-${machId}`)?.value) || 0;
-  const notes    = document.getElementById(`plan-notes-${machId}`)?.value.trim() || '';
+function planOnChange(machId) {
+  planAutoSave(machId);
+}
 
+function planAutoSave(machId) {
+  _planSaveStatus[machId] = 'saving';
+  const lblEl = document.getElementById(`plan-save-lbl-${machId}`);
+  if (lblEl) { lblEl.textContent = '⟳ Saving…'; lblEl.style.color = 'var(--warn)'; }
+
+  clearTimeout(_planAutoSaveTimers[machId]);
+  _planAutoSaveTimers[machId] = setTimeout(() => doPlanAutoSave(machId), 1400);
+}
+
+async function doPlanAutoSave(machId) {
+  const partId   = document.getElementById(`plan-pid-${machId}`)?.value   || (_planData[machId]?.partId   || '');
+  const partName = document.getElementById(`plan-part-${machId}`)?.value.trim() || (_planData[machId]?.partName || '');
+  const qty      = parseInt(document.getElementById(`plan-qty-${machId}`)?.value) || 0;
+  const notes    = document.getElementById(`plan-notes-${machId}`)?.value.trim()  || '';
   const planDate = document.getElementById('plan-date')?.value || _planDate;
 
-  const docId = `${S.sess.userId}_${planDate}_${_planStage}_${machId}`;
   const planData = { partId, partName, plannedQty: qty, notes };
   _planData[machId] = planData;
 
+  const docId = `${S.sess.userId}_${planDate}_${_planStage}_${machId}`;
+  const lblEl = document.getElementById(`plan-save-lbl-${machId}`);
   try {
     await db.collection('planDrafts').doc(docId).set({
       userId: S.sess.userId, machineId: machId, stage: _planStage, date: planDate,
       planData, updatedAt: serverTS(),
     }, { merge: true });
-    toast('Draft saved ✓');
-  } catch (e) { toast('Draft save failed: ' + e.message); }
+    _planSaveStatus[machId] = 'saved';
+    if (lblEl) { lblEl.textContent = '✓ Saved'; lblEl.style.color = 'var(--ok)'; }
+    // Fade the "Saved" label out after 3s
+    setTimeout(() => {
+      if (_planSaveStatus[machId] === 'saved') {
+        if (lblEl) { lblEl.textContent = ''; }
+      }
+    }, 3000);
+  } catch (e) {
+    _planSaveStatus[machId] = 'error';
+    if (lblEl) { lblEl.textContent = '✗ Error'; lblEl.style.color = 'var(--err)'; }
+  }
 }
+
+// Legacy manual save — kept for backward-compat if called anywhere else
+async function savePlanDraft(machId) { planAutoSave(machId); }
 
 async function submitPlanEntry() {
   const planDate = document.getElementById('plan-date')?.value || _planDate;
@@ -1443,9 +1509,12 @@ async function confirmRequestDeviation(tagId, missingOpName, missingSeqNo) {
       date:            dateStr(),
       createdAt:       serverTS(),
     });
-    toast('Deviation request sent to Plant Head ✓');
     await logAudit('seq_deviation_request', 'production', tagId, null, { missingOpName, missingSeqNo });
-  } catch (e) { toast('Error sending request: ' + e.message); }
+    toast('Deviation request sent to Plant Head ✓ — submitting setup…');
+    // Allow the setup to proceed now that the deviation has been formally requested
+    _setupDeviationCleared = true;
+    await submitSetupLog();
+  } catch (e) { toast('Error: ' + e.message); }
 }
 
 async function submitSetupLog() {
@@ -1459,6 +1528,52 @@ async function submitSetupLog() {
   if (!opId) { toast('Select an operation'); return; }
   const mins = parseInt(document.getElementById('setup-mins')?.value) || 0;
   if (!mins || mins < 1) { toast('Enter setup time in minutes'); return; }
+
+  // ── Sequence deviation check on the SELECTED operation ──────────────
+  if (!_setupDeviationCleared) {
+    const resolvedStageCheck = machStage || _setupStage;
+    const allOps = (S.partOps || [])
+      .filter(po => po.partId === _setupCard.partId && po.stage === resolvedStageCheck)
+      .sort((a, b) => (a.seqNo || 0) - (b.seqNo || 0));
+    const completedOpIds = (_setupCard.opHistory || [])
+      .filter(h => h.stage === resolvedStageCheck).map(h => h.opId);
+    const selectedIdx = allOps.findIndex(po => po.opId === opId);
+    const missingBefore = allOps
+      .slice(0, selectedIdx)
+      .filter(po => !completedOpIds.includes(po.opId));
+
+    if (missingBefore.length > 0) {
+      const first       = missingBefore[0];
+      const prevOpName  = (S.operations || []).find(o => o.id === first.opId)?.name || 'Previous Op';
+      const selOpName   = (S.operations || []).find(o => o.id === opId)?.name || 'Selected Op';
+      openModal(`
+        <div class="modal-handle"></div>
+        <div style="text-align:center;margin-bottom:14px">
+          <div style="width:52px;height:52px;border-radius:26px;background:#fff7ed;border:2px solid #f97316;
+                      display:inline-flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:8px">⚠</div>
+          <div style="font-size:16px;font-weight:800;color:#ea580c">Sequence Deviation</div>
+        </div>
+        <div style="background:#fff7ed;border:1.5px solid #f97316;border-radius:var(--rs);padding:12px 14px;margin-bottom:14px;font-size:13px">
+          <div style="margin-bottom:6px"><strong>Attempting:</strong> ${selOpName} (seq ${allOps.find(p=>p.opId===opId)?.seqNo||'?'})</div>
+          <div><strong>Not yet done:</strong> ${missingBefore.map(p=>{const n=(S.operations||[]).find(o=>o.id===p.opId)?.name||p.opId;return `${n} (seq ${p.seqNo})`;}).join(', ')}</div>
+        </div>
+        <p style="font-size:12px;color:var(--txt-muted);margin-bottom:14px;line-height:1.5">
+          Skipping operations requires <strong>Plant Head approval</strong>. Tapping "Request Deviation" will
+          log a deviation request and let this setup proceed — the Plant Head will review it.
+        </p>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-s" style="flex:1" onclick="closeModal()">
+            <i class="ti ti-arrow-left"></i> Go Back
+          </button>
+          <button class="btn btn-p" style="flex:1;background:#ea580c;border-color:#ea580c"
+            onclick="closeModal();confirmRequestDeviation('${_setupTagId}','${prevOpName.replace(/'/g,"\\'")}',${first.seqNo})">
+            <i class="ti ti-send"></i> Request Deviation
+          </button>
+        </div>`);
+      return;
+    }
+  }
+  _setupDeviationCleared = false; // reset for next setup
 
   const date     = document.getElementById('setup-date')?.value || dateStr();
   const shift    = document.getElementById('setup-shift')?.value;
@@ -1511,7 +1626,7 @@ async function submitSetupLog() {
     S.setupApprovals.unshift({ id: ref.id, tagId: _setupTagId, machineId: machId, stage: resolvedStage, status: 'pending' });
     toast('Setup logged ✓ — sent to QC for approval');
     await logAudit('setup_log', 'production', _setupTagId, null, { machineId: machId, opId: opId_val, mins });
-    _setupCard = null; _setupTagId = ''; _setupStage = '';
+    _setupCard = null; _setupTagId = ''; _setupStage = ''; _setupDeviationCleared = false;
     switchTab('hub');
   } catch (e) {
     toast('Error: ' + e.message);
