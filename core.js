@@ -852,7 +852,21 @@ document.addEventListener('click', (e) => {
   if (e.target.id === 'modal-overlay') closeModal();
 });
 
-/* Escape key closes modal */
+/* Keyboard shortcuts: Escape closes modal, Enter submits it */
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeModal();
+  if (e.key === 'Escape') { closeModal(); return; }
+
+  if (e.key === 'Enter') {
+    /* Only fire when a modal is open and focus is NOT on textarea/select/button */
+    const overlay = document.getElementById('modal-overlay');
+    if (!overlay || overlay.style.display === 'none') return;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'textarea' || tag === 'select' || tag === 'button') return;
+    /* Find the primary action button (last btn-p, which is typically Save/Submit/Confirm) */
+    const btns = overlay.querySelectorAll('button.btn-p:not([disabled])');
+    if (!btns.length) return;
+    const primary = btns[btns.length - 1];
+    e.preventDefault();
+    primary.click();
+  }
 });

@@ -19,15 +19,16 @@
 let activeTab = 'inward';
 let searchQ   = '';
 
-let _inwFilt = 'all';   /* supplier filter for Inward list */
-let _reqFilt = 'all';   /* status filter for Requisitions list */
-let _rcFilt  = 'all';   /* status filter for Route Cards list */
+let _inwFilt  = 'all';  /* supplier / IQC filter for Inward list */
+let _rcFilt   = 'all';  /* status filter for Route Cards list */
 
 let _stockSearch   = '';    /* Stock Balance search query */
 let _stockCustFilt = 'all'; /* Stock Balance customer filter */
 let _stockExpanded = {};    /* partId → bool (lot rows expanded) */
-let _rcvdPeriod    = 'all'; /* Received stat period: all|today|month|year */
-let _issdPeriod    = 'today'; /* Issued stat period: today|month|year|all */
+let _stockPeriod   = 'all'; /* Unified period for Received + Issued stats */
+
+/* Lot selection at issuance */
+let _issLot = null;    /* masterLotCode chosen by storeperson for this session */
 
 let _inwParts = [];     /* [{partId,partNo,partName,qty,rate}] — Inward modal */
 let _reqLines = [];     /* [{lineNo,partId,partNo,partName,customerId,customerName,masterLotCode,qtyRequested,qtyApproved,qtyIssued}] */
@@ -37,6 +38,9 @@ let _issReq      = null;
 let _issLine     = null;
 let _issTags     = [];  /* [{tagId, qty, issueDate}] */
 let _issBatchCode = '';
+
+const ISS_BATCH_MIN = 25;   /* minimum pcs per issue session */
+const ISS_BATCH_MAX = 100;  /* maximum pcs per issue session (max 10 bins × 10 pcs) */
 
 const TABS = [
   { key: 'inward',     label: 'Inward',        icon: 'ti-package-import' },
@@ -84,22 +88,22 @@ async function init() {
 
 /* Load all transactional Store collections into S */
 async function loadStoreData() {
-  S.inward = S.inward || [];
-  S.requisitions = S.requisitions || [];
-  S.routeCards = S.routeCards || [];
-  S.tagConfig = S.tagConfig || { totalPrinted: 0, lastTagNum: 0 };
+  S.inward      = S.inward      || [];
+  S.requisitions= S.requisitions|| [];
+  S.routeCards  = S.routeCards  || [];
+  S.tagConfig   = S.tagConfig   || { totalPrinted: 0, lastTagNum: 0 };
 
   const [inwSnap, reqSnap, rcSnap, tagDoc] = await Promise.all([
     db.collection('inward').get(),
     db.collection('requisitions').get(),
     db.collection('routeCards').get(),
-    db.collection('config').doc('tags').get()
+    db.collection('config').doc('tags').get(),
   ]);
 
   S.inward       = inwSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   S.requisitions = reqSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   S.routeCards   = rcSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-  S.tagConfig     = tagDoc.exists ? tagDoc.data() : { totalPrinted: 0, lastTagNum: 0 };
+  S.tagConfig    = tagDoc.exists ? tagDoc.data() : { totalPrinted: 0, lastTagNum: 0 };
 }
 
 /** Reload a single Store collection (or the TAG config doc) into S */
@@ -112,6 +116,10 @@ async function refreshStore(name) {
   const snap = await db.collection(name).get();
   S[name] = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
+
+/** IQC badge helper */
+const IQC_LABEL = { pending: 'IQC Pending', accepted: 'Accepted', conditional: 'Conditional', rejected: 'Rejected' };
+const IQC_BADGE = { pending: 'bdg-a', accepted: 'bdg-g', conditional: 'bdg-b', rejected: 'bdg-r' };
 
 /* ══════════════════════════════════════════════════════════════════════
    LAYOUT — TABS + SECTION ROUTER
@@ -137,20 +145,18 @@ function switchTab(key) {
   activeTab = key;
   searchQ   = '';
   _issReq = null; _issLine = null; _issTags = []; _issBatchCode = '';
-  _stockSearch = ''; _stockCustFilt = 'all'; _stockExpanded = {};
-  _rcvdPeriod = 'all'; _issdPeriod = 'today';
+  _stockSearch = ''; _stockCustFilt = 'all'; _stockExpanded = {}; _stockPeriod = 'all';
+  _issReq = null; _issLine = null; _issTags = []; _issBatchCode = ''; _issLot = null;
   render();
 }
 
 function renderSection() {
   const map = {
-    inward:       renderInward,
-    requisitions: renderRequisitions,
-    approvals:    renderApprovals,
-    issue:        renderIssue,
-    stock:        renderStock,
-    routeCards:   renderRouteCards,
-    tags:         renderTagRegistry,
+    inward:     renderInward,
+    issue:      renderIssue,
+    stock:      renderStock,
+    routeCards: renderRouteCards,
+    tags:       renderTagRegistry,
   };
   (map[activeTab] || renderInward)();
 }
@@ -275,9 +281,11 @@ function renderInward() {
   const q = searchQ.trim().toLowerCase();
   const activeSups = S.suppliers.filter(s => s.active !== false);
   const invPendingCount = S.inward.filter(r => r.dcNo && !r.invoiceNo && !isInterCompany(r.supplierName)).length;
+  const iqcPendingCount = S.inward.filter(r => r.iqcStatus === 'pending').length;
 
   let list = S.inward.filter(r => {
     if (_inwFilt === '__inv_pending__') return r.dcNo && !r.invoiceNo;
+    if (_inwFilt === '__iqc_pending__') return r.iqcStatus === 'pending';
     if (_inwFilt !== 'all' && r.supplierId !== _inwFilt) return false;
     if (!q) return true;
     return (r.supplierName || '').toLowerCase().includes(q)
@@ -296,20 +304,39 @@ function renderInward() {
         <label for="store-filter" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap">Filter</label>
         <select id="store-filter" onchange="_inwFilt=this.value;renderSection()">
           <option value="all" ${_inwFilt === 'all' ? 'selected' : ''}>All Receipts</option>
+          ${iqcPendingCount ? `<option value="__iqc_pending__" ${_inwFilt === '__iqc_pending__' ? 'selected' : ''}>IQC Pending (${iqcPendingCount})</option>` : ''}
           ${invPendingCount ? `<option value="__inv_pending__" ${_inwFilt === '__inv_pending__' ? 'selected' : ''}>Invoice Pending (${invPendingCount})</option>` : ''}
           ${activeSups.map(s => `<option value="${s.id}" ${s.id === _inwFilt ? 'selected' : ''}>${s.name}</option>`).join('')}
         </select>
       </div>
     </div>
+    ${iqcPendingCount ? `
+      <div onclick="location.href='qc.html'" style="display:flex;align-items:center;gap:8px;background:#fffbeb;border:1px solid #fde68a;
+                  border-radius:6px;padding:8px 12px;margin-bottom:10px;cursor:pointer;font-size:12px;color:#92400e">
+        <i class="ti ti-microscope"></i>
+        <span><strong>${iqcPendingCount}</strong> lot${iqcPendingCount!==1?'s':''} awaiting IQC — go to QC module to clear</span>
+        <i class="ti ti-chevron-right" style="margin-left:auto"></i>
+      </div>` : ''}
     ${invPendingCount && _inwFilt !== '__inv_pending__' ? `
       <div onclick="_inwFilt='__inv_pending__';renderSection()" style="display:flex;align-items:center;gap:8px;background:#fef9c3;border:1px solid #fde68a;border-radius:6px;padding:8px 12px;margin-bottom:10px;cursor:pointer;font-size:12px;color:#92400e">
         <i class="ti ti-alert-triangle"></i>
         <span><strong>${invPendingCount}</strong> receipt${invPendingCount!==1?'s':''} awaiting invoice — tap to view</span>
       </div>` : ''}
-    ${recordCount(list.length)}
-    ${list.length
-      ? list.map(inwardRow).join('')
-      : emptyState('ti-package-import', 'No inward receipts found', _inwFilt === '__inv_pending__' ? 'No receipts with pending invoices.' : 'Add a receipt to record material coming in from a supplier.')}
+
+    ${list.length ? `
+      <div style="display:grid;grid-template-columns:80px 1fr auto auto;gap:0;
+                  font-size:10px;font-weight:700;color:var(--txt-muted);letter-spacing:.05em;
+                  border-bottom:2px solid var(--bdr);padding:5px 10px;margin-bottom:2px">
+        <div>DATE</div>
+        <div>SUPPLIER / LOT CODE</div>
+        <div style="text-align:right">PCS</div>
+        <div style="text-align:right;padding-left:12px">IQC</div>
+      </div>
+      ${list.map(inwardRow).join('')}
+    ` : emptyState('ti-package-import', 'No inward receipts found',
+        _inwFilt === '__inv_pending__' ? 'No receipts with pending invoices.'
+        : _inwFilt === '__iqc_pending__' ? 'No lots awaiting IQC.'
+        : 'Add a receipt to record material coming in from a supplier.')}
   `;
 }
 
@@ -319,25 +346,31 @@ function inwardRow(r) {
   const totalVal = parts.reduce((s, p) => s + ((+p.qty || 0) * (+p.rate || 0)), 0);
   const onclick = canDo('inward') ? `onclick="openInwardModal('${r.id}')"` : '';
   const invPending = r.dcNo && !r.invoiceNo && !isInterCompany(r.supplierName);
-  const docLine = [
-    r.dcNo    ? `DC: ${r.dcNo}` : '',
-    r.invoiceNo ? `INV: ${r.invoiceNo}` : '',
-  ].filter(Boolean).join(' · ');
+  const iqcStatus = r.iqcStatus || null; /* legacy records without iqcStatus are grandfathered */
+  const docLine = [r.dcNo ? `DC: ${r.dcNo}` : '', r.invoiceNo ? `INV: ${r.invoiceNo}` : ''].filter(Boolean).join(' · ');
+  const partSummary = parts.slice(0, 2).map(p => p.partName).join(', ') + (parts.length > 2 ? ` +${parts.length - 2}` : '');
   return `
-    <div class="li" ${onclick}>
-      <div class="li-ic" style="${invPending ? 'background:#fef9c3;color:#92400e' : ''}">
-        <i class="ti ${invPending ? 'ti-alert-triangle' : 'ti-package-import'}" aria-hidden="true"></i>
-      </div>
-      <div class="li-body">
-        <div class="li-name" style="display:flex;align-items:center;gap:8px">
+    <div style="display:grid;grid-template-columns:80px 1fr auto auto;gap:0;align-items:center;
+                padding:10px 10px;border-bottom:1px solid var(--bdr);cursor:pointer;
+                background:${iqcStatus==='rejected'?'#fff5f5':iqcStatus==='pending'?'#fffbeb':'var(--sur)'};
+                transition:background .1s" ${onclick}
+         onmouseover="this.style.background='var(--sur2)'" onmouseout="this.style.background='${iqcStatus==='rejected'?'#fff5f5':iqcStatus==='pending'?'#fffbeb':'var(--sur)'}'">
+      <div style="font-size:12px;color:var(--txt-muted)">${fmtDate(r.date)}</div>
+      <div style="min-width:0">
+        <div style="font-weight:700;font-size:13px;display:flex;align-items:center;gap:8px">
           ${r.supplierName || '—'}
-          ${invPending ? `<span style="font-size:10px;font-weight:700;background:#fef9c3;color:#92400e;border:1px solid #fde68a;border-radius:4px;padding:1px 6px">Invoice Pending</span>` : ''}
+          ${invPending ? `<span style="font-size:10px;font-weight:700;background:#fef9c3;color:#92400e;border:1px solid #fde68a;border-radius:4px;padding:1px 5px">Invoice Pending</span>` : ''}
         </div>
-        <div class="li-sub">${fmtDate(r.date)} · ${parts.length} part type${parts.length !== 1 ? 's' : ''}${r.masterLotCode ? ' · ' + r.masterLotCode : ''}${docLine ? ' · ' + docLine : ''}</div>
+        <div style="font-size:11px;color:var(--txt-muted);margin-top:2px;display:flex;align-items:center;gap:8px">
+          ${r.masterLotCode ? `<span class="mono">${r.masterLotCode}</span>` : ''}
+          <span>${partSummary}</span>
+          ${docLine ? `<span style="color:var(--bdr-strong)">· ${docLine}</span>` : ''}
+        </div>
+        ${totalVal > 0 ? `<div style="font-size:11px;color:var(--txt-muted);margin-top:2px">${fmtINR(totalVal)}</div>` : ''}
       </div>
-      <div class="li-right">
-        <div class="font-num" style="font-size:15px">${totalPcs} pcs</div>
-        ${totalVal > 0 ? `<div style="font-size:11px;color:var(--txt-muted)">${fmtINR(totalVal)}</div>` : ''}
+      <div style="font-size:14px;font-weight:800;color:var(--txt);padding-right:12px;text-align:right">${totalPcs}</div>
+      <div style="text-align:right">
+        ${iqcStatus ? `<span class="bdg ${IQC_BADGE[iqcStatus] || 'bdg-gr'}" style="font-size:10px"><span class="bdg-dot"></span>${IQC_LABEL[iqcStatus]||iqcStatus}</span>` : ''}
       </div>
     </div>`;
 }
@@ -583,13 +616,18 @@ async function saveInward(editId) {
       await db.collection('inward').doc(editId).update(data);
       await logAudit('UPDATE_INWARD', 'STORE', editId, before, data);
     } else {
-      const ref = await db.collection('inward').add({ ...data, createdBy: S.sess.userId, createdAt: serverTS() });
+      const ref = await db.collection('inward').add({
+        ...data,
+        iqcStatus: 'pending',   /* new receipts always go through IQC gate */
+        createdBy: S.sess.userId,
+        createdAt: serverTS()
+      });
       await logAudit('CREATE_INWARD', 'STORE', ref.id, null, data);
     }
     closeModal();
     await refreshStore('inward');
     renderSection();
-    toast(editId ? 'Receipt updated' : 'Inward receipt saved');
+    toast(editId ? 'Receipt updated' : 'Inward receipt saved — send to IQC for inspection');
   } catch (e) {
     showModalError(e.message);
   }
@@ -611,394 +649,31 @@ async function deleteInward(id) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   SECTION 2 — REQUISITIONS
-   Collection: requisitions
-     reqNo (REQ-YYMM-NNN), date, neededBy, notes,
-     lines: [{lineNo,partId,partNo,partName,customerId,customerName,
-              masterLotCode,qtyRequested,qtyApproved,qtyIssued}],
-     status: pending | approved | partial | fulfilled | rejected,
-     requestedBy, requestedByName,
-     approvedBy, approvedByName, approvedAt, rejectionReason
+   SECTION 2 — STOCK CALCULATION
+   IQC inspection is handled in qc.js (QC module, IQC tab).
+   Stock calc excludes rejected/pending lots; grandfathers legacy records.
    ══════════════════════════════════════════════════════════════════════ */
-function genReqNo() {
-  const now = new Date();
-  const yymm = String(now.getFullYear()).slice(2) + String(now.getMonth() + 1).padStart(2, '0');
-  const monthReqs = S.requisitions.filter(r => (r.reqNo || '').includes('-' + yymm + '-')).length;
-  return `REQ-${yymm}-${String(monthReqs + 1).padStart(3, '0')}`;
-}
 
-function renderRequisitions() {
-  const q = searchQ.trim().toLowerCase();
-  let list = S.requisitions.filter(r => {
-    if (_reqFilt !== 'all' && r.status !== _reqFilt) return false;
-    if (!q) return true;
-    return (r.reqNo || '').toLowerCase().includes(q)
-      || (r.lines || []).some(l => (l.partName || '').toLowerCase().includes(q) || (l.partNo || '').toLowerCase().includes(q));
-  });
-  list = list.slice().sort((a, b) => (b.reqNo || '').localeCompare(a.reqNo || ''));
-
-  const filterOpts = [
-    { v: 'all', l: 'All Statuses' },
-    { v: 'pending', l: 'Pending Approval' },
-    { v: 'approved', l: 'Approved' },
-    { v: 'partial', l: 'Partially Issued' },
-    { v: 'fulfilled', l: 'Fulfilled' },
-    { v: 'rejected', l: 'Rejected' },
-  ];
-
-  document.getElementById('section-content').innerHTML = `
-    ${sectionHeader('Requisitions', 'New Requisition', canDo('inward') ? 'openRequisitionModal()' : '')}
-    <div class="row-2">
-      ${searchBox('Search by Req No. or part...')}
-      <div class="f">
-        <label for="store-filter" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap">Filter by status</label>
-        <select id="store-filter" onchange="_reqFilt=this.value;renderSection()">
-          ${filterOpts.map(o => `<option value="${o.v}" ${o.v === _reqFilt ? 'selected' : ''}>${o.l}</option>`).join('')}
-        </select>
-      </div>
-    </div>
-    ${recordCount(list.length)}
-    ${list.length
-      ? list.map(requisitionRow).join('')
-      : emptyState('ti-clipboard-list', 'No requisitions found', 'Create a requisition to request material from Store.')}
-  `;
-}
-
-function requisitionRow(r) {
-  const lines = r.lines || [];
-  const totalReq = lines.reduce((s, l) => s + (+l.qtyRequested || 0), 0);
-  return `
-    <div class="li" onclick="viewRequisitionModal('${r.id}')">
-      <div class="li-ic"><i class="ti ti-clipboard-list" aria-hidden="true"></i></div>
-      <div class="li-body">
-        <div class="li-name">${r.reqNo || '—'}</div>
-        <div class="li-sub">${fmtDate(r.date)} · ${lines.length} line${lines.length !== 1 ? 's' : ''} · ${totalReq} pcs requested</div>
-      </div>
-      <div class="li-right">
-        <span class="bdg ${REQ_BADGE[r.status] || 'bdg-gr'}"><span class="bdg-dot"></span>${REQ_LABEL[r.status] || r.status}</span>
-      </div>
-    </div>`;
-}
-
-function openRequisitionModal(editId) {
-  const req = editId ? S.requisitions.find(r => r.id === editId) : null;
-  _reqLines = req && req.lines ? req.lines.map(l => ({ ...l })) : [];
-  const reqNo = req ? req.reqNo : genReqNo();
-
-  openModal(`
-    <div class="modal-title">${req ? 'Edit Requisition' : 'New Requisition'}</div>
-    <div class="text-sm text-muted mb-12 mono">${reqNo}</div>
-    <div id="modal-err"></div>
-
-    <div class="row-2">
-      <div class="f">
-        <label for="rq-date" class="f-req">Date</label>
-        <input type="date" id="rq-date" value="${req ? req.date : dateStr()}">
-      </div>
-      <div class="f">
-        <label for="rq-needby">Needed By</label>
-        <input type="date" id="rq-needby" value="${req?.neededBy || ''}">
-      </div>
-    </div>
-
-    <div class="flex justify-between items-center mb-12">
-      <label style="font-size:12px;font-weight:600;color:var(--txt-muted)">Material Lines</label>
-      <button class="btn btn-s btn-sm" onclick="reqShowAddLine()"><i class="ti ti-plus" aria-hidden="true"></i> Add Part</button>
-    </div>
-    <div id="rq-add-row" style="display:none;background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);padding:10px 12px;margin-bottom:10px">
-      <div class="f" style="margin-bottom:8px">
-        <label style="font-size:11px;font-weight:600;color:var(--txt-muted)">Part *</label>
-        <input id="rq-new-part" type="text" placeholder="Type part name or number to search..." oninput="reqPartSearch(this)" onblur="setTimeout(hidePartDrop,150)" autocomplete="off">
-        <input type="hidden" id="rq-new-pid">
-        <input type="hidden" id="rq-new-pno">
-        <input type="hidden" id="rq-new-cid">
-        <input type="hidden" id="rq-new-cname">
-      </div>
-      <div id="rq-stock-badge" class="text-xs mb-8" style="display:none"></div>
-      <div class="row-2" style="margin-bottom:8px">
-        <div class="f" style="margin:0"><label style="font-size:11px;font-weight:600;color:var(--txt-muted)">Qty Required *</label><input id="rq-new-qty" type="number" min="1" placeholder="e.g. 100"></div>
-        <div class="f" style="margin:0"><label style="font-size:11px;font-weight:600;color:var(--txt-muted)">Lot Code (optional)</label><input id="rq-new-lot" type="text" placeholder="e.g. 20250610-IMF-DLV001"></div>
-      </div>
-      <div class="flex gap-8">
-        <button class="btn btn-p btn-sm flex-1" onclick="reqConfirmLine()">Add</button>
-        <button class="btn btn-s btn-sm" onclick="reqHideAddLine()">Cancel</button>
-      </div>
-    </div>
-    <div id="rq-lines-list"></div>
-
-    <div class="f">
-      <label for="rq-notes">Notes</label>
-      <input type="text" id="rq-notes" value="${req?.notes || ''}" placeholder="Optional">
-    </div>
-
-    ${modalActions(req ? 'Update Requisition' : 'Submit Requisition', `saveRequisition(${req ? `'${req.id}'` : 'null'})`)}
-  `);
-
-  setTimeout(() => reqRenderLines(), 50);
-}
-
-function reqShowAddLine() {
-  const row = document.getElementById('rq-add-row');
-  if (row) row.style.display = 'block';
-  setTimeout(() => document.getElementById('rq-new-part')?.focus(), 80);
-}
-function reqHideAddLine() {
-  const row = document.getElementById('rq-add-row');
-  if (row) row.style.display = 'none';
-  ['rq-new-part', 'rq-new-pid', 'rq-new-pno', 'rq-new-cid', 'rq-new-cname', 'rq-new-qty', 'rq-new-lot'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.value = '';
-  });
-  const badge = document.getElementById('rq-stock-badge');
-  if (badge) badge.style.display = 'none';
-}
-function reqPartSearch(inputEl) {
-  if (!inputEl.value.trim()) { hidePartDrop(); return; }
-  showPartDrop(inputEl, (p) => {
-    document.getElementById('rq-new-pid').value = p.id;
-    document.getElementById('rq-new-pno').value = p.no;
-    const cust = S.customers.find(c => c.id === p.customerId);
-    document.getElementById('rq-new-cid').value = cust ? cust.id : '';
-    document.getElementById('rq-new-cname').value = cust ? cust.name : '';
-    reqShowStockBadge(p.id);
-  });
-}
+/** Stock calc — only counts accepted/conditional lots, never rejected or pending */
 function reqCalcStock(partId) {
-  const totalIn = S.inward.reduce((s, iw) => s + (iw.parts || []).filter(p => p.partId === partId).reduce((a, p) => a + (+p.qty || 0), 0), 0);
+  const totalIn = S.inward
+    .filter(iw => !iw.iqcStatus || iw.iqcStatus === 'accepted' || iw.iqcStatus === 'conditional')
+    .reduce((s, iw) => s + (iw.parts || []).filter(p => p.partId === partId).reduce((a, p) => a + (+p.qty || 0), 0), 0);
   const totalIssued = S.routeCards.filter(rc => rc.partId === partId).reduce((s, rc) => s + (+rc.issuedQty || 0), 0);
   return Math.max(0, totalIn - totalIssued);
 }
-function reqShowStockBadge(partId) {
-  const badge = document.getElementById('rq-stock-badge');
-  if (!badge) return;
-  const avail = reqCalcStock(partId);
-  badge.style.display = 'block';
-  badge.innerHTML = `<span class="bdg ${avail > 0 ? 'bdg-g' : 'bdg-r'}"><i class="ti ti-package" aria-hidden="true"></i> Available Store Stock: ${avail} pcs</span>`;
-}
-function reqConfirmLine() {
-  const name = getField('rq-new-part');
-  const pid  = getField('rq-new-pid');
-  const pno  = getField('rq-new-pno');
-  const cid  = getField('rq-new-cid');
-  const cname = getField('rq-new-cname');
-  const qty  = parseInt(getField('rq-new-qty')) || 0;
-  const lot  = getField('rq-new-lot');
 
-  if (!name || !pid) { toast('Search and select a part first'); return; }
-  if (!qty || qty < 1) { toast('Enter a valid quantity'); return; }
-
-  _reqLines.push({
-    lineNo: _reqLines.length + 1, partId: pid, partNo: pno, partName: name,
-    customerId: cid, customerName: cname, masterLotCode: lot,
-    qtyRequested: qty, qtyApproved: 0, qtyIssued: 0
-  });
-  reqHideAddLine();
-  reqRenderLines();
-}
-function reqRenderLines() {
-  const w = document.getElementById('rq-lines-list');
-  if (!w) return;
-  if (!_reqLines.length) {
-    w.innerHTML = `<div class="text-sm text-muted" style="padding:8px 0;text-align:center">No parts added yet</div>`;
-    return;
-  }
-  w.innerHTML = _reqLines.map((l, i) => `
-    <div style="background:var(--sur);border:1px solid var(--bdr);border-radius:var(--rs);padding:10px 12px;margin-bottom:8px">
-      <div class="flex justify-between items-center gap-8">
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:700;font-size:13px">${l.partName}</div>
-          <div class="mono text-xs text-muted">${l.partNo}${l.customerName ? ' · ' + l.customerName : ''}</div>
-          ${l.masterLotCode ? `<div class="text-xs" style="color:var(--ok);margin-top:2px"><i class="ti ti-tag" aria-hidden="true"></i> ${l.masterLotCode}</div>` : ''}
-        </div>
-        <div style="text-align:right;flex-shrink:0">
-          <div class="font-num" style="font-size:16px">${l.qtyRequested}</div>
-          <div class="text-xs text-muted">pcs</div>
-        </div>
-        <button onclick="_reqLines.splice(${i},1);reqRenderLines()" class="btn btn-d btn-sm" aria-label="Remove line">
-          <i class="ti ti-x" aria-hidden="true"></i>
-        </button>
-      </div>
-    </div>`).join('');
-}
-
-async function saveRequisition(editId) {
-  if (!_reqLines.length) { showModalError('Add at least one part.'); return; }
-  const date = document.getElementById('rq-date').value;
-  if (!date) { showModalError('Date is required.'); return; }
-  const neededBy = document.getElementById('rq-needby').value;
-
-  const reqNo = editId ? S.requisitions.find(r => r.id === editId)?.reqNo : genReqNo();
-  const data = {
-    reqNo, date, neededBy, notes: getField('rq-notes'),
-    lines: _reqLines, status: 'pending',
-    requestedBy: S.sess.userId, requestedByName: S.sess.name,
-    approvedBy: '', approvedByName: '', approvedAt: '', rejectionReason: ''
-  };
-
-  try {
-    if (editId) {
-      const before = S.requisitions.find(x => x.id === editId);
-      await db.collection('requisitions').doc(editId).update({ ...data, updatedAt: serverTS() });
-      await logAudit('UPDATE_REQUISITION', 'STORE', editId, before, data);
-    } else {
-      const ref = await db.collection('requisitions').add({ ...data, createdAt: serverTS() });
-      await logAudit('CREATE_REQUISITION', 'STORE', ref.id, null, data);
-    }
-    closeModal();
-    await refreshStore('requisitions');
-    renderSection();
-    toast(editId ? 'Requisition updated' : 'Requisition submitted');
-  } catch (e) {
-    showModalError(e.message);
-  }
-}
-
-function viewRequisitionModal(id) {
-  const r = S.requisitions.find(x => x.id === id);
-  if (!r) return;
-
-  let body = `
-    <div class="modal-title">${r.reqNo}</div>
-    <div class="flex items-center gap-8 mb-12">
-      <span class="bdg ${REQ_BADGE[r.status] || 'bdg-gr'}"><span class="bdg-dot"></span>${REQ_LABEL[r.status] || r.status}</span>
-      <span class="text-sm text-muted">${fmtDate(r.date)}${r.neededBy ? ' · Needed by ' + fmtDate(r.neededBy) : ''}</span>
-    </div>`;
-
-  (r.lines || []).forEach(l => {
-    const issued = S.routeCards.filter(rc => rc.requisitionId === r.id && rc.lineNo === l.lineNo).reduce((s, rc) => s + (+rc.issuedQty || 0), 0);
-    body += `
-      <div style="background:var(--sur2);border-radius:var(--rs);padding:10px 12px;margin-bottom:8px">
-        <div style="font-weight:700">${l.partName} <span class="mono text-xs text-muted">${l.partNo}</span></div>
-        <div class="text-sm text-muted">${l.customerName || '—'}</div>
-        <div class="flex gap-12 mt-8 text-sm">
-          <span>Requested: <strong>${l.qtyRequested}</strong></span>
-          ${l.qtyApproved ? `<span style="color:var(--ok)">Approved: <strong>${l.qtyApproved}</strong></span>` : ''}
-          ${issued ? `<span style="color:var(--imf-navy)">Issued: <strong>${issued}</strong></span>` : ''}
-        </div>
-      </div>`;
-  });
-
-  if (r.approvedByName) body += `<div class="text-sm text-muted mb-8">Approved by ${r.approvedByName}</div>`;
-  if (r.rejectionReason) body += `<div class="ebox mb-8"><i class="ti ti-alert-triangle" aria-hidden="true"></i><span>Rejected: ${r.rejectionReason}</span></div>`;
-  if (r.notes) body += `<div class="text-sm text-muted mt-8">${r.notes}</div>`;
-
-  body += `<div class="flex gap-8 mt-16">`;
-  if (r.status === 'pending' && r.requestedBy === S.sess.userId) {
-    body += `<button class="btn btn-p flex-1" onclick="closeModal();openRequisitionModal('${r.id}')"><i class="ti ti-edit" aria-hidden="true"></i> Edit</button>`;
-    body += `<button class="btn btn-d" onclick="cancelRequisition('${r.id}')"><i class="ti ti-x" aria-hidden="true"></i> Cancel</button>`;
-  }
-  body += `<button class="btn btn-s flex-1" onclick="closeModal()">Close</button>`;
-  body += `</div>`;
-
-  openModal(body);
-}
-
-async function cancelRequisition(id) {
-  if (!confirm('Cancel this requisition?')) return;
-  try {
-    await db.collection('requisitions').doc(id).update({ status: 'rejected', rejectionReason: 'Cancelled by requester', updatedAt: serverTS() });
-    await logAudit('CANCEL_REQUISITION', 'STORE', id, null, { status: 'rejected' });
-    closeModal();
-    await refreshStore('requisitions');
-    renderSection();
-    toast('Requisition cancelled');
-  } catch (e) {
-    toast('Error: ' + e.message);
-  }
-}
+/* IQC inspection functions moved to qc.js (QC module, IQC tab) */
 
 /* ══════════════════════════════════════════════════════════════════════
-   SECTION 3 — APPROVALS
-   Admin / Store HOD review pending requisitions, set per-line approved
-   quantity (≤ requested), then approve or reject.
+   (Requisition creation and Store-HOD approvals have moved:
+    → Requisitions are created in production.js
+    → Approvals are handled in approvals.js
    ══════════════════════════════════════════════════════════════════════ */
-function renderApprovals() {
-  const pending = S.requisitions.filter(r => r.status === 'pending');
-  const recent  = S.requisitions.filter(r => ['approved', 'rejected'].includes(r.status))
-    .slice().sort((a, b) => (b.reqNo || '').localeCompare(a.reqNo || '')).slice(0, 10);
 
-  document.getElementById('section-content').innerHTML = `
-    <div style="font-size:16px;font-weight:700;margin-bottom:12px">Approvals</div>
-    ${pending.length
-      ? `<div class="slbl mb-8">Awaiting Approval (${pending.length})</div>${pending.map(r => approvalCard(r, true)).join('')}`
-      : `<div class="empty"><div class="empty-ic"><i class="ti ti-checklist" aria-hidden="true"></i></div><h3>No pending approvals</h3><p>All requisitions have been processed.</p></div>`}
-    ${recent.length ? `<div class="slbl mb-8 mt-16">Recently Processed</div>${recent.map(r => approvalCard(r, false)).join('')}` : ''}
-  `;
-}
-
-function approvalCard(r, isPending) {
-  return `
-    <div class="card" style="margin-bottom:10px">
-      <div class="flex justify-between items-center mb-8">
-        <div>
-          <div style="font-weight:700">${r.reqNo}</div>
-          <div class="text-sm text-muted">By ${r.requestedByName || '—'} · ${fmtDate(r.date)}</div>
-        </div>
-        <span class="bdg ${REQ_BADGE[r.status] || 'bdg-gr'}"><span class="bdg-dot"></span>${REQ_LABEL[r.status] || r.status}</span>
-      </div>
-      ${(r.lines || []).map(l => `
-        <div style="background:var(--sur2);border-radius:var(--rs);padding:8px 10px;margin-bottom:6px">
-          <div style="font-weight:700;font-size:13px">${l.partName} <span class="mono text-xs text-muted">${l.partNo}</span></div>
-          <div class="text-sm text-muted">${l.customerName || '—'}</div>
-          <div class="flex gap-8 items-center mt-8">
-            <span class="text-sm">Requested: <strong>${l.qtyRequested} pcs</strong></span>
-            ${isPending
-              ? `<input id="appr-qty-${r.id}-${l.lineNo}" type="number" min="0" max="${l.qtyRequested}" value="${l.qtyRequested}" style="width:90px;margin-left:auto" placeholder="Approve qty">`
-              : (l.qtyApproved ? `<span style="color:var(--ok);font-weight:700;margin-left:auto">Approved: ${l.qtyApproved}</span>` : '')}
-          </div>
-        </div>`).join('')}
-      ${isPending ? `
-        <div class="f" style="margin-top:8px"><label style="font-size:11px">Remarks (optional)</label><input id="appr-rmk-${r.id}" type="text" placeholder="Notes for requester..."></div>
-        <div class="flex gap-8 mt-8">
-          <button class="btn btn-ok flex-1" onclick="approveRequisition('${r.id}')"><i class="ti ti-check" aria-hidden="true"></i> Approve</button>
-          <button class="btn btn-d flex-1" onclick="rejectRequisition('${r.id}')"><i class="ti ti-x" aria-hidden="true"></i> Reject</button>
-        </div>`
-        : (r.approvedByName ? `<div class="text-sm text-muted mt-8">${r.status === 'approved' ? 'Approved' : 'Rejected'} by ${r.approvedByName}</div>` : '')}
-    </div>`;
-}
-
-async function approveRequisition(id) {
-  const r = S.requisitions.find(x => x.id === id);
-  if (!r) return;
-  const updatedLines = r.lines.map(l => {
-    const qtyEl = document.getElementById(`appr-qty-${id}-${l.lineNo}`);
-    const qty = qtyEl ? parseInt(qtyEl.value) || 0 : l.qtyRequested;
-    return { ...l, qtyApproved: Math.min(qty, l.qtyRequested) };
-  });
-  const rmk = getField(`appr-rmk-${id}`);
-  try {
-    await db.collection('requisitions').doc(id).update({
-      status: 'approved', lines: updatedLines,
-      approvedBy: S.sess.userId, approvedByName: S.sess.name, approvedAt: serverTS(),
-      notes: rmk || r.notes || '', updatedAt: serverTS()
-    });
-    await logAudit('APPROVE_REQUISITION', 'STORE', id, r, { status: 'approved', lines: updatedLines });
-    await refreshStore('requisitions');
-    renderSection();
-    toast('Requisition approved');
-  } catch (e) {
-    toast('Error: ' + e.message);
-  }
-}
-
-async function rejectRequisition(id) {
-  const rmk = getField(`appr-rmk-${id}`);
-  if (!rmk) { toast('Please enter a reason for rejection'); return; }
-  try {
-    const before = S.requisitions.find(x => x.id === id);
-    await db.collection('requisitions').doc(id).update({
-      status: 'rejected', rejectionReason: rmk,
-      approvedBy: S.sess.userId, approvedByName: S.sess.name, approvedAt: serverTS(),
-      updatedAt: serverTS()
-    });
-    await logAudit('REJECT_REQUISITION', 'STORE', id, before, { status: 'rejected', rejectionReason: rmk });
-    await refreshStore('requisitions');
-    renderSection();
-    toast('Requisition rejected');
-  } catch (e) {
-    toast('Error: ' + e.message);
-  }
-}
+/* genReqNo, renderRequisitions, openRequisitionModal, saveRequisition,
+   renderApprovals, approveRequisition, rejectRequisition — removed.
+   These functions now live in production.js and approvals.js respectively. */
 
 /* ══════════════════════════════════════════════════════════════════════
    SECTION 4 — ISSUE TO WIP
@@ -1040,17 +715,18 @@ function renderIssue() {
           </div>`;
         }).join('')}
         <div id="iss-line-select"></div>
+        <div id="iss-lot-picker"></div>
         <div id="iss-tag-section"></div>
       `}
   `;
 
   if (_issReq) issRenderLineSelect();
-  if (_issLine) issRenderTagSection();
+  if (_issLine) { issRenderLotPicker(); issRenderTagSection(); }
 }
 
 function issSelectRequisition(id) {
   _issReq = S.requisitions.find(r => r.id === id) || null;
-  _issLine = null; _issTags = []; _issBatchCode = '';
+  _issLine = null; _issTags = []; _issBatchCode = ''; _issLot = null;
   renderIssue();
 }
 
@@ -1079,12 +755,33 @@ function issRenderLineSelect() {
   `;
 }
 
-/** Resolve the master lot code for the currently-selected line */
+/** Returns master lot code — either the storeperson's explicit pick or 'LOT-UNKNOWN' */
 function issMasterLot() {
-  if (!_issLine) return 'LOT-UNKNOWN';
-  if (_issLine.masterLotCode) return _issLine.masterLotCode;
-  const lot = S.inward.find(iw => (iw.parts || []).some(p => p.partId === _issLine.partId || p.partName === _issLine.partName));
-  return lot ? lot.masterLotCode : 'LOT-UNKNOWN';
+  return _issLot || 'LOT-UNKNOWN';
+}
+
+/** Build list of accepted/conditional lots that have stock for _issLine.partId, FIFO order */
+function issGetAvailableLots() {
+  if (!_issLine) return [];
+  return S.inward
+    .filter(iw => !iw.iqcStatus || iw.iqcStatus === 'accepted' || iw.iqcStatus === 'conditional')
+    .filter(iw => (iw.parts || []).some(p => p.partId === _issLine.partId))
+    .map(iw => {
+      const part = (iw.parts || []).find(p => p.partId === _issLine.partId);
+      const issued = S.routeCards
+        .filter(rc => rc.masterLotCode === iw.masterLotCode && rc.partId === _issLine.partId)
+        .reduce((s, rc) => s + (+rc.issuedQty || 0), 0);
+      return {
+        masterLotCode: iw.masterLotCode,
+        date:          iw.date || '',
+        supplierName:  iw.supplierName || '',
+        iqcStatus:     iw.iqcStatus || null,
+        available:     Math.max(0, (part?.qty || 0) - issued),
+        dcNo:          iw.dcNo || '',
+      };
+    })
+    .filter(l => l.available > 0)
+    .sort((a, b) => a.date.localeCompare(b.date)); /* oldest first = FIFO */
 }
 
 function issSelectLine(lineNo) {
@@ -1092,63 +789,208 @@ function issSelectLine(lineNo) {
   _issLine = _issReq.lines.find(l => l.lineNo === lineNo) || null;
   if (!_issLine) return;
   _issTags = [];
+  _issLot  = null; /* reset lot pick whenever line changes */
 
+  /* Auto-select lot if there is exactly one with stock (skip the picker) */
+  const lots = issGetAvailableLots();
+  if (lots.length === 1) {
+    _issLot = lots[0].masterLotCode;
+    issFinaliseBatchCode();
+  }
+
+  issRenderLineSelect();
+  issRenderLotPicker();
+  issRenderTagSection();
+}
+
+function issFinaliseBatchCode() {
   const ymd = dateStr().replace(/-/g, '');
   const issCount = S.routeCards.filter(rc => rc.requisitionId === _issReq.id && rc.lineNo === _issLine.lineNo).length;
   _issBatchCode = `${issMasterLot()}-${ymd}-${issCount + 1}`;
+}
 
-  issRenderLineSelect();
+function issSelectLot(lotCode) {
+  _issLot = lotCode;
+  _issTags = [];
+  issFinaliseBatchCode();
+  issRenderLotPicker();
   issRenderTagSection();
+}
+
+function issRenderLotPicker() {
+  const w = document.getElementById('iss-lot-picker');
+  if (!w || !_issLine) return;
+  const lots = issGetAvailableLots();
+
+  /* Single lot auto-selected — no picker needed */
+  if (lots.length <= 1) { w.innerHTML = ''; return; }
+
+  w.innerHTML = `
+    <div style="margin-top:12px">
+      <div class="slbl mb-8">Select Material Lot <span style="font-size:10px;font-weight:400;color:var(--txt-muted)">(FIFO order — oldest first)</span></div>
+      ${lots.map((l, i) => {
+        const sel = _issLot === l.masterLotCode;
+        return `
+          <div onclick="issSelectLot('${l.masterLotCode}')"
+            style="display:flex;align-items:center;gap:12px;padding:10px 12px;margin-bottom:6px;
+                   border:1.5px solid ${sel ? 'var(--imf-navy)' : 'var(--bdr)'};border-radius:var(--rs);
+                   cursor:pointer;background:${sel ? 'var(--imf-steel-light)' : 'var(--sur)'}">
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:700;font-size:13px;display:flex;align-items:center;gap:8px">
+                <span class="mono">${l.masterLotCode}</span>
+                ${i === 0 ? `<span style="font-size:10px;background:var(--imf-navy);color:#fff;border-radius:4px;padding:1px 6px">FIFO</span>` : ''}
+              </div>
+              <div style="font-size:11px;color:var(--txt-muted);margin-top:2px">
+                ${l.supplierName} · ${fmtDate(l.date)}${l.dcNo ? ' · DC: '+l.dcNo : ''}
+                ${l.iqcStatus === 'conditional' ? ' · <span style="color:var(--warn)">Conditional acceptance</span>' : ''}
+              </div>
+            </div>
+            <div style="text-align:right;flex-shrink:0">
+              <div style="font-weight:700;color:var(--ok);font-size:14px">${l.available}</div>
+              <div style="font-size:10px;color:var(--txt-muted)">avail</div>
+            </div>
+            ${sel ? `<i class="ti ti-circle-check" style="color:var(--imf-navy);font-size:20px;flex-shrink:0"></i>` : `<div style="width:20px"></div>`}
+          </div>`;
+      }).join('')}
+    </div>`;
 }
 
 function issRenderTagSection() {
   const w = document.getElementById('iss-tag-section');
   if (!w || !_issLine) return;
 
-  const issued = issLineIssued(_issReq.id, _issLine.lineNo);
-  const remaining = _issLine.qtyApproved - issued;
+  /* Require a lot to be chosen before allowing TAG scan */
+  if (!_issLot) {
+    const lots = issGetAvailableLots();
+    if (lots.length === 0) {
+      w.innerHTML = `<div class="ebox mt-8"><i class="ti ti-package-off"></i><span>No accepted stock found for this part. Check IQC or inward records.</span></div>`;
+    } else {
+      w.innerHTML = ''; /* lot picker shown in iss-lot-picker div */
+    }
+    return;
+  }
+
+  const issued       = issLineIssued(_issReq.id, _issLine.lineNo);
+  const remaining    = _issLine.qtyApproved - issued;
   const sessionTotal = _issTags.reduce((s, t) => s + (+t.qty || 0), 0);
-  const canAddMore = sessionTotal < remaining;
+  const batchCap     = Math.min(remaining, ISS_BATCH_MAX);
+  const canAddMore   = sessionTotal < batchCap;
+  const pct          = Math.round((sessionTotal / ISS_BATCH_MAX) * 100);
+  const minMet       = sessionTotal >= ISS_BATCH_MIN;
+  const barColor     = sessionTotal === 0 ? 'var(--bdr-mid)'
+                     : !minMet           ? 'var(--warn)'
+                     : sessionTotal < ISS_BATCH_MAX ? 'var(--ok)'
+                     : 'var(--imf-navy)';
+  const maxQtyForInput = Math.min(remaining - sessionTotal, ISS_BATCH_MAX - sessionTotal);
 
   w.innerHTML = `
-    <div class="card mt-8">
-      <div class="card-hd"><i class="ti ti-tags" aria-hidden="true"></i> Scan TAGs — ${_issLine.partName}</div>
-      <div class="flex gap-12 mb-12 text-sm" style="background:var(--sur2);padding:8px 10px;border-radius:var(--rs)">
-        <span>Approved: <strong>${_issLine.qtyApproved}</strong></span>
-        <span>Session: <strong style="color:${sessionTotal > 0 ? 'var(--imf-navy)' : 'var(--txt-muted)'}">${sessionTotal}</strong></span>
-        <span>Remaining: <strong style="color:${remaining - sessionTotal > 0 ? 'var(--ok)' : 'var(--err)'}">${remaining - sessionTotal}</strong></span>
+    <div class="card mt-8" style="padding:0;overflow:hidden">
+
+      <!-- Header -->
+      <div style="padding:12px 16px;background:var(--imf-navy);color:#fff;display:flex;align-items:center;gap:10px">
+        <i class="ti ti-tags" style="font-size:18px;opacity:.85"></i>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_issLine.partName}</div>
+          <div style="font-size:11px;opacity:.7;margin-top:1px">${_issLine.partNo || ''}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0">
+          <div style="font-size:22px;font-weight:900;line-height:1">${sessionTotal}</div>
+          <div style="font-size:10px;opacity:.7">of ${ISS_BATCH_MAX} max</div>
+        </div>
       </div>
 
-      ${canAddMore ? `
-        <button class="qr-scan-btn mb-12" onclick="issScanTag()"><i class="ti ti-qrcode" aria-hidden="true"></i> Scan TAG</button>
-        <div class="row-2 mb-12">
-          <div class="f" style="margin:0">
-            <label>TAG Number</label>
-            <input id="iss-tag-input" type="text" placeholder="e.g. TAG042" oninput="this.value=this.value.toUpperCase()" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();issAddTag()}">
+      <!-- Range progress bar -->
+      <div style="padding:10px 16px 0;background:var(--sur2);border-bottom:1px solid var(--bdr)">
+        <div style="display:flex;justify-content:space-between;font-size:10px;font-weight:700;
+                    color:var(--txt-muted);margin-bottom:4px;letter-spacing:.04em">
+          <span style="color:${!minMet && sessionTotal > 0 ? 'var(--warn)' : 'var(--txt-muted)'}">MIN ${ISS_BATCH_MIN}</span>
+          <span>${sessionTotal} pcs in session</span>
+          <span>MAX ${ISS_BATCH_MAX}</span>
+        </div>
+        <div style="height:6px;background:var(--bdr);border-radius:3px;overflow:visible;position:relative;margin-bottom:10px">
+          <!-- Min marker -->
+          <div style="position:absolute;left:${ISS_BATCH_MIN}%;top:-2px;width:2px;height:10px;
+                      background:var(--warn);border-radius:1px;z-index:1"></div>
+          <!-- Fill -->
+          <div style="height:100%;width:${Math.min(100, pct)}%;background:${barColor};
+                      border-radius:3px;transition:width .2s,background .2s"></div>
+        </div>
+        <!-- Stats row -->
+        <div style="display:flex;gap:16px;padding-bottom:10px;font-size:12px">
+          <span style="color:var(--txt-muted)">Approved: <strong style="color:var(--txt)">${_issLine.qtyApproved}</strong></span>
+          <span style="color:var(--txt-muted)">Issued before: <strong style="color:var(--txt)">${issued}</strong></span>
+          <span style="color:var(--txt-muted)">Remaining: <strong style="color:${remaining > 0 ? 'var(--ok)' : 'var(--err)'}">${remaining}</strong></span>
+        </div>
+      </div>
+
+      <!-- Add TAG input -->
+      <div style="padding:14px 16px">
+        ${canAddMore ? `
+          <button class="qr-scan-btn mb-12" onclick="issScanTag()" style="width:100%">
+            <i class="ti ti-qrcode"></i> Scan TAG
+          </button>
+          <div style="display:grid;grid-template-columns:1fr 120px;gap:8px;margin-bottom:10px">
+            <div class="f" style="margin:0">
+              <label>TAG Number</label>
+              <input id="iss-tag-input" type="text" placeholder="e.g. TAG042"
+                oninput="this.value=this.value.toUpperCase()" autocomplete="off"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('iss-tag-qty').focus()}">
+            </div>
+            <div class="f" style="margin:0">
+              <label>Qty / TAG</label>
+              <input id="iss-tag-qty" type="number" min="1" max="${maxQtyForInput}" placeholder="pcs"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();issAddTag()}">
+            </div>
           </div>
-          <div class="f" style="margin:0">
-            <label>Qty for this TAG</label>
-            <input id="iss-tag-qty" type="number" min="1" max="${remaining - sessionTotal}" placeholder="e.g. 25">
+          <button class="btn btn-s w-full" style="border:1.5px dashed var(--imf-navy);color:var(--imf-navy);background:var(--imf-steel-light)" onclick="issAddTag()">
+            <i class="ti ti-plus"></i> Add TAG to Session
+          </button>
+          ${!minMet && sessionTotal > 0 ? `
+            <div style="margin-top:8px;padding:7px 10px;background:#fffbeb;border:1px solid #fde68a;
+                        border-radius:var(--rxs);font-size:12px;color:#92400e;display:flex;gap:6px;align-items:center">
+              <i class="ti ti-info-circle" style="flex-shrink:0"></i>
+              Minimum batch is ${ISS_BATCH_MIN} pcs — add ${ISS_BATCH_MIN - sessionTotal} more to submit.
+            </div>` : ''}
+        ` : `
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;
+                      background:#f0fdf4;border:1px solid #bbf7d0;border-radius:var(--rs);
+                      font-size:12px;color:#14532d">
+            <i class="ti ti-circle-check" style="font-size:16px;flex-shrink:0"></i>
+            <span>Batch full — ${sessionTotal} pcs assigned (max ${ISS_BATCH_MAX}).</span>
+          </div>`}
+      </div>
+
+      <!-- TAG list -->
+      ${_issTags.length ? `
+        <div style="border-top:1px solid var(--bdr);padding:12px 16px 0">
+          <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.05em;margin-bottom:8px">
+            TAGS IN SESSION (${_issTags.length})
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
+            ${_issTags.map((t, i) => `
+              <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;
+                          background:var(--sur2);border-radius:var(--rxs);border:1px solid var(--bdr)">
+                <i class="ti ti-tag" style="color:var(--imf-navy);opacity:.7;font-size:15px;flex-shrink:0"></i>
+                <span style="font-family:monospace;font-weight:700;font-size:13px;flex:1">${t.tagId}</span>
+                <span style="font-size:12px;color:var(--txt-muted)">${t.qty} pcs</span>
+                <button class="btn btn-d btn-sm" onclick="issRemoveTag(${i})" aria-label="Remove" style="padding:3px 7px">
+                  <i class="ti ti-x"></i>
+                </button>
+              </div>`).join('')}
+          </div>
+          <div style="font-size:11px;color:var(--txt-muted);margin-bottom:12px;display:flex;align-items:center;gap:6px">
+            <i class="ti ti-barcode"></i> Batch: <strong>${_issBatchCode}</strong>
           </div>
         </div>
-        <button class="btn btn-p w-full" onclick="issAddTag()">Add TAG to Session</button>
-      ` : `<div class="sbox"><i class="ti ti-circle-check" aria-hidden="true"></i><span>Full approved quantity assigned across TAGs.</span></div>`}
-
-      ${_issTags.length ? `
-        <div class="slbl mt-16 mb-8">TAGs in this Session (${_issTags.length})</div>
-        ${_issTags.map((t, i) => `
-          <div class="li" style="cursor:default">
-            <div class="li-ic"><i class="ti ti-tag" aria-hidden="true"></i></div>
-            <div class="li-body">
-              <div class="li-name mono">${t.tagId}</div>
-              <div class="li-sub">${t.qty} pcs</div>
-            </div>
-            <button class="btn btn-d btn-sm" onclick="issRemoveTag(${i})" aria-label="Remove TAG"><i class="ti ti-x" aria-hidden="true"></i></button>
-          </div>`).join('')}
-        <div class="lot-badge mt-8"><i class="ti ti-barcode" aria-hidden="true"></i> Batch: ${_issBatchCode}</div>
-        <button class="btn btn-p w-full mt-12" onclick="issSubmitSession()">
-          <i class="ti ti-send" aria-hidden="true"></i> Issue ${_issTags.length} TAG${_issTags.length > 1 ? 's' : ''} (${sessionTotal} pcs) to WIP
-        </button>
+        <div style="padding:0 16px 16px">
+          ${minMet ? `
+            <button class="btn btn-p w-full" onclick="issSubmitSession()" style="font-size:15px;padding:14px">
+              <i class="ti ti-send"></i> Issue ${_issTags.length} TAG${_issTags.length > 1 ? 's' : ''} · ${sessionTotal} pcs to WIP
+            </button>` : `
+            <button class="btn w-full" disabled style="font-size:13px;background:var(--bdr);color:var(--txt-muted);cursor:not-allowed;padding:13px">
+              <i class="ti ti-lock"></i> Need ${ISS_BATCH_MIN - sessionTotal} more pcs to reach minimum
+            </button>`}
+        </div>
       ` : ''}
     </div>`;
 }
@@ -1170,7 +1012,8 @@ async function issAddTag() {
   if (!tagId) { toast('Enter or scan a TAG number'); return; }
   if (!/^TAG\d+$/.test(tagId)) { toast('Invalid TAG format. Expected TAG001, TAG042, etc.'); return; }
   if (!qty || qty < 1) { toast('Enter a quantity for this TAG'); return; }
-  if (sessionTotal + qty > remaining) { toast(`Only ${remaining - sessionTotal} pcs remaining to issue`); return; }
+  if (sessionTotal + qty > remaining) { toast(`Only ${remaining - sessionTotal} pcs remaining on this requisition line`); return; }
+  if (sessionTotal + qty > ISS_BATCH_MAX) { toast(`Batch limit: max ${ISS_BATCH_MAX} pcs per session. Only ${ISS_BATCH_MAX - sessionTotal} pcs left in this batch.`); return; }
   if (_issTags.find(t => t.tagId === tagId)) { toast(tagId + ' already added in this session'); return; }
 
   try {
@@ -1194,6 +1037,9 @@ function issRemoveTag(i) {
 
 async function issSubmitSession() {
   if (!_issReq || !_issLine || !_issTags.length) { toast('Nothing to submit'); return; }
+  const sessionTotal = _issTags.reduce((s, t) => s + (+t.qty || 0), 0);
+  if (sessionTotal < ISS_BATCH_MIN) { toast(`Minimum batch is ${ISS_BATCH_MIN} pcs. Current session total: ${sessionTotal} pcs.`); return; }
+  if (sessionTotal > ISS_BATCH_MAX) { toast(`Batch exceeds maximum ${ISS_BATCH_MAX} pcs. Current: ${sessionTotal} pcs.`); return; }
 
   try {
     const batch = db.batch();
@@ -1248,19 +1094,17 @@ async function issSubmitSession() {
       });
     });
 
-    const totalNewlyIssued = _issTags.reduce((s, t) => s + (+t.qty || 0), 0);
-
     // Stock guard — prevent issuing more than physically available
     const stockAvail = reqCalcStock(_issLine.partId);
-    if (totalNewlyIssued > stockAvail) {
-      showModalError(`Insufficient stock. Available: ${stockAvail} pcs, trying to issue: ${totalNewlyIssued} pcs.`);
+    if (sessionTotal > stockAvail) {
+      toast(`Cannot issue: only ${stockAvail} pcs in stock for ${_issLine.partName}, requested ${sessionTotal} pcs.`);
       return;
     }
 
     const updatedLines = _issReq.lines.map(l => {
       if (l.lineNo !== _issLine.lineNo) return l;
       const alreadyIssued = issLineIssued(_issReq.id, l.lineNo);
-      return { ...l, qtyIssued: alreadyIssued + totalNewlyIssued };
+      return { ...l, qtyIssued: alreadyIssued + sessionTotal };
     });
     const allFulfilled = updatedLines.every(l => l.qtyIssued >= l.qtyApproved);
 
@@ -1287,20 +1131,15 @@ async function issSubmitSession() {
    Available = max(0, total received − total issued to WIP).
    ══════════════════════════════════════════════════════════════════════ */
 
-const PERIOD_RCVD_CYCLE = ['all', 'today', 'month', 'year'];
-const PERIOD_ISSD_CYCLE = ['today', 'month', 'year', 'all'];
-const PERIOD_LABEL = { all: 'All Time', today: 'Today', month: 'This Month', year: 'This Year' };
+const STOCK_PERIODS = [
+  { key: 'all',   label: 'All Time'   },
+  { key: 'year',  label: 'This Year'  },
+  { key: 'month', label: 'This Month' },
+  { key: 'week',  label: 'This Week'  },
+  { key: 'today', label: 'Today'      },
+];
 
-function cycleRcvdPeriod() {
-  const i = PERIOD_RCVD_CYCLE.indexOf(_rcvdPeriod);
-  _rcvdPeriod = PERIOD_RCVD_CYCLE[(i + 1) % PERIOD_RCVD_CYCLE.length];
-  renderStock();
-}
-function cycleIssdPeriod() {
-  const i = PERIOD_ISSD_CYCLE.indexOf(_issdPeriod);
-  _issdPeriod = PERIOD_ISSD_CYCLE[(i + 1) % PERIOD_ISSD_CYCLE.length];
-  renderStock();
-}
+function setStockPeriod(p) { _stockPeriod = p; renderStock(); }
 
 function inPeriod(dateStr_, period) {
   if (!dateStr_ || period === 'all') return true;
@@ -1309,6 +1148,11 @@ function inPeriod(dateStr_, period) {
   if (period === 'today') return dateStr_ === today;
   if (period === 'month') return dateStr_.startsWith(`${y}-${m}`);
   if (period === 'year')  return dateStr_.startsWith(y);
+  if (period === 'week') {
+    const d = new Date(today); d.setDate(d.getDate() - d.getDay()); /* Sunday start */
+    const weekStart = d.toISOString().slice(0, 10);
+    return dateStr_ >= weekStart && dateStr_ <= today;
+  }
   return true;
 }
 
@@ -1316,12 +1160,6 @@ function tsToDateStr(ts) {
   if (!ts) return '';
   const d = ts.toDate ? ts.toDate() : new Date(ts);
   return d.toISOString().slice(0, 10);
-}
-
-function periodPill(label, onclick, active) {
-  return `<button onclick="${onclick}" class="period-pill${active ? ' active' : ''}">
-    ${label} <i class="ti ti-refresh"></i>
-  </button>`;
 }
 
 function renderStock() {
@@ -1358,12 +1196,31 @@ function renderStock() {
     });
   });
 
-  /* ── 2. Issued per part (all time, for stock level) ──────────── */
+  /* ── 2. Issued per part (all time, for available balance) ───── */
   const issuedByPart = {};
   S.routeCards.forEach(rc => {
     const key = rc.partId || rc.partName;
     if (!key) return;
     issuedByPart[key] = (issuedByPart[key] || 0) + (+rc.issuedQty || 0);
+  });
+
+  /* ── 2b. Period-filtered received + issued per part (table cols) ─ */
+  const rcvdByPartPeriod = {};
+  S.inward.forEach(r => {
+    if (!inPeriod(r.date, _stockPeriod)) return;
+    (r.parts || []).forEach(p => {
+      const key = p.partId || p.partName;
+      if (!key) return;
+      rcvdByPartPeriod[key] = (rcvdByPartPeriod[key] || 0) + (+p.qty || 0);
+    });
+  });
+
+  const issdByPartPeriod = {};
+  S.routeCards.forEach(rc => {
+    if (!inPeriod(tsToDateStr(rc.issuedAt), _stockPeriod)) return;
+    const key = rc.partId || rc.partName;
+    if (!key) return;
+    issdByPartPeriod[key] = (issdByPartPeriod[key] || 0) + (+rc.issuedQty || 0);
   });
 
   /* ── 3. Build part list ───────────────────────────────────────── */
@@ -1372,24 +1229,32 @@ function renderStock() {
     const overIssued = issued > p.received;
     const available  = Math.max(0, p.received - issued);
     const value      = p.lots.reduce((s, l) => s + l.qty * l.rate, 0);
-    return { ...p, key, issued, available, value, overIssued };
+    return { ...p, key, issued, available, value, overIssued,
+             rcvdPeriod: rcvdByPartPeriod[key] || 0,
+             issdPeriod: issdByPartPeriod[key] || 0 };
   });
 
   /* ── 4. Period-filtered stat card values ─────────────────────── */
   const rcvdFiltered = S.inward.reduce((s, r) => {
-    if (!inPeriod(r.date, _rcvdPeriod)) return s;
+    if (!inPeriod(r.date, _stockPeriod)) return s;
     return s + (r.parts || []).reduce((a, p) => a + (+p.qty || 0), 0);
   }, 0);
 
   const issdFiltered = S.routeCards.reduce((s, rc) => {
-    if (!inPeriod(tsToDateStr(rc.issuedAt), _issdPeriod)) return s;
+    if (!inPeriod(tsToDateStr(rc.issuedAt), _stockPeriod)) return s;
     return s + (+rc.issuedQty || 0);
   }, 0);
 
   /* ── 5. Overall stats ─────────────────────────────────────────── */
-  const totalAvailable = partList.reduce((s, p) => s + p.available, 0);
-  const totalValue     = partList.reduce((s, p) => s + p.value,     0);
+  const totalAvailable  = partList.reduce((s, p) => s + p.available, 0);
+  const totalValue      = partList.reduce((s, p) => s + p.value,     0);
   const overIssuedCount = partList.filter(p => p.overIssued).length;
+
+  /* IQC quarantine stats — material awaiting/rejected inspection is excluded from available */
+  const iqcPending  = S.inward.filter(r => r.iqcStatus === 'pending');
+  const iqcRejected = S.inward.filter(r => r.iqcStatus === 'rejected');
+  const pendingPcs  = iqcPending.reduce((s, r) => s + (r.parts||[]).reduce((a,p)=>a+(+p.qty||0),0), 0);
+  const rejectedPcs = iqcRejected.reduce((s, r) => s + (r.parts||[]).reduce((a,p)=>a+(+p.qty||0),0), 0);
 
   /* ── 6. Filter + sort the table ──────────────────────────────── */
   const q = _stockSearch.trim().toLowerCase();
@@ -1411,34 +1276,43 @@ function renderStock() {
   const custOpts = Object.entries(custMap).map(([id, name]) =>
     `<option value="${id}" ${_stockCustFilt===id?'selected':''}>${name}</option>`).join('');
 
-  /* ── 8. Stat cards ────────────────────────────────────────────── */
+  /* ── 8. Stat cards + unified period filter ────────────────────── */
   const statCard = (opts) => `
     <div style="background:var(--sur);border:1px solid var(--bdr);border-radius:var(--rs);
                 padding:14px 16px;border-top:3px solid ${opts.accent};
-                display:flex;flex-direction:column;min-height:112px;box-sizing:border-box">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-        <div style="font-size:10px;font-weight:800;letter-spacing:.07em;color:${opts.accent}">${opts.label}</div>
-        ${opts.pill || '<div></div>'}
-      </div>
+                display:flex;flex-direction:column;min-height:100px;box-sizing:border-box">
+      <div style="font-size:10px;font-weight:800;letter-spacing:.07em;color:${opts.accent};margin-bottom:8px">${opts.label}</div>
       <div style="display:flex;align-items:flex-end;justify-content:space-between;flex:1">
         <div>
           <div style="font-size:26px;font-weight:900;line-height:1;color:var(--txt)">${opts.value}</div>
           <div style="font-size:11px;color:var(--txt-muted);margin-top:4px">${opts.sub}</div>
         </div>
-        <i class="ti ${opts.icon}" style="font-size:32px;color:${opts.accent};opacity:.15;flex-shrink:0;margin-left:8px"></i>
+        <i class="ti ${opts.icon}" style="font-size:28px;color:${opts.accent};opacity:.15;flex-shrink:0;margin-left:8px"></i>
       </div>
       ${opts.extra ? `<div style="font-size:11px;color:var(--txt-muted);border-top:1px solid var(--bdr);padding-top:6px;margin-top:8px">${opts.extra}</div>` : ''}
     </div>`;
 
-  const rcvdPill = periodPill(PERIOD_LABEL[_rcvdPeriod], 'cycleRcvdPeriod()', _rcvdPeriod !== 'all');
-  const issdPill = periodPill(PERIOD_LABEL[_issdPeriod], 'cycleIssdPeriod()', _issdPeriod !== 'today');
+  const periodLabel = STOCK_PERIODS.find(p => p.key === _stockPeriod)?.label || 'All Time';
+  const periodSelector = `
+    <div style="display:flex;gap:4px;background:var(--sur2);border:1px solid var(--bdr);
+                border-radius:var(--rpill);padding:3px;margin-bottom:12px;overflow-x:auto;flex-wrap:nowrap">
+      ${STOCK_PERIODS.map(p => `
+        <button onclick="setStockPeriod('${p.key}')"
+          style="flex:1;min-width:60px;padding:6px 10px;border-radius:var(--rpill);border:none;cursor:pointer;
+                 font-size:12px;font-weight:${_stockPeriod===p.key?'700':'500'};white-space:nowrap;
+                 background:${_stockPeriod===p.key?'var(--imf-navy)':'transparent'};
+                 color:${_stockPeriod===p.key?'#fff':'var(--txt-muted)'};transition:all .15s">
+          ${p.label}
+        </button>`).join('')}
+    </div>`;
 
   const statsHtml = `
+    ${periodSelector}
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
       ${statCard({
         label: 'AVAILABLE',
         value: totalAvailable.toLocaleString('en-IN'),
-        sub:   'pcs in store right now',
+        sub:   'pcs · always current',
         icon:  'ti-package',
         accent:'#16a34a',
         extra: totalValue > 0 ? `${fmtINR(totalValue)} total stock value` : '',
@@ -1446,18 +1320,16 @@ function renderStock() {
       ${statCard({
         label: 'RECEIVED',
         value: rcvdFiltered.toLocaleString('en-IN'),
-        sub:   `pcs · ${PERIOD_LABEL[_rcvdPeriod].toLowerCase()}`,
+        sub:   `pcs · ${periodLabel.toLowerCase()}`,
         icon:  'ti-package-import',
         accent:'#2563eb',
-        pill:  rcvdPill,
       })}
       ${statCard({
         label: 'ISSUED TO WIP',
         value: issdFiltered.toLocaleString('en-IN'),
-        sub:   `pcs · ${PERIOD_LABEL[_issdPeriod].toLowerCase()}`,
+        sub:   `pcs · ${periodLabel.toLowerCase()}`,
         icon:  'ti-arrow-bar-right',
         accent:'#7c3aed',
-        pill:  issdPill,
       })}
     </div>`;
 
@@ -1466,6 +1338,19 @@ function renderStock() {
 
     ${statsHtml}
 
+    ${pendingPcs > 0 ? `
+      <div onclick="switchTab('iqc')" style="display:flex;align-items:center;gap:8px;background:#fffbeb;border:1px solid #fde68a;
+                  border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:#92400e;cursor:pointer">
+        <i class="ti ti-microscope" style="flex-shrink:0"></i>
+        <span><strong>${pendingPcs} pcs</strong> across ${iqcPending.length} lot${iqcPending.length>1?'s':''} are quarantined, pending IQC — not counted in available stock</span>
+        <i class="ti ti-chevron-right" style="margin-left:auto"></i>
+      </div>` : ''}
+    ${rejectedPcs > 0 ? `
+      <div style="display:flex;align-items:center;gap:8px;background:#fef2f2;border:1px solid #fca5a5;
+                  border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:#991b1b">
+        <i class="ti ti-ban" style="flex-shrink:0"></i>
+        <span><strong>${rejectedPcs} pcs</strong> across ${iqcRejected.length} lot${iqcRejected.length>1?'s':''} rejected by IQC — quarantined, excluded from stock</span>
+      </div>` : ''}
     ${overIssuedCount ? `
       <div style="display:flex;align-items:center;gap:8px;background:#fef2f2;border:1px solid #fca5a5;
                   border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#991b1b">
@@ -1563,9 +1448,11 @@ function renderStock() {
               <div style="height:100%;width:${isOver?100:pct}%;background:${barColor};border-radius:2px"></div>
             </div>
           </div>
-          <div style="text-align:right;font-size:13px;font-weight:600;color:var(--txt-muted)">${p.received}</div>
-          <div style="text-align:right;font-size:13px;font-weight:600;color:${isOver?'#dc2626':'var(--txt-muted)'}">
-            ${p.issued}${isOver?'<div style="font-size:9px;color:#dc2626">exceeds</div>':''}
+          <div style="text-align:right;font-size:13px;font-weight:600;color:${p.rcvdPeriod>0?'var(--txt-muted)':'var(--bdr-strong)'}">
+            ${p.rcvdPeriod > 0 ? p.rcvdPeriod : '—'}
+          </div>
+          <div style="text-align:right;font-size:13px;font-weight:600;color:${p.issdPeriod>0?'var(--txt-muted)':'var(--bdr-strong)'}">
+            ${p.issdPeriod > 0 ? p.issdPeriod : '—'}
           </div>
           <div style="text-align:right;font-size:14px;font-weight:800;color:${availColor}">${p.available}</div>
         </div>

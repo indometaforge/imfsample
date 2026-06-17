@@ -17,6 +17,7 @@
 /* ── Tabs ────────────────────────────────────────────────────────────── */
 const TABS = [
   { key: 'inspect', icon: 'ti-scan',          label: 'Inspect'  },
+  { key: 'iqc',     icon: 'ti-microscope',    label: 'IQC'      },
   { key: 'setup',   icon: 'ti-settings-cog',  label: 'Setups'   },
   { key: 'history', icon: 'ti-history',        label: 'History'  },
   { key: 'cleared', icon: 'ti-circle-check',  label: 'Cleared'  },
@@ -25,11 +26,17 @@ const TABS = [
 /* ── State ───────────────────────────────────────────────────────────── */
 let _tab      = 'inspect';
 let _inspCard = null;   // route card currently loaded for inspection
+let _iqcFilt  = 'pending'; // 'pending' | 'history'
+
+const IQC_LABEL = { pending: 'IQC Pending', accepted: 'Accepted', conditional: 'Conditional', rejected: 'Rejected' };
+const IQC_BADGE = { pending: 'bdg-a', accepted: 'bdg-g', conditional: 'bdg-b', rejected: 'bdg-r' };
 
 const S_QC = {
   setupApprovals: [],
   inspections:    [],
   clearedCards:   [],
+  inward:         [],
+  iqcResults:     [],
 };
 
 /* ── Boot ────────────────────────────────────────────────────────────── */
@@ -45,15 +52,19 @@ async function init() {
 
 async function loadQCData() {
   try {
-    const [saSnap, insnSnap, clearedSnap] = await Promise.all([
+    const [saSnap, insnSnap, clearedSnap, inwSnap, iqcSnap] = await Promise.all([
       db.collection('setupApprovals').orderBy('createdAt', 'desc').limit(200).get(),
       db.collection('qcInspections').orderBy('createdAt', 'desc').limit(100).get(),
       db.collection('routeCards').where('status', '==', 'qc_cleared').get(),
+      db.collection('inward').get(),
+      db.collection('iqcResults').get(),
     ]);
     S_QC.setupApprovals = saSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     S_QC.inspections    = insnSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     S_QC.clearedCards   = clearedSnap.docs.map(d => ({ id: d.id, ...d.data() }))
       .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+    S_QC.inward         = inwSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    S_QC.iqcResults     = iqcSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   } catch (e) { console.warn('loadQCData:', e.message); }
 }
 
@@ -64,12 +75,13 @@ async function refreshQC() {
 
 /* ── Shell render ────────────────────────────────────────────────────── */
 function render() {
-  const pendingSA = S_QC.setupApprovals.filter(s => s.status === 'pending').length;
+  const pendingSA      = S_QC.setupApprovals.filter(s => s.status === 'pending').length;
   const pendingCleared = S_QC.clearedCards.length;
+  const pendingIQC     = S_QC.inward.filter(r => r.iqcStatus === 'pending').length;
 
   const tabHtml = TABS.map(t => {
     const active  = _tab === t.key;
-    const badge   = t.key === 'setup' ? pendingSA : t.key === 'cleared' ? pendingCleared : 0;
+    const badge   = t.key === 'setup' ? pendingSA : t.key === 'cleared' ? pendingCleared : t.key === 'iqc' ? pendingIQC : 0;
     const badgeBg = active ? 'rgba(255,255,255,.28)' : 'var(--warn)';
     return `
       <button onclick="switchTab('${t.key}')"
@@ -107,6 +119,7 @@ function renderTab() {
   const el = document.getElementById('tab-body');
   if (!el) return;
   if      (_tab === 'inspect') renderInspect();
+  else if (_tab === 'iqc')     renderIQC();
   else if (_tab === 'setup')   renderSetupApprovals();
   else if (_tab === 'history') renderHistory();
   else if (_tab === 'cleared') renderCleared();
@@ -594,6 +607,181 @@ async function qcSubmitDisposition() {
   } catch (e) {
     console.error('qcSubmitDisposition:', e);
     toast('Error: ' + e.message);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   TAB: IQC — Incoming Quality Control
+   Inward receipts start as 'pending'; QC team Accept/Conditional/Reject.
+   Rejected lots are quarantined from stock until re-inspected or disposed.
+   ═══════════════════════════════════════════════════════════════════ */
+function renderIQC() {
+  const el = document.getElementById('tab-body');
+  if (!el) return;
+  const pending = S_QC.inward.filter(r => r.iqcStatus === 'pending')
+    .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  const history = S_QC.inward.filter(r => r.iqcStatus && r.iqcStatus !== 'pending')
+    .sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 50);
+
+  el.innerHTML = `
+    <div style="display:flex;gap:4px;background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rpill);
+                padding:3px;margin-bottom:14px;width:fit-content">
+      <button onclick="_iqcFilt='pending';renderIQC()"
+        style="padding:6px 18px;border-radius:var(--rpill);border:none;cursor:pointer;font-size:13px;font-weight:600;
+               background:${_iqcFilt==='pending'?'var(--imf-navy)':'transparent'};
+               color:${_iqcFilt==='pending'?'#fff':'var(--txt-muted)'}">
+        Pending${pending.length ? ` (${pending.length})` : ''}
+      </button>
+      <button onclick="_iqcFilt='history';renderIQC()"
+        style="padding:6px 18px;border-radius:var(--rpill);border:none;cursor:pointer;font-size:13px;font-weight:600;
+               background:${_iqcFilt==='history'?'var(--imf-navy)':'transparent'};
+               color:${_iqcFilt==='history'?'#fff':'var(--txt-muted)'}">
+        History
+      </button>
+    </div>
+
+    ${_iqcFilt === 'pending'
+      ? (pending.length
+          ? pending.map(iqcPendingCard).join('')
+          : `<div class="empty"><div class="empty-ic"><i class="ti ti-circle-check"></i></div>
+               <h3>All lots cleared</h3><p>No inward receipts awaiting inspection.</p></div>`)
+      : (history.length
+          ? `<div class="card" style="padding:0;overflow:hidden">${history.map(iqcHistCard).join('')}</div>`
+          : `<div class="empty"><div class="empty-ic"><i class="ti ti-history"></i></div>
+               <h3>No IQC history</h3><p>Completed inspections will appear here.</p></div>`)}
+  `;
+}
+
+function iqcPendingCard(r) {
+  const parts = r.parts || [];
+  const totalPcs = parts.reduce((s, p) => s + (+p.qty || 0), 0);
+  return `
+    <div class="card" style="margin-bottom:10px;border-left:3px solid var(--warn)">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:10px">
+        <div>
+          <div style="font-weight:700;font-size:14px">${r.supplierName || '—'}</div>
+          <div style="font-size:12px;color:var(--txt-muted);margin-top:2px">
+            ${fmtDate(r.date)} · <span style="font-family:monospace">${r.masterLotCode || '—'}</span>
+            ${r.dcNo ? ` · DC: ${r.dcNo}` : ''}
+          </div>
+        </div>
+        <span class="bdg bdg-a"><span class="bdg-dot"></span>IQC Pending</span>
+      </div>
+      <div style="background:var(--sur2);border-radius:var(--rs);padding:8px 10px;margin-bottom:12px">
+        ${parts.map(p => `
+          <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px">
+            <span>${p.partName} <span style="font-family:monospace;font-size:11px;color:var(--txt-muted)">${p.partNo||''}</span></span>
+            <strong>${p.qty} pcs</strong>
+          </div>`).join('')}
+        <div style="border-top:1px solid var(--bdr);margin-top:6px;padding-top:6px;font-size:12px;color:var(--txt-muted)">
+          Total: <strong>${totalPcs} pcs</strong>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-p" style="flex:1" onclick="openIQCModal('${r.id}','accepted')">
+          <i class="ti ti-circle-check"></i> Accept
+        </button>
+        <button class="btn" style="flex:1;background:#f0fdf4;color:#16a34a;border:1.5px solid #86efac" onclick="openIQCModal('${r.id}','conditional')">
+          <i class="ti ti-alert-circle"></i> Conditional
+        </button>
+        <button class="btn" style="flex:1;background:#fef2f2;color:#dc2626;border:1.5px solid #fca5a5" onclick="openIQCModal('${r.id}','rejected')">
+          <i class="ti ti-ban"></i> Reject
+        </button>
+      </div>
+    </div>`;
+}
+
+function iqcHistCard(r) {
+  const parts = r.parts || [];
+  const totalPcs = parts.reduce((s, p) => s + (+p.qty || 0), 0);
+  const result = S_QC.iqcResults.find(q => q.inwId === r.id);
+  return `
+    <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--bdr)">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:13px">${r.supplierName || '—'}</div>
+        <div style="font-size:11px;color:var(--txt-muted);margin-top:2px">
+          ${fmtDate(r.date)} · <span style="font-family:monospace">${r.masterLotCode||'—'}</span>
+          · ${totalPcs} pcs${result?.checkedByName ? ` · by ${result.checkedByName}` : ''}
+        </div>
+        ${result?.notes ? `<div style="font-size:11px;color:var(--txt-muted);margin-top:2px;font-style:italic">${result.notes}</div>` : ''}
+      </div>
+      <span class="bdg ${IQC_BADGE[r.iqcStatus]||'bdg-gr'}" style="flex-shrink:0">
+        <span class="bdg-dot"></span>${IQC_LABEL[r.iqcStatus]||r.iqcStatus}
+      </span>
+    </div>`;
+}
+
+function openIQCModal(inwId, preselect) {
+  const r = S_QC.inward.find(x => x.id === inwId);
+  if (!r) return;
+  const parts = r.parts || [];
+  const totalPcs = parts.reduce((s, p) => s + (+p.qty || 0), 0);
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">IQC Inspection</div>
+    <div id="modal-err"></div>
+    <div style="background:var(--sur2);border-radius:var(--rs);padding:10px 12px;margin-bottom:14px">
+      <div style="font-weight:700">${r.supplierName}</div>
+      <div style="font-size:12px;color:var(--txt-muted);margin-top:2px">
+        <span style="font-family:monospace">${r.masterLotCode}</span> · ${fmtDate(r.date)}
+      </div>
+      ${parts.map(p => `<div style="font-size:13px;margin-top:4px">${p.partName} — <strong>${p.qty} pcs</strong></div>`).join('')}
+      <div style="font-size:12px;font-weight:700;color:var(--txt-muted);margin-top:6px">Total: ${totalPcs} pcs</div>
+    </div>
+    <div class="f">
+      <label class="f-req">IQC Decision</label>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${[['accepted','Accept — material meets spec, release to store','ti-circle-check','var(--ok)'],
+           ['conditional','Conditional — accept with usage restrictions','ti-alert-circle','var(--warn)'],
+           ['rejected','Reject — material does not meet spec, quarantine','ti-ban','var(--err)']
+          ].map(([val, lbl, icon, col]) => `
+          <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;
+                        border:1.5px solid ${preselect===val?col:'var(--bdr)'};border-radius:var(--rs);
+                        cursor:pointer;background:${preselect===val?col+'1a':'var(--sur)'}">
+            <input type="radio" name="iqc-decision" value="${val}" ${preselect===val?'checked':''} style="margin-top:2px;flex-shrink:0">
+            <div>
+              <div style="font-weight:600;display:flex;align-items:center;gap:6px">
+                <i class="ti ${icon}" style="color:${col}"></i> ${val.charAt(0).toUpperCase()+val.slice(1)}
+              </div>
+              <div style="font-size:11px;color:var(--txt-muted)">${lbl}</div>
+            </div>
+          </label>`).join('')}
+      </div>
+    </div>
+    <div class="f" style="margin-top:12px">
+      <label for="iqc-notes">Inspection Notes / Conditions</label>
+      <textarea id="iqc-notes" rows="2"
+        placeholder="Dimension check results, material cert ref, conditions for conditional acceptance..."></textarea>
+    </div>
+    ${modalActions('Record IQC Decision', "saveIQC('" + inwId + "')")}
+  `);
+}
+
+async function saveIQC(inwId) {
+  const decision = document.querySelector('input[name="iqc-decision"]:checked')?.value;
+  if (!decision) { showModalError('Select a decision — Accept, Conditional, or Reject'); return; }
+  const notes = getField('iqc-notes');
+  try {
+    const batch = db.batch();
+    const iqcRef = db.collection('iqcResults').doc();
+    batch.set(iqcRef, {
+      inwId, decision, notes,
+      checkedBy: S.sess.userId, checkedByName: S.sess.name,
+      checkedAt: serverTS(),
+    });
+    batch.update(db.collection('inward').doc(inwId), {
+      iqcStatus: decision, updatedAt: serverTS(),
+    });
+    await batch.commit();
+    await logAudit('IQC_DECISION', 'QC', inwId, { iqcStatus: 'pending' }, { iqcStatus: decision, notes });
+    closeModal();
+    await refreshQC();
+    const msg = decision === 'accepted'    ? 'Lot accepted — material now available in stock'
+              : decision === 'conditional' ? 'Conditional acceptance recorded — material available with restrictions'
+              :                              'Lot rejected — material quarantined from stock';
+    toast(msg);
+  } catch (e) {
+    showModalError(e.message);
   }
 }
 

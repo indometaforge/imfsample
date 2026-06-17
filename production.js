@@ -408,6 +408,9 @@ function renderActualEntry() {
       ${machines.length ? matrixHtml : emptyState('ti-tool','No Machines',`No active machines for ${stageLabel}.`)}
 
       ${!alreadySubmitted && machines.length ? `
+        <button class="btn btn-s" style="width:100%;margin-top:8px;border-color:var(--warn);color:var(--warn)" onclick="sampleFillActuals()">
+          <i class="ti ti-wand"></i> Sample Fill (Testing)
+        </button>
         <button class="btn btn-p" style="width:100%;margin-top:8px" onclick="finalizeShift()">
           <i class="ti ti-check"></i> Finalize Shift
         </button>` : ''}
@@ -902,6 +905,22 @@ function confirmAddDowntime(machId) {
   renderMachineDetail();
 }
 
+/* — Sample Fill (testing helper) — */
+function sampleFillActuals() {
+  const machines = (S.machines || [])
+    .filter(m => m.stage === _actStage && m.active !== false);
+  machines.forEach(m => {
+    if (!_machineData[m.id] || (_machineData[m.id].used === false && !_machineData[m.id].idleReason)) {
+      _machineData[m.id] = {
+        used: false, idleReason: 'Other', idleReasonOther: 'Testing purposes',
+        operatorId: '', operatorName: '', runs: [], downtime: [],
+      };
+    }
+  });
+  renderActualEntry();
+  toast(`${machines.length} machines auto-filled as "Not Used — Testing purposes"`);
+}
+
 /* — Finalize Shift — */
 async function finalizeShift() {
   if (!_actShift) { toast('Select a shift'); return; }
@@ -1278,7 +1297,7 @@ function buildSetupHtml() {
           </select>
         </div>
         <div class="row-2">
-          <div class="f"><label>Date</label><input id="setup-date" type="date" value="${dateStr()}"></div>
+          <div class="f"><label>Date</label><input id="setup-date" type="date" value="${dateStr()}" max="${dateStr()}"></div>
           <div class="f"><label>Shift</label><select id="setup-shift">${shiftOpts}</select></div>
         </div>
         <div class="f">
@@ -1584,10 +1603,11 @@ async function submitSetupLog() {
   const remarks  = document.getElementById('setup-remarks')?.value.trim() || '';
   const resolvedStage = machStage || _setupStage;
 
-  // Check for existing pending/approved setup
+  // Check for existing pending/approved setup on the same date only
   const existing = (S.setupApprovals || []).find(sa =>
     sa.tagId === _setupTagId && sa.machineId === machId &&
-    sa.stage === resolvedStage && (sa.status === 'pending' || sa.status === 'approved')
+    sa.stage === resolvedStage && sa.date === date &&
+    (sa.status === 'pending' || sa.status === 'approved')
   );
   if (existing) {
     toast(existing.status === 'approved'
@@ -1623,7 +1643,7 @@ async function submitSetupLog() {
       createdAt:       serverTS(),
     });
 
-    S.setupApprovals.unshift({ id: ref.id, tagId: _setupTagId, machineId: machId, stage: resolvedStage, status: 'pending' });
+    S.setupApprovals.unshift({ id: ref.id, tagId: _setupTagId, machineId: machId, stage: resolvedStage, date, status: 'pending' });
     toast('Setup logged ✓ — sent to QC for approval');
     await logAudit('setup_log', 'production', _setupTagId, null, { machineId: machId, opId: opId_val, mins });
     _setupCard = null; _setupTagId = ''; _setupStage = ''; _setupDeviationCleared = false;

@@ -489,6 +489,18 @@ async function htSubmitCharge() {
   if (!_newCharge.heatCode)  { if (errEl) { errEl.textContent = 'Enter the heat code'; errEl.style.display = ''; } return; }
   if (!_newCharge.tags.length) { if (errEl) { errEl.textContent = 'Scan at least one TAG'; errEl.style.display = ''; } return; }
 
+  // Guard against duplicate heat code — the code IS the document ID
+  try {
+    const existing = await db.collection('htCharges').doc(_newCharge.heatCode).get();
+    if (existing.exists) {
+      if (errEl) { errEl.textContent = `Heat code "${_newCharge.heatCode}" already exists — use a different code`; errEl.style.display = ''; }
+      return;
+    }
+  } catch (e) {
+    if (errEl) { errEl.textContent = 'Error checking heat code: ' + e.message; errEl.style.display = ''; }
+    return;
+  }
+
   // Confirm
   const totalQty = _newCharge.tags.reduce((s, t) => s + (t.qty || 0), 0);
   openModal(`
@@ -515,10 +527,10 @@ async function htSubmitCharge() {
 async function saveCharge() {
   const now = serverTS();
   try {
-    const batch   = db.batch();
-    const chargeRef = db.collection('htCharges').doc();
+    const batch     = db.batch();
+    const chargeRef = db.collection('htCharges').doc(_newCharge.heatCode);
 
-    // Create charge doc
+    // Create charge doc — doc ID = heat code (unique, traceable, matches physical records)
     batch.set(chargeRef, {
       heatCode:    _newCharge.heatCode,
       furnaceId:   _newCharge.furnaceId,
@@ -615,9 +627,13 @@ function renderProcess() {
 
     <!-- FM/HT/01 Form -->
     <div class="card" style="margin-bottom:12px">
-      <div style="font-size:12px;font-weight:800;color:var(--imf-navy);letter-spacing:.04em;margin-bottom:14px;
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;
                   border-bottom:2px solid var(--imf-navy);padding-bottom:8px">
-        FM/HT/01 — PROCESS LOG
+        <div style="font-size:12px;font-weight:800;color:var(--imf-navy);letter-spacing:.04em">
+          FM/HT/01 — PROCESS LOG
+        </div>
+        <button class="btn btn-s" style="font-size:11px;border-color:var(--warn);color:var(--warn);padding:3px 10px"
+          onclick="htSampleFillLog()"><i class="ti ti-wand"></i> Sample Fill</button>
       </div>
 
       <!-- Prewash -->
@@ -767,6 +783,43 @@ function readProcessLog() {
     caseDepthTarget: document.getElementById('pl-case')?.value  || '',
     notes:           document.getElementById('pl-notes')?.value || '',
   };
+}
+
+function htSampleFillLog() {
+  function setVal(id, v) { const el = document.getElementById(id); if (el) el.value = v; }
+  const now = new Date();
+  function tStr(minsOffset) {
+    const d = new Date(now.getTime() + minsOffset * 60000);
+    return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+  }
+  setVal('pl-prewash-done',  'yes');
+  setVal('pl-prewash-temp',  '75');
+  setVal('pl-prewash-notes', 'Pre-wash completed — sample data');
+  setVal('pl-wash-temp',     '80');
+  setVal('pl-wash-ph',       '7.5');
+  setVal('pl-wash-dur',      '15');
+  setVal('pl-wash-notes',    'Standard wash solution — sample data');
+  // Checkpoints: Preheat, Austenitize, Quench Entry, Quench Hold, Temper
+  const cpData = [
+    { set: 450, act: 452, mins:  0 },
+    { set: 920, act: 918, mins: 30 },
+    { set: 850, act: 847, mins: 55 },
+    { set:  60, act:  62, mins: 70 },
+    { set: 180, act: 179, mins: 90 },
+  ];
+  cpData.forEach((cp, i) => {
+    const step = i + 1;
+    setVal(`pl-cp${step}-set`,  cp.set);
+    setVal(`pl-cp${step}-act`,  cp.act);
+    setVal(`pl-cp${step}-time`, tStr(cp.mins));
+    setVal(`pl-cp${step}-ok`,   'yes');
+  });
+  setVal('pl-atm',      'Endothermic');
+  setVal('pl-hard',     '60');
+  setVal('pl-case',     '0.8');
+  setVal('pl-dotpunch', 'yes');
+  setVal('pl-notes',    'Sample fill — testing purposes only');
+  toast('Process log filled with sample data');
 }
 
 async function saveProcessLog(chargeId) {
