@@ -39,8 +39,9 @@ let _diagNeedsSpares = false;    // toggle in diagnose modal
 let _savingBreakdown = false;    // guard against double-submit on Report
 
 const S_MNT = {
-  breakdowns:    [],
-  pmLogs:        [],
+  breakdowns:     [],
+  pmLogs:         [],
+  sparesRequests: [],
 };
 
 /* ── Boot ────────────────────────────────────────────────────────────── */
@@ -56,12 +57,14 @@ async function init() {
 
 async function loadMaintData() {
   try {
-    const [bdSnap, pmSnap] = await Promise.all([
+    const [bdSnap, pmSnap, spSnap] = await Promise.all([
       db.collection('breakdowns').orderBy('createdAt', 'desc').limit(200).get(),
       db.collection('pmLogs').orderBy('createdAt', 'desc').limit(500).get(),
+      db.collection('sparesRequests').orderBy('createdAt', 'desc').limit(200).get(),
     ]);
-    S_MNT.breakdowns = bdSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    S_MNT.pmLogs     = pmSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    S_MNT.breakdowns     = bdSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    S_MNT.pmLogs         = pmSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    S_MNT.sparesRequests = spSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   } catch (e) { console.warn('loadMaintData:', e.message); }
 }
 
@@ -300,7 +303,11 @@ function bdCard(b) {
           <div style="font-size:12px">${b.faultCategory ? `<strong>${b.faultCategory}</strong> — ` : ''}${b.faultDescription}</div>
         </div>` : ''}
 
-      ${b.spares && b.spares.length > 0 ? `
+      ${b.spares && b.spares.length > 0 ? (() => {
+          const spReq = b.sparesRequestId
+            ? S_MNT.sparesRequests.find(x => x.id === b.sparesRequestId)
+            : null;
+          return `
         <div style="margin-bottom:10px">
           <div style="font-size:10px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:4px">SPARES REQUESTED</div>
           ${b.spares.map(sp => `
@@ -309,7 +316,12 @@ function bdCard(b) {
               <span style="font-weight:700">${fmtINR((sp.qty||0)*(sp.unitRate||0))}</span>
             </div>`).join('')}
           <div style="text-align:right;font-size:12px;font-weight:800;margin-top:4px">Total: ${fmtINR(b.sparesTotal || 0)}</div>
-        </div>` : ''}
+          ${spReq && spReq.status === 'approved' ? `
+          <button class="btn btn-s" style="margin-top:8px;width:100%" onclick="printSparesMRO_bd('${spReq.id}')">
+            🖨️ Print Approved Spares
+          </button>` : ''}
+        </div>`;
+        })() : ''}
 
       ${b.fixDescription ? `
         <div style="margin-bottom:8px">
@@ -950,6 +962,48 @@ function renderHealth() {
       MTBF = Mean Time Between Failures (hours). MTTR = Mean Time To Repair (minutes).
       Availability based on 3-shift operation (1350 min/day).
     </div>`;
+}
+
+/* ── Print: Approved MRO Spares ──────────────────────────────────────── */
+function printSparesMRO_bd(sparesId) {
+  const s = S_MNT.sparesRequests.find(x => x.id === sparesId);
+  if (!s) return;
+  const spares    = s.spares || [];
+  const totalCost = spares.reduce((sum, sp) => sum + (sp.qty || 0) * (sp.unitRate || 0), 0);
+  const approvedDate = s.approvedAt
+    ? new Date(s.approvedAt.toMillis ? s.approvedAt.toMillis() : s.approvedAt).toLocaleDateString('en-IN')
+    : '—';
+  const rows = spares.map(sp => `<tr>
+    <td>${sp.name || '—'}</td>
+    <td>${sp.qty || 0}</td>
+    <td>₹${(sp.unitRate || 0).toLocaleString('en-IN')}</td>
+    <td>${sp.supplierName || 'TBD'}</td>
+    <td>₹${((sp.qty || 0) * (sp.unitRate || 0)).toLocaleString('en-IN')}</td>
+  </tr>`).join('');
+  const win = window.open('', '_blank', 'width=800,height=600');
+  win.document.write(`<!DOCTYPE html><html><head><title>MRO Spares — ${s.breakdownId || s.id}</title>
+  <style>body{font-family:Arial,sans-serif;padding:24px;font-size:13px}
+  h2{margin:0 0 6px;font-size:18px}p{margin:0 0 3px}
+  table{width:100%;border-collapse:collapse;margin-top:16px}
+  th,td{border:1px solid #ccc;padding:7px 10px;text-align:left}
+  th{background:#f0f0f0;font-weight:700}
+  tfoot td{font-weight:700;background:#f9f9f9}
+  .footer{margin-top:20px;font-size:11px;color:#888}</style></head><body>
+  <h2>Approved MRO Spares Request</h2>
+  <p><strong>Breakdown Ref:</strong> ${s.breakdownId || '—'}</p>
+  <p><strong>Machine:</strong> ${s.machineName || s.machineId || '—'}</p>
+  <p><strong>Requested by:</strong> ${s.requestedByName || '—'}</p>
+  <p><strong>Approved by:</strong> ${s.approvedByName || '—'} &middot; ${approvedDate}</p>
+  ${s.approverRemarks ? `<p><strong>Remarks:</strong> ${s.approverRemarks}</p>` : ''}
+  <table>
+    <thead><tr><th>Item</th><th>Qty</th><th>Unit Rate</th><th>Supplier</th><th>Line Total</th></tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr><td colspan="4" style="text-align:right">Total Cost</td><td>₹${totalCost.toLocaleString('en-IN')}</td></tr></tfoot>
+  </table>
+  <div class="footer">Printed ${new Date().toLocaleString('en-IN')} &middot; IMF ProTrack MES</div>
+  </body></html>`);
+  win.document.close();
+  win.print();
 }
 
 /* ── Boot ────────────────────────────────────────────────────────────── */

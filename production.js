@@ -32,6 +32,9 @@ let _machineData   = {}; // machineId → { used, idleReason, idleReasonOther, o
 let _detailMachId  = '';        // machine currently open in detail view
 let _autoSaveTimers = {};       // machineId → setTimeout handle
 let _autoSaveStatus = {};       // machineId → 'saved' | 'saving' | 'error'
+let _viewingFinalized = false;  // true when the loaded shift is a finalized report (read-only)
+let _finalizedRecId   = null;   // the actuals doc id of the finalized report being viewed
+let _editingReportId  = null;   // set when editing an existing report from the Reports tab
 
 // Plan Entry state
 let _planStage          = '';
@@ -45,6 +48,7 @@ let _setupCard             = null;
 let _setupTagId            = '';
 let _setupStage            = '';
 let _setupDeviationCleared = false; // set to true after plant-head deviation request confirmed
+let _seqResolveState       = null;  // in-flight "verify prior op done this shift" flow state
 
 // Requisition state
 let _reqLines = [];
@@ -291,30 +295,58 @@ function buildHubHtml() {
 function enterActualStage(stage) {
   _actStage  = stage;
   _activeView = 'actual';
-  _machineData = {};
 
-  // Auto-pick current shift
-  const hr = new Date().getHours();
-  if (!_actShift) {
-    if (hr >= 6 && hr < 14)      _actShift = 'A';
-    else if (hr >= 14 && hr < 22) _actShift = 'B';
-    else                           _actShift = 'C';
-  }
+  // Auto-pick current shift using the CONFIGURED shift keys (e.g. s1/s2/s3),
+  // not hardcoded A/B/C — otherwise this never matches setupApprovals.shift.
+  if (!_actShift) _actShift = getActiveShift().key;
   if (!_actDate) _actDate = dateStr();
 
-  // Load existing drafts for this stage/date/shift
-  const draftKey = `${_actDate}_${_actShift}_${_actStage}`;
-  const myDrafts = (S.prodDrafts || []).filter(d => d.draftKey === draftKey && d.userId === S.sess.userId);
-  myDrafts.forEach(d => { _machineData[d.machineId] = { ...d.machineData, _draftId: d.id }; });
+  loadActualsView();
+}
 
-  // Check if already submitted
-  const alreadySubmitted = (S.actuals || []).some(
+/* Load the data for the current stage/date/shift into the matrix.
+   - Finalized shift → fetch the saved report so it is actually VISIBLE
+     (drafts are deleted on finalize, so without this the view is blank).
+   - Not finalized → restore this user's drafts. */
+async function loadActualsView() {
+  _machineData      = {};
+  _viewingFinalized = false;
+  _finalizedRecId   = null;
+  _editingReportId  = null; // changing date/shift/stage abandons any in-progress edit
+
+  const rec = (S.actuals || []).find(
     a => a.date === _actDate && a.shift === _actShift && a.stage === _actStage
   );
-  if (alreadySubmitted) {
-    toast('A shift entry for this stage/date/shift already exists. Showing view only.', 4000);
+
+  if (rec) {
+    _viewingFinalized = true;
+    _finalizedRecId   = rec.id;
+    renderActualEntry(); // paint immediately, then hydrate from the saved doc
+    try {
+      const snap = await db.collection('actuals').doc(rec.id).get();
+      if (snap.exists) {
+        (snap.data().machines || []).forEach(me => {
+          _machineData[me.machineId] = {
+            used:           me.used,
+            idleReason:     me.idleReason || '',
+            idleReasonOther: me.idleReasonOther || '',
+            operatorId:     me.operatorId || '',
+            operatorName:   me.operatorName || '',
+            runs:           me.runs || [],
+            downtime:       me.downtime || [],
+          };
+        });
+      }
+    } catch (e) { /* tiles fall back to empty */ }
+    renderActualEntry();
+    return;
   }
 
+  // Not finalized — restore drafts for this stage/date/shift.
+  const draftKey = `${_actDate}_${_actShift}_${_actStage}`;
+  (S.prodDrafts || [])
+    .filter(d => d.draftKey === draftKey && d.userId === S.sess.userId)
+    .forEach(d => { _machineData[d.machineId] = { ...d.machineData, _draftId: d.id }; });
   renderActualEntry();
 }
 
@@ -330,9 +362,13 @@ function renderActualEntry() {
   const supervisorOpts = (S.users || [])
     .filter(u => ['supervisor','hod','admin'].includes(u.role))
     .map(u => `<option value="${u.id}" ${_actSupervisor === u.id ? 'selected' : ''}>${u.name}</option>`).join('');
-  const alreadySubmitted = (S.actuals || []).some(
+  const submittedRec = (S.actuals || []).find(
     a => a.date === _actDate && a.shift === _actShift && a.stage === _actStage
   );
+  const alreadySubmitted = !!submittedRec;
+  const canEditReport = canManageReports();
+  const isEditingThis = !!(_editingReportId && submittedRec && submittedRec.id === _editingReportId);
+  const lockedView = alreadySubmitted && !isEditingThis; // finalized & not actively editing
 
   const matrixHtml = machines.map(m => {
     const md = _machineData[m.id];
@@ -384,11 +420,11 @@ function renderActualEntry() {
         <div class="row-3">
           <div class="f">
             <label>Date</label>
-            <input type="date" id="act-date" value="${_actDate}" onchange="_actDate=this.value;_machineData={};renderActualEntry()">
+            <input type="date" id="act-date" value="${_actDate}" onchange="_actDate=this.value;loadActualsView()">
           </div>
           <div class="f">
             <label>Shift</label>
-            <select id="act-shift" onchange="_actShift=this.value;_machineData={};renderActualEntry()">
+            <select id="act-shift" onchange="_actShift=this.value;loadActualsView()">
               ${shiftOpts}
             </select>
           </div>
@@ -402,17 +438,30 @@ function renderActualEntry() {
         </div>
       </div>
 
-      ${alreadySubmitted ? `<div class="ibox" style="background:#fefce8;border-color:#facc15;color:#92400e;margin-bottom:10px"><i class="ti ti-info-circle"></i> A finalized entry already exists for this shift.</div>` : ''}
+      ${lockedView ? `<div class="ibox" style="background:#fefce8;border-color:#facc15;color:#92400e;margin-bottom:10px">
+          <div style="font-weight:700;margin-bottom:2px"><i class="ti ti-info-circle"></i> Finalized report — view only</div>
+          <div style="font-size:12px">${submittedRec.totalProcessed || 0} pcs · ${submittedRec.machinesUsed || 0} machine(s) used${submittedRec.submittedByName ? ' · by ' + submittedRec.submittedByName : ''}. The machines below show the saved data.</div>
+        </div>
+        ${canEditReport ? `
+        <button class="btn btn-s" style="width:100%;margin-bottom:10px" onclick="goToReportsForShift()">
+          <i class="ti ti-chart-bar"></i> View / Edit / Delete in Reports
+        </button>` : ''}` : ''}
+
+      ${isEditingThis ? `<div class="ibox" style="background:var(--imf-steel-light,#eff6ff);border-color:var(--imf-steel,#2563eb);color:var(--imf-steel,#2563eb);margin-bottom:10px">
+          <i class="ti ti-edit"></i> Editing an existing report. Change anything below, then tap <strong>Save Changes</strong>.
+        </div>` : ''}
 
       <div style="font-size:12px;font-weight:700;color:var(--txt-muted);margin-bottom:8px">MACHINES (${machines.length})</div>
       ${machines.length ? matrixHtml : emptyState('ti-tool','No Machines',`No active machines for ${stageLabel}.`)}
 
-      ${!alreadySubmitted && machines.length ? `
-        <button class="btn btn-s" style="width:100%;margin-top:8px;border-color:var(--warn);color:var(--warn)" onclick="sampleFillActuals()">
+      ${!lockedView && machines.length ? `
+        ${isEditingThis ? `<button class="btn btn-s" style="width:100%;margin-top:8px" onclick="cancelEditReport()">
+          <i class="ti ti-x"></i> Cancel — Discard Changes
+        </button>` : `<button class="btn btn-s" style="width:100%;margin-top:8px;border-color:var(--warn);color:var(--warn)" onclick="sampleFillActuals()">
           <i class="ti ti-wand"></i> Sample Fill (Testing)
-        </button>
+        </button>`}
         <button class="btn btn-p" style="width:100%;margin-top:8px" onclick="finalizeShift()">
-          <i class="ti ti-check"></i> Finalize Shift
+          <i class="ti ti-check"></i> ${isEditingThis ? 'Save Changes' : 'Finalize Shift'}
         </button>` : ''}
     </div>`;
 }
@@ -433,6 +482,7 @@ function renderMachineDetail() {
   const md = _machineData[machId] || { used: false, idleReason: '', idleReasonOther: '', operatorId: '', operatorName: '', runs: [], downtime: [] };
   const ms = (S.machineStatus || []).find(s => s.id === machId);
   const isBreakdown = ms && (ms.status === 'pending_breakdown' || ms.status === 'under_maintenance');
+  const readOnly = _viewingFinalized; // viewing a finalized report → no editing here
 
   const IDLE_OPTIONS = ['No Material','Under Maintenance','No Operator','Power Cut / Electricity','Other'];
 
@@ -460,6 +510,8 @@ function renderMachineDetail() {
   const totalProcessed = (md.runs || []).reduce((s, r) => s + (+r.processed || 0), 0);
   const totalRejected  = (md.runs || []).reduce((s, r) => s + (+r.rejected  || 0), 0);
   const totalDtMins    = (md.downtime || []).reduce((s, d) => s + (+d.mins || 0), 0);
+  const totalTarget    = (md.runs || []).reduce((s, r) => s + (+r.targetQty || 0), 0);
+  const shiftEff       = totalTarget ? Math.round(totalProcessed / totalTarget * 100) : 0;
 
   const saveStatus = _autoSaveStatus[machId];
   const saveLbl = saveStatus === 'saving' ? '⟳ Auto-saving...'
@@ -469,21 +521,28 @@ function renderMachineDetail() {
 
   const runsHtml = (md.runs || []).length === 0
     ? `<div style="font-size:12px;color:var(--txt-muted);padding:10px;text-align:center;border:1px dashed var(--bdr);border-radius:6px">No runs logged yet</div>`
-    : (md.runs || []).map((r, i) => `
+    : (md.runs || []).map((r, i) => {
+        const eff = (+r.targetQty) ? Math.round((+r.processed || 0) / (+r.targetQty) * 100) : 0;
+        const effColor = eff >= 90 ? 'ok' : eff >= 70 ? 'warn' : 'err';
+        return `
         <div style="background:var(--bg);border-radius:6px;padding:10px 12px;margin-bottom:8px">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start">
-            <div style="flex:1">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+            <div style="flex:1;min-width:0">
               <div style="font-weight:700;font-size:13px">${r.tagId}</div>
               <div style="font-size:11px;color:var(--acc);font-family:monospace">${r.opName || ''}</div>
               <div style="font-size:11px;color:var(--txt-muted)">${r.partName || ''}</div>
               <div style="margin-top:4px;font-size:13px">
-                <span style="color:var(--ok);font-weight:700">${r.processed}</span> pcs produced &nbsp;
-                <span style="color:var(--err,#dc2626);font-weight:700">${r.rejected || 0}</span> rejected
+                <span style="color:var(--ok);font-weight:700">${r.processed}</span> pcs${(+r.targetQty) ? `<span style="color:var(--txt-muted)"> / ${r.targetQty} target · <span style="color:var(--${effColor});font-weight:700">${eff}%</span></span>` : ' produced'} &nbsp;
+                <span style="color:var(--err,#dc2626);font-weight:700">${r.rejected || 0}</span> rej
               </div>
             </div>
-            <button onclick="removeRunDetail(${i})" style="border:none;background:#fef2f2;color:#dc2626;border-radius:6px;padding:4px 8px;cursor:pointer;font-size:12px;flex-shrink:0">Remove</button>
+            ${readOnly ? '' : `<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">
+              <button onclick="openEditRunModal('${machId}',${i})" style="border:none;background:var(--imf-steel-light,#eff6ff);color:var(--imf-steel,#2563eb);border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px">Edit</button>
+              <button onclick="removeRunDetail(${i})" style="border:none;background:#fef2f2;color:#dc2626;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px">Remove</button>
+            </div>`}
           </div>
-        </div>`).join('');
+        </div>`;
+      }).join('');
 
   const downtimeHtml = (md.downtime || []).length === 0
     ? `<div style="font-size:12px;color:var(--txt-muted);padding:10px;text-align:center;border:1px dashed var(--bdr);border-radius:6px">No downtime logged</div>`
@@ -494,7 +553,7 @@ function renderMachineDetail() {
               <div style="font-weight:700;font-size:13px">${d.startTime} → ${d.endTime} <span style="font-weight:400;color:var(--txt-muted)">(${d.mins} min)</span></div>
               <div style="font-size:12px;color:var(--txt-muted)">${d.type || 'Other'}${d.description ? ' · ' + d.description : ''}</div>
             </div>
-            <button onclick="removeDowntimeDetail(${i})" style="border:none;background:transparent;color:#dc2626;cursor:pointer;font-size:13px;flex-shrink:0">✕</button>
+            ${readOnly ? '' : `<button onclick="removeDowntimeDetail(${i})" style="border:none;background:transparent;color:#dc2626;cursor:pointer;font-size:13px;flex-shrink:0">✕</button>`}
           </div>
         </div>`).join('');
 
@@ -509,9 +568,10 @@ function renderMachineDetail() {
           <div style="font-weight:800;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.name}</div>
           <div style="font-size:11px;color:var(--acc);font-family:monospace">${m.id_code || m.id}</div>
         </div>
-        <div id="autosave-lbl" style="font-size:10px;color:${saveStatus==='error'?'#dc2626':saveStatus==='saving'?'#f59e0b':'var(--ok)'};text-align:right;flex-shrink:0;max-width:90px">${saveLbl}</div>
+        <div id="autosave-lbl" style="font-size:10px;color:${readOnly?'var(--txt-muted)':saveStatus==='error'?'#dc2626':saveStatus==='saving'?'#f59e0b':'var(--ok)'};text-align:right;flex-shrink:0;max-width:90px">${readOnly ? 'Finalized · view only' : saveLbl}</div>
       </div>
 
+      ${readOnly ? `<div class="ibox" style="background:#fefce8;border-color:#facc15;color:#92400e;margin-bottom:12px"><i class="ti ti-lock"></i> Finalized report — view only. Re-open it from the matrix screen (admin) to edit.</div>` : ''}
       ${isBreakdown ? `<div class="ibox" style="background:#fef2f2;border-color:#fca5a5;color:#991b1b;margin-bottom:12px">⚠ This machine has an open breakdown. Logging actuals may be inaccurate.</div>` : ''}
 
       <!-- Used / Not Used toggle -->
@@ -523,8 +583,8 @@ function renderMachineDetail() {
           </div>
           <div style="display:flex;align-items:center;gap:10px">
             <span style="font-size:13px;font-weight:600;color:${md.used?'var(--ok)':'var(--txt-muted)'}">${md.used?'Used':'Not Used'}</span>
-            <div onclick="toggleMachineUsedDetail(${!md.used})"
-              style="width:48px;height:26px;border-radius:13px;background:${md.used?'var(--ok)':'var(--bdr)'};cursor:pointer;position:relative;transition:background .2s;flex-shrink:0">
+            <div ${readOnly ? '' : `onclick="toggleMachineUsedDetail(${!md.used})"`}
+              style="width:48px;height:26px;border-radius:13px;background:${md.used?'var(--ok)':'var(--bdr)'};cursor:${readOnly?'default':'pointer'};position:relative;transition:background .2s;flex-shrink:0;${readOnly?'opacity:.7':''}">
               <div style="position:absolute;top:3px;left:${md.used?'25px':'3px'};width:20px;height:20px;border-radius:10px;background:#fff;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.25)"></div>
             </div>
           </div>
@@ -536,7 +596,7 @@ function renderMachineDetail() {
         <div class="card" style="margin-bottom:12px">
           <div class="f" style="margin:0">
             <label>Operator *</label>
-            <select onchange="setDetailField('operatorId',this.value);setDetailField('operatorName',this.options[this.selectedIndex].text);triggerAutoSave()">
+            <select ${readOnly ? 'disabled' : ''} onchange="setDetailField('operatorId',this.value);setDetailField('operatorName',this.options[this.selectedIndex].text);triggerAutoSave()">
               <option value="">— Select Operator —</option>
               ${operatorOpts}
             </select>
@@ -553,9 +613,9 @@ function renderMachineDetail() {
         <div class="card" style="margin-bottom:12px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
             <div style="font-size:12px;font-weight:700;color:var(--txt-muted)">PRODUCTION RUNS</div>
-            <button class="btn btn-s btn-sm" onclick="openAddRunModal('${machId}')">
+            ${readOnly ? '' : `<button class="btn btn-s btn-sm" onclick="openAddRunModal('${machId}')">
               <i class="ti ti-scan"></i> Add Run
-            </button>
+            </button>`}
           </div>
           ${runsHtml}
         </div>
@@ -564,9 +624,9 @@ function renderMachineDetail() {
         <div class="card" style="margin-bottom:12px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
             <div style="font-size:12px;font-weight:700;color:var(--txt-muted)">DOWNTIME SESSIONS</div>
-            <button class="btn btn-s btn-sm" onclick="openAddDowntimeModal('${machId}')">
+            ${readOnly ? '' : `<button class="btn btn-s btn-sm" onclick="openAddDowntimeModal('${machId}')">
               <i class="ti ti-plus"></i> Add
-            </button>
+            </button>`}
           </div>
           ${downtimeHtml}
         </div>
@@ -574,6 +634,16 @@ function renderMachineDetail() {
         <!-- Summary -->
         <div class="card" style="margin-bottom:12px;background:var(--bg)">
           <div style="font-size:12px;font-weight:700;color:var(--txt-muted);margin-bottom:10px">SHIFT SUMMARY</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;background:var(--sur);border-radius:8px;padding:10px 12px;margin-bottom:8px">
+            <div>
+              <div style="font-size:10px;color:var(--txt-muted)">TARGET (after setup)</div>
+              <div style="font-size:18px;font-weight:800">${totalTarget} pcs</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:10px;color:var(--txt-muted)">EFFICIENCY</div>
+              <div style="font-size:18px;font-weight:800;color:var(--${shiftEff>=90?'ok':shiftEff>=70?'warn':'err'})">${totalTarget ? shiftEff + '%' : '—'}</div>
+            </div>
+          </div>
           <div class="row-3" style="gap:8px;text-align:center">
             <div style="background:var(--sur);border-radius:8px;padding:10px 4px">
               <div style="font-size:20px;font-weight:800;color:var(--ok)">${totalProcessed}</div>
@@ -598,7 +668,7 @@ function renderMachineDetail() {
         <div class="card" style="margin-bottom:12px">
           <div class="f">
             <label>Idle Reason *</label>
-            <select id="idle-reason-sel" onchange="onIdleReasonChange(this.value)">
+            <select id="idle-reason-sel" ${readOnly ? 'disabled' : ''} onchange="onIdleReasonChange(this.value)">
               <option value="">— Select reason —</option>
               ${IDLE_OPTIONS.map(o => `<option value="${o}" ${md.idleReason===o?'selected':''}>${o}</option>`).join('')}
             </select>
@@ -645,6 +715,52 @@ function removeDowntimeDetail(idx) {
   if (md && md.downtime) { md.downtime.splice(idx, 1); triggerAutoSave(); renderMachineDetail(); }
 }
 
+/** Total approved setup minutes for a machine in the active date/shift. */
+function machineSetupMins(machId) {
+  return (S.setupApprovals || [])
+    .filter(sa => sa.machineId === machId && sa.date === _actDate && sa.shift === _actShift && sa.status === 'approved')
+    .reduce((s, sa) => s + (sa.setupMins || 0), 0);
+}
+
+/* — Inline run editing: correct a logged run's qty without re-entering it — */
+function openEditRunModal(machId, idx) {
+  const r = _machineData[machId]?.runs?.[idx];
+  if (!r) { toast('Run not found'); return; }
+  openModal(`
+    <div class="mtit"><i class="ti ti-edit"></i> Edit Production Run</div>
+    <div style="background:var(--bg);border-radius:var(--rs);padding:10px 12px;margin-bottom:12px;font-size:12px">
+      <div><strong>${r.tagId}</strong> · <span style="font-family:monospace;color:var(--acc)">${r.opName || ''}</span></div>
+      <div style="color:var(--txt-muted)">${r.partName || ''}</div>
+      ${(+r.targetQty) ? `<div style="margin-top:4px;color:var(--txt-muted)">Target (after setup): <strong>${r.targetQty}</strong> pcs</div>` : ''}
+    </div>
+    <div class="row-2">
+      <div class="f"><label>Processed (pcs) *</label><input type="number" id="edit-run-processed" min="1" value="${r.processed || 0}"></div>
+      <div class="f"><label>Rejected (pcs)</label><input type="number" id="edit-run-rejected" min="0" value="${r.rejected || 0}"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-p" style="flex:1" onclick="saveEditRun('${machId}',${idx})">Save ✓</button>
+    </div>`);
+}
+
+function saveEditRun(machId, idx) {
+  const r = _machineData[machId]?.runs?.[idx];
+  if (!r) { toast('Run not found'); return; }
+  const processed = parseInt(document.getElementById('edit-run-processed')?.value) || 0;
+  const rejected  = parseInt(document.getElementById('edit-run-rejected')?.value) || 0;
+  if (processed < 1) { toast('Processed must be at least 1'); return; }
+  r.processed = processed;
+  r.rejected  = rejected;
+  // (Re)compute the target from the op's cycle time + this shift's setup, so
+  // older runs without a stored target also get one on edit.
+  if (+r.cycleTimeSecs) r.targetQty = calcOEE(+r.cycleTimeSecs, machineSetupMins(machId), 0, processed).targetQty;
+  _detailMachId = machId;
+  closeModal();
+  triggerAutoSave();
+  renderMachineDetail();
+  toast('Run updated ✓');
+}
+
 /* — legacy wrappers kept for modal callbacks — */
 function toggleMachineUsed(machId, used) {
   _detailMachId = machId;
@@ -686,6 +802,9 @@ function updateAutoSaveLabel() {
 async function doAutoSave(machId) {
   const md = _machineData[machId];
   if (!md) return;
+  // While editing an existing report we keep changes in memory only (finalize
+  // reads _machineData directly) — avoid leaving stray drafts beside the report.
+  if (_editingReportId) { _autoSaveStatus[machId] = 'saved'; updateAutoSaveLabel(); return; }
   const draftKey = `${_actDate}_${_actShift}_${_actStage}`;
   const docId    = `${S.sess.userId}_${draftKey}_${machId}`;
   try {
@@ -806,7 +925,11 @@ async function runFetchTag() {
     const opName = nextOp ? ((S.operations || []).find(o => o.id === nextOp?.opId)?.name || '—') : 'No next op';
     const cycleTimeSecs = nextOp ? ((S.partOps || []).find(po => po.partId === card.partId && po.opId === nextOp.opId)?.cycleTimeSecs || 0) : 0;
 
-    _runCard = { ...card, nextOp, cycleTimeSecs };
+    // Target = pieces achievable in the shift at this op's cycle time, after
+    // deducting approved setup for this machine/shift (reuses core calcOEE).
+    const setupMins = machineSetupMins(_runMachId);
+    const targetQty = cycleTimeSecs ? calcOEE(cycleTimeSecs, setupMins, 0, 0).targetQty : 0;
+    _runCard = { ...card, nextOp, cycleTimeSecs, targetQty };
 
     if (infoDiv) infoDiv.innerHTML = `
       ${deviationHtml}
@@ -816,6 +939,7 @@ async function runFetchTag() {
         <div style="display:flex;justify-content:space-between"><span style="color:var(--txt-muted)">Part</span><strong>${card.partName}</strong></div>
         <div style="display:flex;justify-content:space-between"><span style="color:var(--txt-muted)">Next Op</span><strong>${opName}</strong></div>
         <div style="display:flex;justify-content:space-between"><span style="color:var(--txt-muted)">Qty on TAG</span><strong>${card.currentQty} pcs</strong></div>
+        ${targetQty ? `<div style="display:flex;justify-content:space-between"><span style="color:var(--txt-muted)">Target (after setup)</span><strong style="color:var(--acc)">${targetQty} pcs</strong></div>` : ''}
         ${card.heatCode ? `<div style="display:flex;justify-content:space-between"><span style="color:var(--txt-muted)">Heat Code</span><strong style="color:var(--ok)">🔥 ${card.heatCode}</strong></div>` : ''}
       </div>`;
 
@@ -846,6 +970,8 @@ function confirmAddRun() {
     opId:          _runCard.nextOp?.opId || '',
     opName:        (S.operations || []).find(o => o.id === _runCard.nextOp?.opId)?.name || '',
     cycleTimeSecs: _runCard.cycleTimeSecs || 0,
+    tagQty:        _runCard.currentQty   || 0,
+    targetQty:     _runCard.targetQty    || 0,
     processed,
     rejected,
   });
@@ -928,6 +1054,21 @@ async function finalizeShift() {
     _actSupervisor = document.getElementById('act-sup')?.value || '';
   }
   if (!_actSupervisor) { toast('Select a supervisor'); return; }
+
+  // If saving an edit of an existing report, reverse the OLD report first
+  // (strip its route-card effects + delete it) so the corrected one replaces it
+  // cleanly with no double-posting. Done before writing the new report.
+  if (_editingReportId) {
+    try {
+      const oldSnap = await db.collection('actuals').doc(_editingReportId).get();
+      if (oldSnap.exists) {
+        const oldRec = { id: oldSnap.id, ...oldSnap.data() };
+        const res = await _reverseReportCards(oldRec);
+        if (!res.ok) { toast(`Can't save: ${res.error}`, 5500); return; }
+        await logAudit('edit_report', 'production', _editingReportId, oldRec, null);
+      }
+    } catch (e) { toast('Error saving edit: ' + e.message); return; }
+  }
 
   const machines = (S.machines || []).filter(m => m.stage === _actStage && m.active !== false);
   const machineEntries = machines.map(m => {
@@ -1021,6 +1162,7 @@ async function finalizeShift() {
           rejected:    r.rejected,
           date:        _actDate,
           shift:       _actShift,
+          reportId:    ref.id,   // ties this entry to its production report (for admin re-open)
           loggedBy:    S.sess.userId,
           loggedAt:    new Date().toISOString(),
         });
@@ -1035,13 +1177,61 @@ async function finalizeShift() {
       batch.update(rcRef, { status: newStatus, updatedAt: serverTS() });
     });
 
+    // Child-card splitting: if actual processed qty < tag's starting qty,
+    // birth a sibling card carrying the unprocessed remainder.
+    const tagActualQty = {};
+    const tagTagQty    = {};
+    machineEntries.forEach(me => {
+      (me.runs || []).forEach(r => {
+        if (!r.tagId || !r.tagQty) return;
+        tagActualQty[r.tagId] = (tagActualQty[r.tagId] || 0) + (r.processed || 0);
+        if (!tagTagQty[r.tagId]) tagTagQty[r.tagId] = r.tagQty;
+      });
+    });
+    const splitTagIds = Object.keys(tagActualQty).filter(id =>
+      tagActualQty[id] < (tagTagQty[id] || 0)
+    );
+    const splitAuditEntries = [];
+    if (splitTagIds.length) {
+      const [parentSnaps, s1Snaps] = await Promise.all([
+        Promise.all(splitTagIds.map(id => db.collection('routeCards').doc(id).get())),
+        Promise.all(splitTagIds.map(id => db.collection('routeCards').doc(id + '-S1').get())),
+      ]);
+      splitTagIds.forEach((tagId, i) => {
+        if (!parentSnaps[i].exists) return;
+        const parent     = parentSnaps[i].data();
+        const childTagId = s1Snaps[i].exists ? tagId + '-S2' : tagId + '-S1';
+        const remQty     = (tagTagQty[tagId] || 0) - (tagActualQty[tagId] || 0);
+        batch.set(db.collection('routeCards').doc(childTagId), {
+          ...parent,
+          tagId:         childTagId,
+          parentCardUid: tagId,
+          cardType:      'SPLIT',
+          initialQty:    remQty,
+          currentQty:    remQty,
+          status:        parent.status,   // carries pre-shift status unchanged
+          opHistory:     parent.opHistory || [],
+          createdAt:     serverTS(),
+          createdBy:     S.sess.userId,
+          updatedAt:     serverTS(),
+        });
+        splitAuditEntries.push({ childTagId, tagId, remQty });
+      });
+    }
+
     await batch.commit();
+    for (const e of splitAuditEntries) {
+      await logAudit('split_card', 'production', e.childTagId, null, { parentTagId: e.tagId, remQty: e.remQty });
+    }
 
     S.actuals.unshift({ id: ref.id, stage: _actStage, date: _actDate, shift: _actShift, totalProcessed, machinesUsed, avgOEE });
     S.prodDrafts = S.prodDrafts.filter(d => !(d.draftKey === draftKey && d.userId === S.sess.userId));
 
-    await logAudit('finalize_shift', 'production', ref.id, null, { stage: _actStage, date: _actDate, shift: _actShift });
-    toast(`Shift finalized ✓ — ${totalProcessed} pcs across ${machinesUsed} machines`);
+    await logAudit(_editingReportId ? 'resave_report' : 'finalize_shift', 'production', ref.id, null, { stage: _actStage, date: _actDate, shift: _actShift });
+    toast(_editingReportId
+      ? `Report saved ✓ — ${totalProcessed} pcs across ${machinesUsed} machines`
+      : `Shift finalized ✓ — ${totalProcessed} pcs across ${machinesUsed} machines`);
+    _editingReportId = null;
     _machineData = {};
     _activeView = 'tabs';
     _activeTab  = 'reports';
@@ -1049,11 +1239,186 @@ async function finalizeShift() {
   } catch (e) { toast('Error finalizing: ' + e.message); }
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   ADMIN REPORT MANAGEMENT (view/edit/delete from the Reports tab)
+   ══════════════════════════════════════════════════════════════════════
+   Edit  = reverse the report's route-card effects, load it into the matrix
+           editor, then re-save (Finalize) as a corrected report.
+   Delete= reverse the report's route-card effects and remove it.
+   Both REFUSE if any affected card was split or has moved downstream
+   (HT/QC/Dispatch) — auto-reversal isn't safe then. */
+const canManageReports = () =>
+  S.sess?.email === 'tanmay@indometaforge.in' || S.sess?.role === 'admin';
+
+/* Reverse a report's effect on every route card it touched, then delete the
+   report doc. Returns { ok:true } or { ok:false, error }. */
+async function _reverseReportCards(rec) {
+  const stage = rec.stage;
+  const stageStatuses = stage === 'soft' ? ['soft_wip', 'soft_done'] : ['hard_wip', 'hard_done'];
+  const entryStatus   = stage === 'soft' ? 'store_issued' : 'ht_done';
+
+  const tagIds = [...new Set((rec.machines || [])
+    .flatMap(me => (me.runs || []).map(r => r.tagId).filter(Boolean)))];
+
+  const [cardSnaps, childSnaps] = await Promise.all([
+    Promise.all(tagIds.map(id => db.collection('routeCards').doc(id).get())),
+    Promise.all(tagIds.map(id => db.collection('routeCards').doc(id + '-S1').get())),
+  ]);
+
+  // Safety guard.
+  for (let i = 0; i < tagIds.length; i++) {
+    if (!cardSnaps[i].exists) continue;
+    const card = cardSnaps[i].data();
+    if (childSnaps[i].exists) return { ok: false, error: `${tagIds[i]} was split into a child card — reverse not safe.` };
+    if (card.status && !stageStatuses.includes(card.status)) return { ok: false, error: `${tagIds[i]} has moved to "${card.status}" — reverse not safe.` };
+  }
+
+  const batch = db.batch();
+  tagIds.forEach((id, i) => {
+    if (!cardSnaps[i].exists) return;
+    const card = cardSnaps[i].data();
+    const kept = (card.opHistory || []).filter(h =>
+      h.source === 'setup_seq_clear' ? true                       // keep sequence markers
+      : h.reportId ? h.reportId !== rec.id                        // precise match (new entries)
+      : !(h.date === rec.date && h.shift === rec.shift && h.stage === stage) // legacy fallback
+    );
+    const stageReal = kept.filter(h => h.stage === stage && h.source !== 'setup_seq_clear');
+    const anyFinal = stageReal.some(h => {
+      const po = (S.partOps || []).find(p => p.partId === card.partId && p.opId === h.opId);
+      return po?.finalOperation === true;
+    });
+    const newStatus = stageReal.length
+      ? (anyFinal ? (stage === 'soft' ? 'soft_done' : 'hard_done')
+                  : (stage === 'soft' ? 'soft_wip'  : 'hard_wip'))
+      : entryStatus;
+    batch.update(db.collection('routeCards').doc(id), { opHistory: kept, status: newStatus, updatedAt: serverTS() });
+  });
+  batch.delete(db.collection('actuals').doc(rec.id));
+  await batch.commit();
+  S.actuals = (S.actuals || []).filter(a => a.id !== rec.id);
+  return { ok: true };
+}
+
+/* Read-only guard check (no writes) — used before opening the editor. */
+async function _checkReportReversible(rec) {
+  const stage = rec.stage;
+  const stageStatuses = stage === 'soft' ? ['soft_wip', 'soft_done'] : ['hard_wip', 'hard_done'];
+  const tagIds = [...new Set((rec.machines || [])
+    .flatMap(me => (me.runs || []).map(r => r.tagId).filter(Boolean)))];
+  const [cardSnaps, childSnaps] = await Promise.all([
+    Promise.all(tagIds.map(id => db.collection('routeCards').doc(id).get())),
+    Promise.all(tagIds.map(id => db.collection('routeCards').doc(id + '-S1').get())),
+  ]);
+  for (let i = 0; i < tagIds.length; i++) {
+    if (!cardSnaps[i].exists) continue;
+    const card = cardSnaps[i].data();
+    if (childSnaps[i].exists) return { ok: false, error: `${tagIds[i]} was split into a child card — edit not safe.` };
+    if (card.status && !stageStatuses.includes(card.status)) return { ok: false, error: `${tagIds[i]} has moved to "${card.status}" — edit not safe.` };
+  }
+  return { ok: true };
+}
+
+/* Edit a report → load it into the matrix editor. The original report stays
+   intact until you Save (so Cancel is non-destructive); on Save the old report
+   is reversed and a corrected one written. */
+async function editReportFromList(recId) {
+  if (!canManageReports()) { toast('Not permitted'); return; }
+  toast('Opening report for editing…');
+  try {
+    const snap = await db.collection('actuals').doc(recId).get();
+    if (!snap.exists) { toast('Report not found'); return; }
+    const rec = { id: snap.id, ...snap.data() };
+
+    const check = await _checkReportReversible(rec);
+    if (!check.ok) { toast(`Can't edit: ${check.error}`, 5500); return; }
+
+    _actStage = rec.stage; _actDate = rec.date; _actShift = rec.shift;
+    _actSupervisor = rec.supervisorId || '';
+    _viewingFinalized = false; _finalizedRecId = null;
+    _editingReportId = recId;
+    _machineData = {};
+    (rec.machines || []).forEach(me => {
+      _machineData[me.machineId] = {
+        used:           me.used,
+        idleReason:     me.idleReason || '',
+        idleReasonOther: me.idleReasonOther || '',
+        operatorId:     me.operatorId || '',
+        operatorName:   me.operatorName || '',
+        runs:           me.runs || [],
+        downtime:       me.downtime || [],
+      };
+    });
+
+    const runCount = (rec.machines || []).reduce((s, me) => s + (me.runs || []).length, 0);
+    _activeView = 'actual';
+    render();
+    toast(`Editing report — ${runCount} run(s) loaded. Change anything, then Save Changes.`, 4500);
+  } catch (e) { toast('Error: ' + e.message); }
+}
+
+/* Cancel an in-progress edit — original report is untouched. */
+function cancelEditReport() {
+  _editingReportId = null;
+  _machineData = {};
+  switchTab('reports');
+}
+
+/* Delete a whole report (two-step). */
+function confirmDeleteReport(recId) {
+  if (!canManageReports()) { toast('Not permitted'); return; }
+  const rec = (S.actuals || []).find(a => a.id === recId);
+  const when = rec ? `${fmtDate(rec.date)} · ${(S.shifts || {})[rec.shift]?.label || rec.shift}` : 'this shift';
+  openModal(`
+    <div class="modal-handle"></div>
+    <div style="text-align:center;margin-bottom:12px">
+      <div style="width:52px;height:52px;border-radius:26px;background:#fef2f2;border:2px solid var(--err);
+                  display:inline-flex;align-items:center;justify-content:center;font-size:24px">🗑</div>
+      <div style="font-size:16px;font-weight:800;color:var(--err);margin-top:8px">Delete this report?</div>
+    </div>
+    <p style="font-size:13px;color:var(--txt);text-align:center;margin-bottom:12px">
+      Permanently delete the production report for <strong>${when}</strong> and undo its effect on the route cards.
+    </p>
+    <p style="font-size:12px;color:var(--txt-muted);text-align:center;margin-bottom:16px">
+      Refuses if any card was split or moved downstream. This cannot be undone.
+    </p>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-p" style="flex:1;background:var(--err);border-color:var(--err)"
+        onclick="closeModal();deleteReportFromList('${recId}')">Yes, Delete</button>
+    </div>`);
+}
+
+async function deleteReportFromList(recId) {
+  if (!canManageReports()) { toast('Not permitted'); return; }
+  toast('Deleting report…');
+  try {
+    const snap = await db.collection('actuals').doc(recId).get();
+    if (!snap.exists) {
+      S.actuals = (S.actuals || []).filter(a => a.id !== recId);
+      toast('Report already gone'); loadAndRenderReports(); return;
+    }
+    const rec = { id: snap.id, ...snap.data() };
+    const res = await _reverseReportCards(rec);
+    if (!res.ok) { toast(`Can't delete: ${res.error}`, 5500); return; }
+    await logAudit('delete_report', 'production', recId, rec, null);
+    toast('Report deleted ✓');
+    loadAndRenderReports();
+  } catch (e) { toast('Error: ' + e.message); }
+}
+
+/* Jump from Log Actuals' "already finalized" notice to the Reports tab. */
+function goToReportsForShift() {
+  _repStage = _actStage; _repDate = _actDate; _repShift = _actShift;
+  switchTab('reports');
+}
+
 function backToHub() {
   _activeView = 'tabs';
   _activeTab  = 'hub';
   _machineData = {};
   _planData   = {};
+  _editingReportId = null;
+  _viewingFinalized = false;
   render();
 }
 
@@ -1281,8 +1646,12 @@ function buildSetupHtml() {
   const softCount = (S.machines || []).filter(m => m.stage === 'soft' && m.active !== false).length;
   const hardCount = (S.machines || []).filter(m => m.stage === 'hard' && m.active !== false).length;
 
-  const shiftOpts = Object.entries(S.shifts || { A: { label: 'Shift A' }, B: { label: 'Shift B' }, C: { label: 'Shift C' } })
-    .map(([k, v]) => `<option value="${k}">${v.label || k}</option>`).join('');
+  // Default the shift to the CURRENT configured shift (e.g. s1/s2/s3) — same
+  // key Production uses when filing actuals. Without this the dropdown silently
+  // sat on the first shift, so setups never matched the Production view.
+  const _curShift = getActiveShift().key;
+  const shiftOpts = Object.entries(S.shifts || {})
+    .map(([k, v]) => `<option value="${k}" ${k === _curShift ? 'selected' : ''}>${v.label || k}</option>`).join('');
 
   return `
     <div style="padding-bottom:20px">
@@ -1325,7 +1694,92 @@ function buildSetupHtml() {
 
       <div id="setup-tag-info"></div>
       <div id="setup-form" style="display:none"></div>
+
+      ${buildSetupLogHtml()}
     </div>`;
+}
+
+function buildSetupLogHtml() {
+  const list = (S.setupApprovals || [])
+    .slice()
+    .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0))
+    .slice(0, 60);
+  if (!list.length) return '';
+
+  const canDelete = S.sess?.role === 'admin' || S.sess?.role === 'hod' || S.sess?.role === 'supervisor';
+
+  return `
+    <div class="card" style="margin-top:12px">
+      <div class="card-hd"><i class="ti ti-clipboard-list"></i> Logged Setups
+        <span style="font-size:11px;font-weight:400;color:var(--txt-muted);margin-left:8px">${list.length} recent</span>
+      </div>
+      ${list.map(sa => setupLogRow(sa, canDelete)).join('')}
+    </div>`;
+}
+
+function setupLogRow(sa, canDelete) {
+  const statusColor = sa.status === 'approved' ? 'var(--ok)' : sa.status === 'rejected' ? 'var(--err)' : 'var(--warn)';
+  return `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;
+                padding:10px 0;border-bottom:1px solid var(--bdr)">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:13px;font-family:monospace">${sa.tagId || '—'}
+          <span style="font-weight:400;font-size:11px;font-family:inherit;color:var(--txt-muted);margin-left:6px">${sa.opName || ''}</span>
+        </div>
+        <div style="font-size:11px;color:var(--txt-muted);margin-top:2px">
+          ${sa.machineName || sa.machineId || '—'} · ${sa.date || ''} Shift ${sa.shift || '—'}
+          · ${sa.setupMins || 0} min
+        </div>
+        <div style="font-size:11px;color:var(--txt-muted)">${sa.operatorName || sa.requestedByName || '—'}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+        <span style="font-size:10px;font-weight:700;background:${statusColor};color:#fff;
+                     border-radius:4px;padding:2px 7px;text-transform:uppercase">${sa.status}</span>
+        ${canDelete ? `
+        <button class="btn btn-s" style="padding:4px 8px;font-size:11px;background:var(--err);border-color:var(--err);color:#fff"
+          onclick="confirmDeleteSetup('${sa.id}')">
+          <i class="ti ti-trash"></i>
+        </button>` : ''}
+      </div>
+    </div>`;
+}
+
+function confirmDeleteSetup(id) {
+  const sa = (S.setupApprovals || []).find(x => x.id === id);
+  if (!sa) { toast('Setup not found'); return; }
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Delete Setup Log?</div>
+    <div style="background:var(--bg);border-radius:var(--rs);padding:12px;margin-bottom:14px;font-size:13px">
+      <div style="font-weight:700;font-family:monospace">${sa.tagId || '—'}</div>
+      <div style="color:var(--txt-muted);font-size:12px;margin-top:4px">
+        ${sa.machineName || '—'} · ${sa.opName || '—'}<br>
+        ${sa.date || ''} · Shift ${sa.shift || '—'} · ${sa.setupMins || 0} min
+      </div>
+    </div>
+    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rs);
+                padding:10px 14px;font-size:12px;font-weight:700;color:var(--err);margin-bottom:14px">
+      <i class="ti ti-alert-triangle"></i> This will permanently remove the setup record. The duplicate-check guard for this TAG+machine will also be cleared.
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-s" style="flex:1;background:var(--err);border-color:var(--err);color:#fff"
+        onclick="closeModal();deleteSetup('${id}')">
+        <i class="ti ti-trash"></i> Delete
+      </button>
+    </div>`);
+}
+
+async function deleteSetup(id) {
+  try {
+    await db.collection('setupApprovals').doc(id).delete();
+    S.setupApprovals = (S.setupApprovals || []).filter(x => x.id !== id);
+    await logAudit('delete_setup', 'production', id, null, {});
+    toast('Setup log deleted ✓');
+    switchTab('setup');
+  } catch (e) {
+    toast('Error deleting setup: ' + e.message);
+  }
 }
 
 function onSetupMachChange(val) {
@@ -1435,9 +1889,12 @@ async function setupFetchTag() {
               <div style="font-size:12px;color:#9a3412;margin-top:4px">
                 Previous operation "<strong>${prevOpName}</strong>" (seq ${prevRequired.seqNo}) has no completion on this TAG.
               </div>
+              <div style="font-size:11px;color:#9a3412;margin-top:4px">
+                If it <strong>was</strong> produced this shift (report not filed yet), you can verify it on submit.
+              </div>
               <button class="btn btn-sm" style="margin-top:8px;width:100%;border-color:#f97316;color:#ea580c"
-                onclick="showDeviationConfirmModal('${tagId}','${prevOpName.replace(/'/g,"\\'")}',${prevRequired.seqNo})">
-                Request Sequence Deviation Approval
+                onclick="seqResolveFromUi()">
+                Verify / Resolve Prior Op
               </button>
             </div>`;
         }
@@ -1536,6 +1993,234 @@ async function confirmRequestDeviation(tagId, missingOpName, missingSeqNo) {
   } catch (e) { toast('Error: ' + e.message); }
 }
 
+/* ── Sequence verification ("was the prior op done THIS shift?") ──────────
+   opHistory is written at shift-end, but setup happens mid-shift, so a prior
+   op may be missing from opHistory even though it was already produced (its
+   run is sitting in this shift's prodDraft). This flow auto-checks the draft,
+   then falls back to operator attestation (qty + TAG re-scan). On success a
+   ZERO-QTY completion marker is written to the card so the sequence is
+   satisfied immediately — the real qty still flows from the shift report, so
+   nothing is double-counted. A genuine "No" routes to the deviation request. */
+
+const _opName = (id) => (S.operations || []).find(o => o.id === id)?.name || id;
+
+/** Build the sequence context for the currently-selected setup op. */
+function _setupSeqContext() {
+  if (!_setupCard) return null;
+  const machVal   = document.getElementById('setup-mach')?.value || '';
+  const machStage = machVal.split('|')[2] || '';
+  const stage     = machStage || _setupStage;
+  const opId      = document.getElementById('setup-op-sel')?.value || '';
+  const date      = document.getElementById('setup-date')?.value || dateStr();
+  const shift     = document.getElementById('setup-shift')?.value || '';
+  if (!opId) return null;
+
+  const allOps = (S.partOps || [])
+    .filter(po => po.partId === _setupCard.partId && po.stage === stage)
+    .sort((a, b) => (a.seqNo || 0) - (b.seqNo || 0));
+  const completed = (_setupCard.opHistory || [])
+    .filter(h => h.stage === stage).map(h => h.opId);
+  const selIdx = allOps.findIndex(po => po.opId === opId);
+  const missing = (selIdx < 0 ? [] : allOps.slice(0, selIdx))
+    .filter(po => !completed.includes(po.opId));
+  return { missing, allOps, selOpId: opId, stage, date, shift };
+}
+
+/** Banner entry point — verify/resolve prior op for the displayed selection. */
+function seqResolveFromUi() {
+  const ctx = _setupSeqContext();
+  if (!ctx || !ctx.missing.length) { toast('No sequence issue on the selected operation'); return; }
+  startSeqResolve(ctx);
+}
+
+/** Look in THIS shift's production drafts for processed runs of this TAG.
+    Returns { opId: totalProcessed }. Fresh query (drafts can be cross-user). */
+async function _findRunsInDraft(tagId, stage, date, shift) {
+  const draftKey = `${date}_${shift}_${stage}`;
+  const totals   = {};
+  try {
+    const snap = await db.collection('prodDrafts').where('draftKey', '==', draftKey).get();
+    snap.forEach(doc => {
+      const md = doc.data().machineData || {};
+      (md.runs || []).forEach(r => {
+        if (r.tagId === tagId && r.opId && (+r.processed || 0) > 0) {
+          totals[r.opId] = (totals[r.opId] || 0) + (+r.processed || 0);
+        }
+      });
+    });
+  } catch (e) { /* fall back to manual attestation */ }
+  return totals;
+}
+
+/** Entry: auto-verify from draft, else open the attestation modal. */
+async function startSeqResolve(ctx) {
+  if (!ctx || !ctx.missing.length) return;
+  toast('Checking this shift’s production…');
+  const found      = await _findRunsInDraft(_setupTagId, ctx.stage, ctx.date, ctx.shift);
+  const verified   = [];
+  const unverified = [];
+  ctx.missing.forEach(po => {
+    const qty = found[po.opId] || 0;
+    if (qty > 0) verified.push({ po, qty }); else unverified.push(po);
+  });
+
+  if (unverified.length === 0) {
+    // Everything confirmed from this shift's draft → record + proceed silently.
+    await _recordSeqClears(ctx, verified.map(v => ({ opId: v.po.opId, opName: _opName(v.po.opId), qty: v.qty, from: 'draft' })));
+    toast('Prior operation(s) verified from this shift ✓');
+    _setupDeviationCleared = true;
+    await submitSetupLog();
+    return;
+  }
+
+  _seqResolveState = { ctx, verified, unverified, attested: [], _attesting: false, _rescanOk: false, _qty: '' };
+  _renderSeqResolveModal();
+}
+
+function _renderSeqResolveModal() {
+  const st = _seqResolveState;
+  if (!st) return;
+  const cur     = st.unverified[0];
+  const curName = _opName(cur.opId);
+  const verifiedNote = st.verified.length
+    ? `<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:var(--rs);padding:8px 12px;margin-bottom:12px;font-size:12px;color:#15803d">
+         ✓ Verified from this shift: ${st.verified.map(v => `${_opName(v.po.opId)} (${v.qty} pcs)`).join(', ')}
+       </div>`
+    : '';
+
+  const body = st._attesting
+    ? `<p style="font-size:12px;color:var(--txt-muted);text-align:center;margin-bottom:12px">
+         Confirm production of <strong>${curName}</strong> on <strong>${_setupTagId}</strong>.
+       </p>
+       <div class="f">
+         <label>Quantity produced for ${curName} *</label>
+         <input id="seq-qty" type="number" min="1" max="${_setupCard.currentQty || 99999}" placeholder="pcs"
+           value="${st._qty || ''}" style="font-size:20px;font-weight:700;text-align:center;letter-spacing:1px">
+       </div>
+       <button class="btn btn-s" style="width:100%;margin-bottom:10px;${st._rescanOk ? 'border-color:var(--ok);color:var(--ok)' : ''}"
+         onclick="seqRescanTag()">
+         <i class="ti ti-qrcode"></i> ${st._rescanOk ? '✓ TAG confirmed in hand' : 'Scan TAG to confirm'}
+       </button>
+       <div style="display:flex;gap:8px">
+         <button class="btn btn-s" style="flex:1" onclick="_seqResolveState._attesting=false;_renderSeqResolveModal()">
+           <i class="ti ti-arrow-left"></i> Back
+         </button>
+         <button class="btn btn-p" style="flex:1" onclick="seqAttestConfirm()">
+           <i class="ti ti-check"></i> Confirm & Continue
+         </button>
+       </div>`
+    : `<p style="font-size:13px;color:var(--txt);text-align:center;margin-bottom:14px">
+         Was <strong>${curName}</strong> (seq ${cur.seqNo}) produced on <strong>${_setupTagId}</strong> in this shift?
+       </p>
+       <div style="display:flex;gap:8px">
+         <button class="btn btn-s" style="flex:1;border-color:#f97316;color:#ea580c" onclick="seqAttestNo()">
+           No — wasn’t done
+         </button>
+         <button class="btn btn-p" style="flex:1"
+           onclick="_seqResolveState._attesting=true;_seqResolveState._rescanOk=false;_renderSeqResolveModal()">
+           Yes — I produced it
+         </button>
+       </div>`;
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <div style="text-align:center;margin-bottom:12px">
+      <div style="width:52px;height:52px;border-radius:26px;background:#eff6ff;border:2px solid var(--imf-steel,#2563EB);
+                  display:inline-flex;align-items:center;justify-content:center;font-size:24px">🔍</div>
+      <div style="font-size:16px;font-weight:800;margin-top:8px">Verify Prior Operation</div>
+    </div>
+    ${verifiedNote}
+    ${body}`);
+}
+
+/** Re-scan the TAG to prove the physical card is in hand. Preserves typed qty. */
+function seqRescanTag() {
+  if (!_seqResolveState) return;
+  _seqResolveState._qty = document.getElementById('seq-qty')?.value || '';
+  openQrScanner(v => {
+    const scanned = (v || '').trim().toUpperCase();
+    _seqResolveState._rescanOk = (scanned === _setupTagId);
+    if (!_seqResolveState._rescanOk) toast(`Scanned TAG does not match ${_setupTagId}`);
+    _renderSeqResolveModal();
+  }, 'Scan TAG to confirm');
+}
+
+function seqAttestConfirm() {
+  const st = _seqResolveState;
+  if (!st) return;
+  const qty = parseInt(document.getElementById('seq-qty')?.value) || 0;
+  if (!qty || qty < 1) { toast('Enter the quantity produced'); return; }
+  if (!st._rescanOk)   { toast('Re-scan the TAG to confirm it’s in hand'); return; }
+  const cur = st.unverified.shift();
+  st.attested.push({ opId: cur.opId, opName: _opName(cur.opId), qty, from: 'attested' });
+  st._attesting = false; st._rescanOk = false; st._qty = '';
+  if (st.unverified.length === 0) _finishSeqResolve();
+  else _renderSeqResolveModal();
+}
+
+/** Operator confirms the prior op was genuinely NOT done → real deviation. */
+function seqAttestNo() {
+  const st = _seqResolveState;
+  if (!st) return;
+  const cur = st.unverified[0];
+  _seqResolveState = null;
+  closeModal();
+  showDeviationConfirmModal(_setupTagId, _opName(cur.opId), cur.seqNo);
+}
+
+/** All prior ops resolved → record markers and resume the setup submit. */
+async function _finishSeqResolve() {
+  const st = _seqResolveState;
+  if (!st) return;
+  const clears = [...st.verified.map(v => ({ opId: v.po.opId, opName: _opName(v.po.opId), qty: v.qty, from: 'draft' })),
+                  ...st.attested];
+  try {
+    await _recordSeqClears(st.ctx, clears);
+  } catch (e) { toast('Error recording: ' + e.message); return; }
+  closeModal();
+  _seqResolveState = null;
+  toast('Prior operation(s) recorded ✓');
+  _setupDeviationCleared = true;
+  await submitSetupLog();
+}
+
+/** Write zero-qty completion markers to the route card (qty stays single-sourced
+    from the shift report → no double-count). Batched + audited. */
+async function _recordSeqClears(ctx, clears) {
+  if (!clears || !clears.length) return;
+  const machVal           = document.getElementById('setup-mach')?.value || '';
+  const [machId, machName] = machVal.split('|');
+  const batch = db.batch();
+  const rcRef = db.collection('routeCards').doc(_setupTagId);
+
+  clears.forEach(c => {
+    const entry = {
+      stage:       ctx.stage,
+      opId:        c.opId,
+      opName:      c.opName,
+      machineId:   machId   || '',
+      machineName: machName || '',
+      processed:   0,            // marker only — real qty comes from the shift report
+      rejected:    0,
+      claimedQty:  c.qty || 0,   // evidence of what the operator/draft reported
+      date:        ctx.date,
+      shift:       ctx.shift,
+      source:      'setup_seq_clear',
+      verifiedFrom: c.from,      // 'draft' | 'attested'
+      loggedBy:    S.sess.userId,
+      loggedAt:    new Date().toISOString(), // serverTS() not allowed inside array elements
+    };
+    batch.update(rcRef, { opHistory: firebase.firestore.FieldValue.arrayUnion(entry) });
+  });
+  batch.update(rcRef, { updatedAt: serverTS() });
+  await batch.commit();
+  await logAudit('setup_seq_clear', 'production', _setupTagId, null, { stage: ctx.stage, clears });
+
+  // Reflect locally so a re-entrant submit/UI sees these ops as satisfied.
+  _setupCard.opHistory = [...(_setupCard.opHistory || []),
+    ...clears.map(c => ({ stage: ctx.stage, opId: c.opId, source: 'setup_seq_clear', processed: 0 }))];
+}
+
 async function submitSetupLog() {
   if (!_setupCard || !_setupTagId) { toast('Load a TAG first'); return; }
 
@@ -1548,47 +2233,15 @@ async function submitSetupLog() {
   const mins = parseInt(document.getElementById('setup-mins')?.value) || 0;
   if (!mins || mins < 1) { toast('Enter setup time in minutes'); return; }
 
-  // ── Sequence deviation check on the SELECTED operation ──────────────
+  // ── Sequence gate on the SELECTED operation ─────────────────────────
+  // A "missing" prior op may simply not be in opHistory yet because the
+  // shift production report (which posts opHistory) is filed at shift-end,
+  // while setup is logged mid-shift. So before treating it as a deviation we
+  // try to verify the prior op was actually produced THIS shift.
   if (!_setupDeviationCleared) {
-    const resolvedStageCheck = machStage || _setupStage;
-    const allOps = (S.partOps || [])
-      .filter(po => po.partId === _setupCard.partId && po.stage === resolvedStageCheck)
-      .sort((a, b) => (a.seqNo || 0) - (b.seqNo || 0));
-    const completedOpIds = (_setupCard.opHistory || [])
-      .filter(h => h.stage === resolvedStageCheck).map(h => h.opId);
-    const selectedIdx = allOps.findIndex(po => po.opId === opId);
-    const missingBefore = allOps
-      .slice(0, selectedIdx)
-      .filter(po => !completedOpIds.includes(po.opId));
-
-    if (missingBefore.length > 0) {
-      const first       = missingBefore[0];
-      const prevOpName  = (S.operations || []).find(o => o.id === first.opId)?.name || 'Previous Op';
-      const selOpName   = (S.operations || []).find(o => o.id === opId)?.name || 'Selected Op';
-      openModal(`
-        <div class="modal-handle"></div>
-        <div style="text-align:center;margin-bottom:14px">
-          <div style="width:52px;height:52px;border-radius:26px;background:#fff7ed;border:2px solid #f97316;
-                      display:inline-flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:8px">⚠</div>
-          <div style="font-size:16px;font-weight:800;color:#ea580c">Sequence Deviation</div>
-        </div>
-        <div style="background:#fff7ed;border:1.5px solid #f97316;border-radius:var(--rs);padding:12px 14px;margin-bottom:14px;font-size:13px">
-          <div style="margin-bottom:6px"><strong>Attempting:</strong> ${selOpName} (seq ${allOps.find(p=>p.opId===opId)?.seqNo||'?'})</div>
-          <div><strong>Not yet done:</strong> ${missingBefore.map(p=>{const n=(S.operations||[]).find(o=>o.id===p.opId)?.name||p.opId;return `${n} (seq ${p.seqNo})`;}).join(', ')}</div>
-        </div>
-        <p style="font-size:12px;color:var(--txt-muted);margin-bottom:14px;line-height:1.5">
-          Skipping operations requires <strong>Plant Head approval</strong>. Tapping "Request Deviation" will
-          log a deviation request and let this setup proceed — the Plant Head will review it.
-        </p>
-        <div style="display:flex;gap:8px">
-          <button class="btn btn-s" style="flex:1" onclick="closeModal()">
-            <i class="ti ti-arrow-left"></i> Go Back
-          </button>
-          <button class="btn btn-p" style="flex:1;background:#ea580c;border-color:#ea580c"
-            onclick="closeModal();confirmRequestDeviation('${_setupTagId}','${prevOpName.replace(/'/g,"\\'")}',${first.seqNo})">
-            <i class="ti ti-send"></i> Request Deviation
-          </button>
-        </div>`);
+    const ctx = _setupSeqContext();
+    if (ctx && ctx.missing.length > 0) {
+      await startSeqResolve(ctx); // handles its own modals; re-invokes submitSetupLog when cleared
       return;
     }
   }
@@ -1603,16 +2256,24 @@ async function submitSetupLog() {
   const remarks  = document.getElementById('setup-remarks')?.value.trim() || '';
   const resolvedStage = machStage || _setupStage;
 
-  // Check for existing pending/approved setup on the same date only
+  // Duplicate-setup guard. A setup is a re-entry ONLY when the SAME
+  // machine + component (part) + process (op) + operator + shift + day already
+  // has a pending/approved setup. A DIFFERENT process on the same machine/
+  // shift/day (e.g. Shaping Step 2 after Step 1) is a legitimate new setup and
+  // must be allowed through — it is not a duplicate.
   const existing = (S.setupApprovals || []).find(sa =>
-    sa.tagId === _setupTagId && sa.machineId === machId &&
-    sa.stage === resolvedStage && sa.date === date &&
+    sa.machineId  === machId &&
+    sa.partId     === _setupCard.partId &&
+    sa.opId       === opId_val &&
+    sa.operatorId === operId &&
+    sa.shift      === shift &&
+    sa.date       === date &&
     (sa.status === 'pending' || sa.status === 'approved')
   );
   if (existing) {
     toast(existing.status === 'approved'
-      ? 'Setup already approved for this TAG on this machine ✓'
-      : 'A pending setup approval already exists for this TAG');
+      ? 'This exact setup (same machine, part, operation, operator & shift) is already approved ✓'
+      : 'A pending setup for this exact machine, part, operation & shift already exists');
     _setupCard = null; _setupTagId = ''; _setupStage = '';
     switchTab('setup');
     return;
@@ -1716,10 +2377,9 @@ function openLogBreakdownModal() {
   const shiftOpts = Object.entries(S.shifts || { A: { label: 'Shift A' }, B: { label: 'Shift B' }, C: { label: 'Shift C' } })
     .map(([k, v]) => `<option value="${k}">${v.label || k}</option>`).join('');
 
-  const hr = new Date().getHours();
   const now = new Date();
   const timeStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-  const defaultShift = hr >= 6 && hr < 14 ? 'A' : hr >= 14 && hr < 22 ? 'B' : 'C';
+  const defaultShift = getActiveShift().key;
 
   openModal(`
     <div class="mtit"><i class="ti ti-alert-triangle"></i> Log Breakdown</div>
@@ -2134,6 +2794,15 @@ async function loadAndRenderReports() {
               <span style="color:${m.oee>=75?'var(--ok)':m.oee>=50?'#f59e0b':'var(--err,#dc2626)'}">${m.oee || 0}% OEE</span>
             </div>`).join('')}
         ` : ''}
+        ${canManageReports() ? `
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="btn btn-s" style="flex:1" onclick="editReportFromList('${r.id}')">
+              <i class="ti ti-edit"></i> Edit
+            </button>
+            <button class="btn btn-s" style="flex:1;border-color:var(--err);color:var(--err)" onclick="confirmDeleteReport('${r.id}')">
+              <i class="ti ti-trash"></i> Delete
+            </button>
+          </div>` : ''}
       </div>`;
   }).join('');
 

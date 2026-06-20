@@ -326,7 +326,51 @@ function setupCard(s, isPending) {
           ${s.rejectionReason ? ` · "${s.rejectionReason}"` : ''}
           ${s.approvedAt ? ` · ${fmtTS(s.approvedAt)}` : ''}
         </div>` : ''}
+      ${(S.sess?.role === 'admin' || S.sess?.role === 'hod') ? `
+        <button class="btn btn-s" style="width:100%;margin-top:8px;color:var(--err);border-color:var(--err)"
+          onclick="confirmDeleteSetupAPR('${s.id}')">
+          <i class="ti ti-trash"></i> Delete Setup Log
+        </button>` : ''}
     </div>`;
+}
+
+/* ── Delete setup (Approvals module) ───────────────────────────────── */
+function confirmDeleteSetupAPR(id) {
+  const s = S_APR.setupApprovals.find(x => x.id === id);
+  if (!s) { toast('Setup not found'); return; }
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Delete Setup Log?</div>
+    <div style="background:var(--bg);border-radius:var(--rs);padding:12px;margin-bottom:14px;font-size:13px">
+      <div style="font-weight:700;font-family:monospace">${s.tagId || '—'}</div>
+      <div style="color:var(--txt-muted);font-size:12px;margin-top:4px">
+        ${s.machineName || '—'} · ${s.opName || '—'}<br>
+        ${s.date || ''} · Shift ${s.shift || '—'} · ${s.setupMins || 0} min · <strong>${s.status}</strong>
+      </div>
+    </div>
+    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rs);
+                padding:10px 14px;font-size:12px;font-weight:700;color:var(--err);margin-bottom:14px">
+      <i class="ti ti-alert-triangle"></i> This permanently removes the setup record from both Production and QC views.
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-s" style="flex:1;background:var(--err);border-color:var(--err);color:#fff"
+        onclick="closeModal();deleteSetupAPR('${id}')">
+        <i class="ti ti-trash"></i> Delete
+      </button>
+    </div>`);
+}
+
+async function deleteSetupAPR(id) {
+  try {
+    await db.collection('setupApprovals').doc(id).delete();
+    S_APR.setupApprovals = S_APR.setupApprovals.filter(x => x.id !== id);
+    await logAudit('delete_setup', 'approvals', id, null, {});
+    toast('Setup log deleted ✓');
+    await refreshAll();
+  } catch (e) {
+    toast('Error deleting setup: ' + e.message);
+  }
 }
 
 /* ── Card: Sequence Deviation ──────────────────────────────────────── */
@@ -551,6 +595,10 @@ function sparesCard(s, isPending) {
           ${s.approverRemarks ? ` · "${s.approverRemarks}"` : ''}
           ${s.approvedAt ? ` · ${fmtTS(s.approvedAt)}` : ''}
         </div>` : ''}
+      ${s.status === 'approved' ? `
+        <button class="btn btn-s" style="margin-top:8px;width:100%" onclick="printSparesMRO('${s.id}')">
+          🖨️ Print Approved Spares
+        </button>` : ''}
     </div>`;
 }
 
@@ -588,6 +636,48 @@ async function rejectSpares(id) {
     toast('Spares request rejected');
     await refreshAll();
   } catch (e) { toast('Error: ' + e.message); }
+}
+
+/* ── Print: Approved MRO Spares ────────────────────────────────────── */
+function printSparesMRO(sparesId) {
+  const s = S_APR.sparesRequests.find(x => x.id === sparesId);
+  if (!s) return;
+  const spares    = s.spares || [];
+  const totalCost = spares.reduce((sum, sp) => sum + (sp.qty || 0) * (sp.unitRate || 0), 0);
+  const approvedDate = s.approvedAt
+    ? new Date(s.approvedAt.toMillis ? s.approvedAt.toMillis() : s.approvedAt).toLocaleDateString('en-IN')
+    : '—';
+  const rows = spares.map(sp => `<tr>
+    <td>${sp.name || '—'}</td>
+    <td>${sp.qty || 0}</td>
+    <td>₹${(sp.unitRate || 0).toLocaleString('en-IN')}</td>
+    <td>${sp.supplierName || 'TBD'}</td>
+    <td>₹${((sp.qty || 0) * (sp.unitRate || 0)).toLocaleString('en-IN')}</td>
+  </tr>`).join('');
+  const win = window.open('', '_blank', 'width=800,height=600');
+  win.document.write(`<!DOCTYPE html><html><head><title>MRO Spares — ${s.breakdownId || s.id}</title>
+  <style>body{font-family:Arial,sans-serif;padding:24px;font-size:13px}
+  h2{margin:0 0 6px;font-size:18px}p{margin:0 0 3px}
+  table{width:100%;border-collapse:collapse;margin-top:16px}
+  th,td{border:1px solid #ccc;padding:7px 10px;text-align:left}
+  th{background:#f0f0f0;font-weight:700}
+  tfoot td{font-weight:700;background:#f9f9f9}
+  .footer{margin-top:20px;font-size:11px;color:#888}</style></head><body>
+  <h2>Approved MRO Spares Request</h2>
+  <p><strong>Breakdown Ref:</strong> ${s.breakdownId || '—'}</p>
+  <p><strong>Machine:</strong> ${s.machineName || s.machineId || '—'}</p>
+  <p><strong>Requested by:</strong> ${s.requestedByName || '—'}</p>
+  <p><strong>Approved by:</strong> ${s.approvedByName || '—'} &middot; ${approvedDate}</p>
+  ${s.approverRemarks ? `<p><strong>Remarks:</strong> ${s.approverRemarks}</p>` : ''}
+  <table>
+    <thead><tr><th>Item</th><th>Qty</th><th>Unit Rate</th><th>Supplier</th><th>Line Total</th></tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr><td colspan="4" style="text-align:right">Total Cost</td><td>₹${totalCost.toLocaleString('en-IN')}</td></tr></tfoot>
+  </table>
+  <div class="footer">Printed ${new Date().toLocaleString('en-IN')} &middot; IMF ProTrack MES</div>
+  </body></html>`);
+  win.document.close();
+  win.print();
 }
 
 /* ── Boot ──────────────────────────────────────────────────────────── */

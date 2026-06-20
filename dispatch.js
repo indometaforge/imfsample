@@ -778,6 +778,9 @@ function dspConfirmFinalize() {
 
   // Validate
   for (const r of _dispRows) {
+    if (!r.invoiceNo) {
+      toast('Invoice Number is mandatory for all dispatch rows'); return;
+    }
     const max = r.tagData ? (r.tagData[`qty_${_dispHeader.stream}`] || 0) : r.qty;
     if (!r.qty || r.qty <= 0 || r.qty > max) {
       toast(`Invalid qty for TAG ${r.tagId} — must be 1–${max}`); return;

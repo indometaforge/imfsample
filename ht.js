@@ -966,6 +966,25 @@ async function finalizeCharge(chargeId) {
           htYielded:  y.yielded,
           updatedAt:  now,
         });
+        // Partial failure — account for failed pieces in scrap ledger
+        if (y.failed > 0) {
+          batch.set(db.collection('scrapLedger').doc(), {
+            tagId:             y.tagId,
+            batchCode:         y.batchCode    || '',
+            heatCode:          charge.heatCode,
+            partId:            y.partId,
+            partNo:            y.partNo       || '',
+            partName:          y.partName     || '',
+            customerName:      y.customerName || '',
+            qtyRejected:       y.failed,
+            defectDescription: 'Heat treatment partial failure',
+            stage:             'ht',
+            inspectedBy:       S.sess.userId,
+            inspectedByName:   S.sess.name,
+            date:              charge.date,
+            createdAt:         now,
+          });
+        }
       }
     }
 

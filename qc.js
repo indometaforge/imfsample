@@ -882,6 +882,11 @@ function qcSetupCard(s) {
           </button>
         </div>`
       : `<div style="font-size:12px;color:var(--txt-muted);padding:4px 0">Approval requires supervisor, HOD, or admin role.</div>`}
+      ${(S.sess?.role === 'admin' || S.sess?.role === 'hod') ? `
+        <button class="btn btn-s" style="width:100%;margin-top:8px;color:var(--err);border-color:var(--err)"
+          onclick="confirmDeleteSetupQC('${s.id}')">
+          <i class="ti ti-trash"></i> Delete Setup Log
+        </button>` : ''}
     </div>`;
 }
 
@@ -916,7 +921,50 @@ function qcSetupHistCard(s) {
         <div style="margin-top:8px;font-size:11px;color:var(--txt-mid);font-style:italic;border-top:1px solid var(--bdr);padding-top:6px">
           "${s.approverRemarks || s.rejectionReason}"
         </div>` : ''}
+      ${(S.sess?.role === 'admin' || S.sess?.role === 'hod') ? `
+        <button class="btn btn-s" style="width:100%;margin-top:8px;color:var(--err);border-color:var(--err)"
+          onclick="confirmDeleteSetupQC('${s.id}')">
+          <i class="ti ti-trash"></i> Delete Setup Log
+        </button>` : ''}
     </div>`;
+}
+
+function confirmDeleteSetupQC(id) {
+  const s = S_QC.setupApprovals.find(x => x.id === id);
+  if (!s) { toast('Setup not found'); return; }
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Delete Setup Log?</div>
+    <div style="background:var(--bg);border-radius:var(--rs);padding:12px;margin-bottom:14px;font-size:13px">
+      <div style="font-weight:700;font-family:monospace">${s.tagId || '—'}</div>
+      <div style="color:var(--txt-muted);font-size:12px;margin-top:4px">
+        ${s.machineName || '—'} · ${s.opName || '—'}<br>
+        ${s.date || ''} · Shift ${s.shift || '—'} · ${s.setupMins || 0} min · <strong>${s.status}</strong>
+      </div>
+    </div>
+    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rs);
+                padding:10px 14px;font-size:12px;font-weight:700;color:var(--err);margin-bottom:14px">
+      <i class="ti ti-alert-triangle"></i> This permanently removes the setup record from both Production and QC views.
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-s" style="flex:1;background:var(--err);border-color:var(--err);color:#fff"
+        onclick="closeModal();deleteSetupQC('${id}')">
+        <i class="ti ti-trash"></i> Delete
+      </button>
+    </div>`);
+}
+
+async function deleteSetupQC(id) {
+  try {
+    await db.collection('setupApprovals').doc(id).delete();
+    S_QC.setupApprovals = S_QC.setupApprovals.filter(x => x.id !== id);
+    await logAudit('delete_setup', 'QC', id, null, {});
+    toast('Setup log deleted ✓');
+    renderSetupApprovals();
+  } catch (e) {
+    toast('Error deleting setup: ' + e.message);
+  }
 }
 
 async function qcApproveSetup(id) {

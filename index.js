@@ -44,6 +44,20 @@ function clearLoginError() {
   if (box) box.style.display = 'none';
 }
 
+/* ── Toggle password visibility ── */
+function togglePasswordVisibility() {
+  const input = document.getElementById('login-password');
+  const icon  = document.getElementById('pw-toggle-icon');
+  const btn   = document.getElementById('pw-toggle-btn');
+  if (!input) return;
+  const isHidden = input.type === 'password';
+  input.type = isHidden ? 'text' : 'password';
+  if (icon) {
+    icon.className = isHidden ? 'ti ti-eye-off' : 'ti ti-eye';
+  }
+  if (btn) btn.setAttribute('aria-label', isHidden ? 'Hide password' : 'Show password');
+}
+
 /* ── Toggle the Sign In button loading state ── */
 function setLoading(isLoading) {
   const btn     = document.getElementById('login-btn');
@@ -82,6 +96,13 @@ async function handleLogin(e) {
   }
 }
 
+/* ── Online / offline indicator ── */
+function updateConnStatus() {
+  const bar = document.getElementById('login-status-bar');
+  if (!bar) return;
+  bar.hidden = navigator.onLine;
+}
+
 /* ── Boot ── */
 document.addEventListener('DOMContentLoaded', () => {
   /* Already signed in this session? Skip straight to the dashboard. */
@@ -95,6 +116,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const wrap    = document.getElementById('login-wrap');
   if (loading) loading.style.display = 'none';
   if (wrap)    wrap.style.display = 'flex';
+
+  /* Wire connectivity listeners */
+  window.addEventListener('online',  updateConnStatus);
+  window.addEventListener('offline', updateConnStatus);
+  updateConnStatus();   /* set correct state immediately on load */
 
   document.getElementById('login-form').addEventListener('submit', handleLogin);
   document.getElementById('login-email').focus();
