@@ -31,6 +31,23 @@ let _iqcFilt  = 'pending'; // 'pending' | 'history'
 const IQC_LABEL = { pending: 'IQC Pending', accepted: 'Accepted', conditional: 'Conditional', rejected: 'Rejected' };
 const IQC_BADGE = { pending: 'bdg-a', accepted: 'bdg-g', conditional: 'bdg-b', rejected: 'bdg-r' };
 
+/** Inline error banner inside the open modal */
+function showModalError(msg) {
+  const box = document.getElementById('modal-err');
+  if (box) box.innerHTML = `<div class="ebox"><i class="ti ti-alert-triangle" aria-hidden="true"></i><span>${msg}</span></div>`;
+}
+
+/* Modal footer: Save + Cancel buttons */
+function modalActions(saveLabel, saveOnclick) {
+  return `
+    <div class="flex gap-8 mt-16">
+      <button class="btn btn-p flex-1" onclick="${saveOnclick}">
+        <i class="ti ti-check" aria-hidden="true"></i> ${saveLabel}
+      </button>
+      <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+    </div>`;
+}
+
 const S_QC = {
   setupApprovals: [],
   inspections:    [],
