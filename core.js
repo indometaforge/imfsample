@@ -34,12 +34,12 @@ db.enablePersistence({ synchronizeTabs: true }).catch(() => {});
  * When true, all transactional writes go to TEST_ prefixed collections.
  * Master data (users, machines, parts, etc.) always reads from live collections.
  */
-const TEST_MODE = false;
+const TEST_MODE = true;
 
 const TRANSACTIONAL_COLLECTIONS = new Set([
-  'inward', 'iqcResults', 'requisitions', 'routeCards', 'shiftDrafts',
+  'inward', 'iqcResults', 'requisitions', 'routeCards',
   'setupApprovals', 'setupDeviations', 'actuals', 'plans', 'prodDrafts', 'planDrafts',
-  'htCharges', 'qcInspections', 'scrapLedger', 'finishedGoods',
+  'htCharges', 'qcInspections', 'scrapLedger',
   'breakdowns', 'machineStatus', 'sparesRequests', 'pmLogs',
   'dispatches', 'pos', 'auditLogs'
 ]);
@@ -498,6 +498,18 @@ async function initShell() {
   const bnEl = document.getElementById('bottom-nav');
   if (sbEl) sbEl.innerHTML = buildSidebar();
   if (bnEl) bnEl.innerHTML = buildBottomNav();
+
+  /* TEST MODE banner — visual reminder that transactional writes are
+     redirected to TEST_ collections, not live data (mirrors i-v3.html) */
+  if (TEST_MODE) {
+    const mainEl = document.querySelector('#app .main');
+    if (mainEl && !document.getElementById('test-mode-bar')) {
+      mainEl.insertAdjacentHTML('afterbegin',
+        `<div id="test-mode-bar" style="background:var(--warn);color:#fff;text-align:center;font-size:12px;font-weight:700;padding:6px 10px;letter-spacing:.04em">
+          <i class="ti ti-flask" aria-hidden="true"></i> TEST MODE — writes go to TEST_ collections, not live data
+        </div>`);
+    }
+  }
 
   /* Wire sidebar toggle (mobile) */
   initSidebar();
