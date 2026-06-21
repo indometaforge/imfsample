@@ -356,6 +356,10 @@ function initOfflineDetection() {
   window.addEventListener('online',  update);
   window.addEventListener('offline', update);
   update();
+  // navigator.onLine + the online/offline events are unreliable on mobile —
+  // a WiFi↔cellular handoff often never fires the event, which can leave this
+  // banner stuck. Poll as a safety net so it always reflects the real state.
+  setInterval(update, 4000);
 }
 
 /* ══════════════════════════════════════════════════════════════════════

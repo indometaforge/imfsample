@@ -393,15 +393,15 @@ function renderActualEntry() {
     const statusTxtColor = isBreakdown ? 'var(--warn)' : md?.used ? 'var(--ok)' : 'var(--txt-muted)';
 
     return `
-      <div class="matrix-tile" onclick="openMachineDetail('${m.id}')" style="border-color:${statusColor}">
-        <div style="flex:1;min-width:0">
-          <div class="matrix-tile-name">${m.name}</div>
-          <div class="matrix-tile-code">${m.id_code || m.id}</div>
-          <div class="matrix-tile-status" style="color:${statusTxtColor}">${statusIcon}${statusLabel}</div>
-          ${saveLbl ? `<div class="matrix-tile-save">${saveLbl}</div>` : ''}
-        </div>
+      <button type="button" class="matrix-tile" onclick="openMachineDetail('${m.id}')" style="border-color:${statusColor}">
+        <span style="flex:1;min-width:0">
+          <span class="matrix-tile-name">${m.name}</span>
+          <span class="matrix-tile-code">${m.id_code || m.id}</span>
+          <span class="matrix-tile-status" style="color:${statusTxtColor}">${statusIcon}${statusLabel}</span>
+          ${saveLbl ? `<span class="matrix-tile-save">${saveLbl}</span>` : ''}
+        </span>
         <i class="ti ti-chevron-right" style="color:var(--txt-dim);font-size:20px;flex-shrink:0"></i>
-      </div>`;
+      </button>`;
   }).join('');
 
   document.getElementById('page-content').innerHTML = `
@@ -585,10 +585,11 @@ function renderMachineDetail() {
           </div>
           <div style="display:flex;align-items:center;gap:10px">
             <span style="font-size:13px;font-weight:600;color:${md.used?'var(--ok)':'var(--txt-muted)'}">${md.used?'Used':'Not Used'}</span>
-            <div ${readOnly ? '' : `onclick="toggleMachineUsedDetail(${!md.used})"`}
-              style="width:48px;height:26px;border-radius:13px;background:${md.used?'var(--ok)':'var(--bdr)'};cursor:${readOnly?'default':'pointer'};position:relative;transition:background .2s;flex-shrink:0;${readOnly?'opacity:.7':''}">
-              <div style="position:absolute;top:3px;left:${md.used?'25px':'3px'};width:20px;height:20px;border-radius:10px;background:#fff;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.25)"></div>
-            </div>
+            <label class="tsw" style="${readOnly?'opacity:.7':''}" aria-label="Machine used this shift">
+              <input type="checkbox" ${md.used ? 'checked' : ''} ${readOnly ? 'disabled' : ''}
+                onchange="toggleMachineUsedDetail(this.checked)">
+              <span class="tsl"></span>
+            </label>
           </div>
         </div>
       </div>

@@ -1291,8 +1291,16 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
   z-index: 5;
 }
 
-/* ── COMPACT MACHINE TILE (Production matrix) ─── */
+/* ── COMPACT MACHINE TILE (Production matrix) ───
+   Rendered as a <button> for keyboard/screen-reader access — reset all
+   native button chrome so it still looks like the original tile. */
 .matrix-tile {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
   background: var(--sur);
   border-radius: var(--rs);
   padding: 13px 14px;
@@ -1307,16 +1315,21 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
   -webkit-tap-highlight-color: transparent;
 }
 .matrix-tile:active { background: var(--sur2); }
+.matrix-tile:focus-visible {
+  outline: 2px solid var(--imf-steel);
+  outline-offset: 2px;
+}
 .matrix-tile-name {
+  display: block;
   font-weight: 700;
   font-size: 14px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.matrix-tile-code { font-size: 11.5px; color: var(--txt-muted); margin-top: 1px; }
-.matrix-tile-status { font-size: 12px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.matrix-tile-save { font-size: 10.5px; color: var(--txt-muted); margin-top: 2px; }
+.matrix-tile-code { display: block; font-size: 11.5px; color: var(--txt-muted); margin-top: 1px; }
+.matrix-tile-status { display: block; font-size: 12px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.matrix-tile-save { display: block; font-size: 10.5px; color: var(--txt-muted); margin-top: 2px; }
 
 /* ── RUN / DOWNTIME LIST ITEMS (machine detail drill-down) ─── */
 .det-item {
@@ -1601,6 +1614,9 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
   font-weight: 600;
   margin-bottom: 16px;
 }
+/* The class's own `display: flex` outranks the UA [hidden] rule's specificity,
+   so the banner stayed visible even after JS set el.hidden = true. */
+.login-status-offline[hidden] { display: none; }
 .login-card h2 {
   font-size: 20px;
   font-weight: 700;

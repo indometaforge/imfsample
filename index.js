@@ -96,7 +96,11 @@ async function handleLogin(e) {
   }
 }
 
-/* ── Online / offline indicator ── */
+/* ── Online / offline indicator ──
+   navigator.onLine + the online/offline events are unreliable on mobile —
+   browsers frequently miss firing the event across a WiFi↔cellular handoff,
+   which left this banner stuck on screen even once the device reconnected.
+   A periodic re-check is the safety net so it never gets stuck either way. */
 function updateConnStatus() {
   const bar = document.getElementById('login-status-bar');
   if (!bar) return;
@@ -121,6 +125,7 @@ document.addEventListener('DOMContentLoaded', () => {
   window.addEventListener('online',  updateConnStatus);
   window.addEventListener('offline', updateConnStatus);
   updateConnStatus();   /* set correct state immediately on load */
+  setInterval(updateConnStatus, 4000); /* safety net — see comment above */
 
   document.getElementById('login-form').addEventListener('submit', handleLogin);
   document.getElementById('login-email').focus();
