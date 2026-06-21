@@ -2352,12 +2352,12 @@ function buildBreakdownHtml() {
 
 function breakdownCard(b) {
   const mach = (S.machines || []).find(m => m.id === b.machineId);
-  const statusColor = b.status === 'open' ? 'var(--err,#dc2626)' : b.status === 'acknowledged' ? '#f59e0b' : 'var(--ok)';
+  const statusColor = b.status === 'open' ? 'var(--err)' : b.status === 'acknowledged' ? 'var(--warn)' : 'var(--ok)';
   return `
     <div class="card" style="margin-bottom:10px;border-left:4px solid ${statusColor}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
         <div>
-          <div style="font-weight:700">${b.machineName || (mach?.name || b.machineId)}</div>
+          <div style="font-weight:700">${b.machineName || mach?.name || '—'}</div>
           <div style="font-size:11px;color:var(--txt-muted)">${b.date || ''} · ${b.shift ? 'Shift ' + b.shift : ''} · ${b.breakdownTime || ''}</div>
         </div>
         ${stBadge(b.status)}
@@ -2615,7 +2615,7 @@ function reqRenderLines() {
           <div style="font-size:16px;font-weight:800;color:var(--acc)">${l.qtyRequested}</div>
           <div style="font-size:10px;color:var(--txt-muted)">pcs</div>
         </div>
-        <button onclick="_reqLines.splice(${i},1);reqRenderLines()" style="width:26px;height:26px;border-radius:6px;border:none;background:#fef2f2;color:var(--err,#dc2626);font-size:14px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center">✕</button>
+        <button class="btn btn-ic" onclick="_reqLines.splice(${i},1);reqRenderLines()" style="background:var(--err-bg);color:var(--err);width:36px;height:36px" aria-label="Remove line"><i class="ti ti-trash"></i></button>
       </div>
     </div>`).join('');
 }

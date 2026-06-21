@@ -164,10 +164,7 @@ function renderHub() {
       <button class="btn btn-s btn-sm" onclick="refreshMaint()"><i class="ti ti-refresh"></i> Refresh</button>
     </div>
 
-    ${machines.length
-      ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:16px">
-           ${machines.map(m => machineStatusCard(m, bdByMachine[m.id] || [])).join('')}
-         </div>`
+    ${machines.length ? machineStatusGroups(machines, bdByMachine)
       : `<div class="empty"><div class="empty-ic"><i class="ti ti-tool"></i></div><h3>No machines</h3><p>Add machines in Master Data.</p></div>`}
 
     ${activeBDs.length > 0 ? `
@@ -175,12 +172,39 @@ function renderHub() {
       ${activeBDs.slice(0, 5).map(b => bdCardCompact(b)).join('')}` : ''}`;
 }
 
+/** Group machines by stage (Soft / Heat Treatment / Hard / General) so the
+    status grid reads as sections instead of one long undifferentiated block —
+    also keeps it to a single column on phones (set in styles.css) so names
+    and asset codes never get cut off. */
+function machineStatusGroups(machines, bdByMachine) {
+  const STAGE_ORDER = [
+    { v: 'soft',    l: 'Soft Machining' },
+    { v: 'ht',      l: 'Heat Treatment' },
+    { v: 'hard',    l: 'Hard Machining' },
+    { v: 'general', l: 'General' },
+  ];
+  const byStage = {};
+  machines.forEach(m => { (byStage[m.stage] = byStage[m.stage] || []).push(m); });
+
+  const knownStages = STAGE_ORDER.filter(s => byStage[s.v]?.length);
+  const otherStage  = Object.keys(byStage).filter(k => !STAGE_ORDER.some(s => s.v === k));
+  otherStage.forEach(k => knownStages.push({ v: k, l: k || 'Other' }));
+
+  return knownStages.map(s => `
+    <div style="margin-bottom:16px">
+      <div class="slbl" style="margin-top:0">${s.l} <span style="color:var(--txt-dim);font-weight:400">(${byStage[s.v].length})</span></div>
+      <div class="mnt-status-grid">
+        ${byStage[s.v].map(m => machineStatusCard(m, bdByMachine[m.id] || [])).join('')}
+      </div>
+    </div>`).join('');
+}
+
 function machineStatusCard(m, bds) {
   const isDown = bds.length > 0;
   const bd     = bds[0];
   const stepLbl = { reported: 'Reported', acknowledged: 'Acknowledged', diagnosed: 'Diagnosed' };
-  const bg      = isDown ? '#fef2f2' : '#f0fdf4';
-  const bdr     = isDown ? '#fca5a5' : '#86efac';
+  const bg      = isDown ? 'var(--err-bg)' : 'var(--ok-bg)';
+  const bdr     = isDown ? 'var(--err-bdr)' : 'var(--ok-bdr)';
   const col     = isDown ? 'var(--err)' : 'var(--ok)';
   const ico     = isDown ? 'ti-alert-circle' : 'ti-circle-check';
 
@@ -188,9 +212,9 @@ function machineStatusCard(m, bds) {
     <div style="background:${bg};border:1.5px solid ${bdr};border-radius:var(--rs);padding:12px;cursor:default">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
         <i class="ti ${ico}" style="color:${col};font-size:16px"></i>
-        <div style="font-weight:800;font-size:13px;color:var(--txt)">${m.code || m.id}</div>
+        <div style="font-weight:800;font-size:13px;color:var(--txt)">${m.name || '—'}</div>
       </div>
-      <div style="font-size:11px;color:var(--txt-muted);margin-bottom:4px">${m.name || '—'}</div>
+      <div style="font-size:11px;color:var(--txt-muted);margin-bottom:4px;font-family:monospace">${m.id_code || '—'}</div>
       <div style="font-size:11px;font-weight:700;color:${col}">
         ${isDown ? (stepLbl[bd.status] || bd.status) : 'Operational'}
       </div>
@@ -206,7 +230,7 @@ function bdCardCompact(b) {
       onclick="switchTab('breakdowns')">
       <div style="display:flex;align-items:center;justify-content:space-between">
         <div>
-          <div style="font-weight:700;font-size:13px">${mach?.code || b.machineId || '—'} — ${mach?.name || '—'}</div>
+          <div style="font-weight:700;font-size:13px">${mach?.name || '—'} <span style="font-weight:400;color:var(--txt-muted);font-family:monospace">${mach?.id_code || ''}</span></div>
           <div style="font-size:11px;color:var(--txt-muted)">${b.description || '—'}</div>
         </div>
         <span style="font-size:10px;font-weight:700;background:${STEP_COL[b.status] || 'var(--bdr)'};color:#fff;
@@ -276,7 +300,7 @@ function bdCard(b) {
       <!-- Header -->
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div>
-          <div style="font-weight:800;font-size:14px">${mach?.name || b.machineId || '—'} <span style="font-family:monospace;font-size:11px;font-weight:400;color:var(--txt-muted)">${mach?.code || ''}</span></div>
+          <div style="font-weight:800;font-size:14px">${mach?.name || '—'} <span style="font-family:monospace;font-size:11px;font-weight:400;color:var(--txt-muted)">${mach?.id_code || ''}</span></div>
           <div style="font-size:11px;color:var(--txt-muted)">Reported by ${b.reportedByName || '—'} · ${fmtTS(b.createdAt)}</div>
         </div>
         <span style="font-size:10px;font-weight:700;background:${stepCol};color:#fff;
@@ -344,7 +368,7 @@ function bdCard(b) {
 
 /* ── REPORT new breakdown ────────────────────────────────────────────── */
 function openReportModal() {
-  const machOpts = S.machines.map(m => `<option value="${m.id}">${m.code} — ${m.name}</option>`).join('');
+  const machOpts = S.machines.map(m => `<option value="${m.id}">${m.name}${m.id_code ? ' — ' + m.id_code : ''}</option>`).join('');
   openModal(`
     <div class="modal-handle"></div>
     <div class="modal-title">Report Breakdown</div>
@@ -408,7 +432,7 @@ async function saveBreakdown() {
     const bdRef = db.collection('breakdowns').doc();
     batch.set(bdRef, {
       machineId,
-      machineCode: mach?.code || '',
+      machineCode: mach?.id_code || '',
       machineName: mach?.name || '',
       date, shift,
       description: desc,
@@ -426,7 +450,7 @@ async function saveBreakdown() {
     });
 
     batch.set(db.collection('machineStatus').doc(machineId), {
-      machineId, machineCode: mach?.code || '', machineName: mach?.name || '',
+      machineId, machineCode: mach?.id_code || '', machineName: mach?.name || '',
       status: 'breakdown',
       activeBreakdownId: bdRef.id,
       updatedAt: now,
@@ -535,8 +559,8 @@ function openDiagnoseModal(id) {
       </div>
 
       <div id="diag-spares-form" style="display:none">
-        <div style="font-size:11px;color:var(--txt-muted);margin-bottom:10px;padding:8px 10px;background:#fef9c3;border-radius:var(--rxs);border:1px solid #fde68a">
-          <i class="ti ti-info-circle" style="color:#92400e"></i> Machine release is <strong>not blocked</strong> by procurement — spares request runs in parallel.
+        <div class="wbox" style="font-size:11px;margin-bottom:10px">
+          <i class="ti ti-info-circle"></i> <div>Machine release is <strong>not blocked</strong> by procurement — spares request runs in parallel.</div>
         </div>
         <div id="diag-spares-list"></div>
         <button class="btn btn-s" style="width:100%;margin-bottom:8px" onclick="diagAddSpare()">
@@ -679,7 +703,7 @@ async function saveDiagnose(id) {
       batch.set(spRef, {
         breakdownId:      id,
         machineId:        b.machineId,
-        machineCode:      mach?.code || '',
+        machineCode:      mach?.id_code || '',
         machineName:      mach?.name || '',
         requestedBy:      S.sess.userId,
         requestedByName:  S.sess.name,
@@ -730,12 +754,12 @@ function openReleaseModal(id) {
       <textarea id="rel-fix" rows="3" placeholder="Describe what was fixed and how…" style="resize:vertical;font-size:13px"></textarea>
     </div>
     ${b.spares && b.spares.length > 0 ? `
-      <div style="background:#fef9c3;border:1px solid #fde68a;border-radius:var(--rs);padding:10px 12px;font-size:12px;margin-bottom:10px">
-        <i class="ti ti-info-circle" style="color:#92400e"></i>
-        <strong style="color:#92400e"> Note:</strong> Spares request is independent — machine release does not require procurement to be complete.
+      <div class="wbox" style="font-size:12px;margin-bottom:10px">
+        <i class="ti ti-info-circle"></i>
+        <div><strong>Note:</strong> Spares request is independent — machine release does not require procurement to be complete.</div>
       </div>` : ''}
-    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rs);padding:10px 14px;font-size:12px;font-weight:700;color:var(--err);margin-bottom:14px">
-      <i class="ti ti-alert-triangle"></i> Releasing the machine marks this breakdown as resolved. Downtime will be locked.
+    <div class="ebox" style="font-weight:700;margin-bottom:14px">
+      <i class="ti ti-alert-triangle"></i> <div>Releasing the machine marks this breakdown as resolved. Downtime will be locked.</div>
     </div>
     <div id="rel-modal-err" style="display:none;color:var(--err);font-size:12px;font-weight:700;margin-bottom:8px"></div>
     <div style="display:flex;gap:8px">
@@ -844,7 +868,7 @@ function pmMachineBlock(m, canLog) {
   return `
     <div class="card" style="margin-bottom:12px">
       <div style="font-weight:800;font-size:14px;margin-bottom:10px">
-        ${m.name || '—'} <span style="font-family:monospace;font-size:11px;font-weight:400;color:var(--txt-muted)">${m.code || ''}</span>
+        ${m.name || '—'} <span style="font-family:monospace;font-size:11px;font-weight:400;color:var(--txt-muted)">${m.id_code || ''}</span>
       </div>
       ${intervals}
     </div>`;
@@ -883,7 +907,7 @@ async function saveLogPM(machId, interval) {
     const now = serverTS();
     await db.collection('pmLogs').add({
       machineId:    machId,
-      machineCode:  mach?.code || '',
+      machineCode:  mach?.id_code || '',
       machineName:  mach?.name || '',
       interval,
       date,
@@ -948,7 +972,7 @@ function renderHealth() {
             const availCol = r.avail >= 95 ? 'var(--ok)' : r.avail >= 80 ? 'var(--warn)' : 'var(--err)';
             return `
               <tr style="background:${i % 2 === 0 ? 'var(--sur)' : 'var(--bg)'}">
-                <td style="padding:8px 10px;font-weight:700">${r.m.name || r.m.id}<div style="font-size:10px;font-weight:400;color:var(--txt-muted)">${r.m.code || ''}</div></td>
+                <td style="padding:8px 10px;font-weight:700">${r.m.name || '—'}<div style="font-size:10px;font-weight:400;color:var(--txt-muted)">${r.m.id_code || ''}</div></td>
                 <td style="padding:8px 6px;text-align:center;${r.failures > 0 ? 'color:var(--err);font-weight:700' : ''}">${r.failures}</td>
                 <td style="padding:8px 6px;text-align:center">${r.mtbf !== null ? r.mtbf : '—'}</td>
                 <td style="padding:8px 6px;text-align:center">${r.mttr !== null ? r.mttr : '—'}</td>

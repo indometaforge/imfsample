@@ -604,7 +604,7 @@ function openRoutingModal(partId, poId) {
     </div>
 
     ${isAdd
-      ? `<div class="ibox" style="background:var(--acc3,#eef2ff);border-color:var(--acc2,#c7d2fe);margin-bottom:4px;font-size:12.5px">
+      ? `<div class="ibox" style="margin-bottom:4px;font-size:12.5px">
            <i class="ti ti-sort-ascending-numbers"></i>
            Step position: <strong>Step ${stepNum} of ${totalSteps}</strong> — assigned automatically
            <input type="hidden" id="rf-seq" value="${autoSeq}">
@@ -984,12 +984,12 @@ function openMergeModal(deleteId) {
         ${opts}
       </select>
     </div>
-    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rs);padding:10px 12px;margin:10px 0;font-size:12px;color:#991b1b">
-      ⚠ This cannot be undone. Check carefully before confirming.
+    <div class="ebox" style="margin:10px 0">
+      <i class="ti ti-alert-triangle"></i> <div>This cannot be undone. Check carefully before confirming.</div>
     </div>
     <div style="display:flex;gap:8px;margin-top:4px">
       <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
-      <button class="btn" style="flex:1;background:#dc2626;color:#fff;border-color:#dc2626"
+      <button class="btn" style="flex:1;background:var(--err);color:#fff;border-color:var(--err)"
         onclick="confirmMergeCustomer('${deleteId}')">Merge &amp; Delete</button>
     </div>
   `);

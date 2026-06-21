@@ -172,13 +172,14 @@ function render() {
       <!-- History section -->
       ${histItems.length ? `
         <div style="margin-top:20px">
-          <div onclick="_histTab=!_histTab;render()"
-            style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:8px 0;border-top:1px solid var(--bdr)">
+          <button type="button" onclick="_histTab=!_histTab;render()" aria-expanded="${_histTab?'true':'false'}"
+            style="appearance:none;-webkit-appearance:none;font:inherit;color:inherit;background:none;border:none;width:100%;
+                   display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:8px 0;border-top:1px solid var(--bdr)">
             <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em">
               RECENTLY PROCESSED (${histItems.length})
             </div>
             <i class="ti ${_histTab?'ti-chevron-up':'ti-chevron-down'}" style="color:var(--txt-muted);font-size:14px"></i>
-          </div>
+          </button>
           ${_histTab ? histItems.map(item => {
             if (item.type === 'requisition') return reqCard(item.data, false);
             if (item.type === 'setup')       return setupCard(item.data, false);
@@ -197,11 +198,11 @@ function switchTab(tab) {
 
 /* ── Status badges ─────────────────────────────────────────────────── */
 const BADGE = {
-  pending:   { bg: '#fef9c3', border: '#fde68a', color: '#92400e', label: 'Pending' },
-  approved:  { bg: '#f0fdf4', border: '#86efac', color: '#166534', label: 'Approved' },
-  rejected:  { bg: '#fef2f2', border: '#fca5a5', color: '#991b1b', label: 'Rejected' },
-  partial:   { bg: '#eff6ff', border: '#93c5fd', color: '#1e40af', label: 'Part Approved' },
-  fulfilled: { bg: '#f0fdf4', border: '#86efac', color: '#166534', label: 'Fulfilled' },
+  pending:   { bg: 'var(--warn-bg)', border: 'var(--warn-bdr)', color: '#78350F', label: 'Pending' },
+  approved:  { bg: 'var(--ok-bg)',   border: 'var(--ok-bdr)',   color: '#14532D', label: 'Approved' },
+  rejected:  { bg: 'var(--err-bg)',  border: 'var(--err-bdr)',  color: '#7F1D1D', label: 'Rejected' },
+  partial:   { bg: 'var(--info-bg)', border: 'var(--info-bdr)', color: '#1E40AF', label: 'Part Approved' },
+  fulfilled: { bg: 'var(--ok-bg)',   border: 'var(--ok-bdr)',   color: '#14532D', label: 'Fulfilled' },
 };
 
 function statusBadge(status) {
@@ -217,7 +218,7 @@ function moduleTag(label, icon) {
 function reqCard(r, isPending) {
   const canAct = isPending && (canDo('inward') || S.sess?.role === 'admin' || S.sess?.role === 'hod');
   return `
-    <div class="card" style="margin-bottom:10px;border-left:3px solid ${isPending?'#f59e0b':'var(--bdr)'}">
+    <div class="card" style="margin-bottom:10px;border-left:3px solid ${isPending?'var(--warn)':'var(--bdr)'}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div>
           <div style="font-weight:800;font-size:14px">${r.reqNo || '—'}</div>
@@ -348,9 +349,8 @@ function confirmDeleteSetupAPR(id) {
         ${s.date || ''} · Shift ${s.shift || '—'} · ${s.setupMins || 0} min · <strong>${s.status}</strong>
       </div>
     </div>
-    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rs);
-                padding:10px 14px;font-size:12px;font-weight:700;color:var(--err);margin-bottom:14px">
-      <i class="ti ti-alert-triangle"></i> This permanently removes the setup record from both Production and QC views.
+    <div class="ebox" style="font-weight:700;margin-bottom:14px">
+      <i class="ti ti-alert-triangle"></i> <div>This permanently removes the setup record from both Production and QC views.</div>
     </div>
     <div style="display:flex;gap:8px">
       <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
@@ -377,7 +377,7 @@ async function deleteSetupAPR(id) {
 function deviationCard(s, isPending) {
   const canAct = isPending && (S.sess?.role === 'admin' || S.sess?.role === 'hod');
   return `
-    <div class="card" style="margin-bottom:10px;border-left:3px solid ${isPending?'#dc2626':'var(--bdr)'}">
+    <div class="card" style="margin-bottom:10px;border-left:3px solid ${isPending?'var(--err)':'var(--bdr)'}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div>
           <div style="font-weight:800;font-size:14px">Sequence Deviation</div>
@@ -394,10 +394,10 @@ function deviationCard(s, isPending) {
         </div>
       </div>
 
-      <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;padding:10px 12px;margin-bottom:10px">
-        <div style="font-size:11px;font-weight:700;color:#991b1b;margin-bottom:4px">SKIPPED OPERATION</div>
+      <div style="background:var(--err-bg);border:1px solid var(--err-bdr);border-radius:6px;padding:10px 12px;margin-bottom:10px">
+        <div style="font-size:11px;font-weight:700;color:#7F1D1D;margin-bottom:4px">SKIPPED OPERATION</div>
         <div style="font-size:13px;font-weight:700">${s.missingOpName || '—'}</div>
-        ${s.missingSeqNo ? `<div style="font-size:11px;color:#991b1b;margin-top:2px">Step #${s.missingSeqNo} was not completed before proceeding</div>` : ''}
+        ${s.missingSeqNo ? `<div style="font-size:11px;color:#7F1D1D;margin-top:2px">Step #${s.missingSeqNo} was not completed before proceeding</div>` : ''}
       </div>
 
       ${canAct ? `
@@ -539,7 +539,7 @@ function sparesCard(s, isPending) {
   const total  = fmtINR(s.totalCost || 0);
   const spares = s.spares || [];
   return `
-    <div class="card" style="margin-bottom:10px;border-left:3px solid ${isPending?'#d97706':'var(--bdr)'}">
+    <div class="card" style="margin-bottom:10px;border-left:3px solid ${isPending?'var(--warn)':'var(--bdr)'}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div>
           <div style="font-weight:800;font-size:14px">Spares Request</div>

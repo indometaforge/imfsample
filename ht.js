@@ -313,8 +313,8 @@ function renderNewCharge() {
 
   const furnOpts  = (S.machines || [])
     .filter(m => (m.stage || '').toLowerCase() === 'ht' || (m.type || '').toLowerCase().includes('furnace'))
-    .map(m => `<option value="${m.id}" ${_newCharge.furnaceId===m.id?'selected':''}>${m.code} — ${m.name}</option>`).join('');
-  const allFurnOpts = furnOpts || (S.machines || []).map(m => `<option value="${m.id}">${m.code} — ${m.name}</option>`).join('');
+    .map(m => `<option value="${m.id}" ${_newCharge.furnaceId===m.id?'selected':''}>${m.name}${m.id_code ? ' — ' + m.id_code : ''}</option>`).join('');
+  const allFurnOpts = furnOpts || (S.machines || []).map(m => `<option value="${m.id}">${m.name}${m.id_code ? ' — ' + m.id_code : ''}</option>`).join('');
   const totalQty  = _newCharge.tags.reduce((s, t) => s + (t.qty || 0), 0);
 
   el.innerHTML = `
@@ -372,7 +372,7 @@ function renderNewCharge() {
       <button class="btn btn-s" style="width:100%;margin-top:8px" onclick="htScanTag()">
         <i class="ti ti-search"></i> Add TAG
       </button>
-      <div id="ht-scan-err" style="display:none;margin-top:8px;background:#fef2f2;border:1px solid #fca5a5;
+      <div id="ht-scan-err" style="display:none;margin-top:8px;background:var(--err-bg);border:1px solid var(--err-bdr);
                                     border-radius:var(--rxs);padding:8px 12px;font-size:12px;font-weight:700;color:var(--err)"></div>
     </div>
 
@@ -513,8 +513,8 @@ async function htSubmitCharge() {
       <div class="kv-row"><span class="kv-key">TAGs</span><span class="kv-val">${_newCharge.tags.length}</span></div>
       <div class="kv-row"><span class="kv-key">Total Qty</span><span class="kv-val" style="font-size:18px;font-weight:900">${totalQty} pcs</span></div>
     </div>
-    <div style="background:#fef9c3;border:1px solid #fde68a;border-radius:var(--rs);padding:10px 14px;font-size:12px;font-weight:700;color:#78350f;margin-bottom:14px">
-      <i class="ti ti-info-circle"></i> Heat code <strong>${_newCharge.heatCode}</strong> will be permanently written to all ${_newCharge.tags.length} TAGs. This cannot be changed.
+    <div class="wbox" style="font-weight:700;margin-bottom:14px">
+      <i class="ti ti-info-circle"></i> <div>Heat code <strong>${_newCharge.heatCode}</strong> will be permanently written to all ${_newCharge.tags.length} TAGs. This cannot be changed.</div>
     </div>
     <div style="display:flex;gap:8px">
       <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
@@ -871,7 +871,7 @@ function openCompleteModal(chargeId) {
         <div class="f">
           <label>Failed / Scrapped</label>
           <div id="yld-fail-${i}"
-            style="padding:10px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:var(--rxs);
+            style="padding:10px;background:var(--err-bg);border:1.5px solid var(--err-bdr);border-radius:var(--rxs);
                    font-size:16px;font-weight:900;text-align:center;color:var(--err)">0</div>
         </div>
       </div>
@@ -886,9 +886,8 @@ function openCompleteModal(chargeId) {
     </div>
     <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:8px">PER-TAG YIELD</div>
     <div style="max-height:50vh;overflow-y:auto;margin-bottom:12px">${tagRows}</div>
-    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rs);padding:10px 14px;
-                font-size:12px;font-weight:700;color:var(--err);margin-bottom:14px">
-      <i class="ti ti-alert-triangle"></i> Route card statuses and quantities will be permanently updated.
+    <div class="ebox" style="font-weight:700;margin-bottom:14px">
+      <i class="ti ti-alert-triangle"></i> <div>Route card statuses and quantities will be permanently updated.</div>
     </div>
     <div id="complete-modal-err" style="display:none;color:var(--err);font-size:12px;font-weight:700;margin-bottom:8px"></div>
     <div style="display:flex;gap:8px">
@@ -905,8 +904,8 @@ function htUpdateYield(idx, total) {
   const failEl = document.getElementById(`yld-fail-${idx}`);
   if (failEl) {
     failEl.textContent = fail;
-    failEl.style.background = fail > 0 ? '#fef2f2' : '#f0fdf4';
-    failEl.style.borderColor = fail > 0 ? '#fca5a5' : '#86efac';
+    failEl.style.background = fail > 0 ? 'var(--err-bg)' : 'var(--ok-bg)';
+    failEl.style.borderColor = fail > 0 ? 'var(--err-bdr)' : 'var(--ok-bdr)';
     failEl.style.color = fail > 0 ? 'var(--err)' : 'var(--ok)';
   }
 }

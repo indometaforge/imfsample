@@ -221,7 +221,7 @@ function qcValidateCard(card) {
 function showInspectError(msg) {
   const el = document.getElementById('qc-result');
   if (el) el.innerHTML = `
-    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rs);padding:14px 16px">
+    <div style="background:var(--err-bg);border:1px solid var(--err-bdr);border-radius:var(--rs);padding:14px 16px">
       <div style="display:flex;align-items:flex-start;gap:10px">
         <i class="ti ti-alert-circle" style="font-size:20px;color:var(--err);flex-shrink:0;margin-top:1px"></i>
         <div style="font-size:13px;line-height:1.55;color:var(--err)">${msg}</div>
@@ -293,7 +293,7 @@ function renderInspectResult() {
         <div class="f">
           <label style="color:var(--ok)">OK</label>
           <div id="qc-ok-display"
-            style="padding:10px 6px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:var(--rxs);
+            style="padding:10px 6px;background:var(--ok-bg);border:1.5px solid var(--ok-bdr);border-radius:var(--rxs);
                    font-size:20px;font-weight:900;text-align:center;color:var(--ok);line-height:1.2">
             ${total}
           </div>
@@ -301,7 +301,7 @@ function renderInspectResult() {
       </div>
 
       <div id="qc-balance-err"
-        style="display:none;background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rxs);
+        style="display:none;background:var(--err-bg);border:1px solid var(--err-bdr);border-radius:var(--rxs);
                padding:8px 12px;font-size:12px;font-weight:700;color:var(--err);margin-bottom:8px"></div>
 
       <div class="f" style="margin-bottom:10px;display:none" id="qc-defect-row">
@@ -341,7 +341,7 @@ function renderInspectResult() {
           </div>
         </div>
         <div id="qc-stream-err"
-          style="display:none;background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rxs);
+          style="display:none;background:var(--err-bg);border:1px solid var(--err-bdr);border-radius:var(--rxs);
                  padding:8px 12px;font-size:12px;font-weight:700;color:var(--err);margin-top:6px"></div>
       </div>
 
@@ -370,8 +370,8 @@ function qcUpdateBalance() {
 
   if (okEl) {
     okEl.textContent  = ok < 0 ? '!' : String(ok);
-    okEl.style.background   = ok < 0 ? '#fef2f2' : '#f0fdf4';
-    okEl.style.borderColor  = ok < 0 ? '#fca5a5' : '#86efac';
+    okEl.style.background   = ok < 0 ? 'var(--err-bg)' : 'var(--ok-bg)';
+    okEl.style.borderColor  = ok < 0 ? 'var(--err-bdr)' : 'var(--ok-bdr)';
     okEl.style.color        = ok < 0 ? 'var(--err)' : 'var(--ok)';
   }
   if (balErr) {
@@ -464,7 +464,7 @@ function qcConfirmDisposition() {
         <div class="stat-lbl">OK</div><div class="stat-val">${ok}</div>
       </div>
     </div>
-    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rs);
+    <div style="background:var(--err-bg);border:1px solid var(--err-bdr);border-radius:var(--rs);
                 padding:10px 14px;font-size:12px;font-weight:700;color:var(--err);margin-bottom:14px">
       <i class="ti ti-alert-triangle"></i> This action is irreversible and permanently updates the route card.
     </div>
@@ -681,10 +681,10 @@ function iqcPendingCard(r) {
         <button class="btn btn-p" style="flex:1" onclick="openIQCModal('${r.id}','accepted')">
           <i class="ti ti-circle-check"></i> Accept
         </button>
-        <button class="btn" style="flex:1;background:#f0fdf4;color:#16a34a;border:1.5px solid #86efac" onclick="openIQCModal('${r.id}','conditional')">
+        <button class="btn" style="flex:1;background:var(--ok-bg);color:var(--ok);border:1.5px solid var(--ok-bdr)" onclick="openIQCModal('${r.id}','conditional')">
           <i class="ti ti-alert-circle"></i> Conditional
         </button>
-        <button class="btn" style="flex:1;background:#fef2f2;color:#dc2626;border:1.5px solid #fca5a5" onclick="openIQCModal('${r.id}','rejected')">
+        <button class="btn" style="flex:1;background:var(--err-bg);color:var(--err);border:1.5px solid var(--err-bdr)" onclick="openIQCModal('${r.id}','rejected')">
           <i class="ti ti-ban"></i> Reject
         </button>
       </div>
@@ -894,7 +894,7 @@ function qcSetupHistCard(s) {
   const isApproved = s.status === 'approved';
   const stageLbl   = s.stage === 'soft' ? 'Soft' : s.stage === 'hard' ? 'Hard' : (s.stage || '—');
   const statusCol  = isApproved ? 'var(--ok)' : 'var(--err)';
-  const statusBg   = isApproved ? '#f0fdf4' : '#fef2f2';
+  const statusBg   = isApproved ? 'var(--ok-bg)' : 'var(--err-bg)';
   const statusLbl  = isApproved ? 'Approved' : 'Rejected';
 
   return `
@@ -942,7 +942,7 @@ function confirmDeleteSetupQC(id) {
         ${s.date || ''} · Shift ${s.shift || '—'} · ${s.setupMins || 0} min · <strong>${s.status}</strong>
       </div>
     </div>
-    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rs);
+    <div style="background:var(--err-bg);border:1px solid var(--err-bdr);border-radius:var(--rs);
                 padding:10px 14px;font-size:12px;font-weight:700;color:var(--err);margin-bottom:14px">
       <i class="ti ti-alert-triangle"></i> This permanently removes the setup record from both Production and QC views.
     </div>
@@ -1151,7 +1151,7 @@ function clearedRow(c) {
             ${c.heatCode  ? `<span>Heat: <strong style="font-family:monospace">${c.heatCode}</strong></span>` : ''}
           </div>
         </div>
-        <div style="text-align:center;flex-shrink:0;background:#f0fdf4;border-radius:var(--rs);padding:10px 16px">
+        <div style="text-align:center;flex-shrink:0;background:var(--ok-bg);border-radius:var(--rs);padding:10px 16px">
           <div style="font-size:28px;font-weight:900;color:var(--ok);line-height:1">${c.currentQty || 0}</div>
           <div style="font-size:9px;font-weight:700;color:var(--ok);text-transform:uppercase;letter-spacing:.04em">pcs OK</div>
         </div>

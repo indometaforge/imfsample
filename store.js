@@ -311,17 +311,16 @@ function renderInward() {
       </div>
     </div>
     ${iqcPendingCount ? `
-      <div onclick="location.href='qc.html'" style="display:flex;align-items:center;gap:8px;background:#fffbeb;border:1px solid #fde68a;
-                  border-radius:6px;padding:8px 12px;margin-bottom:10px;cursor:pointer;font-size:12px;color:#92400e">
+      <a href="qc.html" class="wbox" style="cursor:pointer;text-decoration:none;width:100%;box-sizing:border-box">
         <i class="ti ti-microscope"></i>
-        <span><strong>${iqcPendingCount}</strong> lot${iqcPendingCount!==1?'s':''} awaiting IQC — go to QC module to clear</span>
-        <i class="ti ti-chevron-right" style="margin-left:auto"></i>
-      </div>` : ''}
+        <span style="flex:1"><strong>${iqcPendingCount}</strong> lot${iqcPendingCount!==1?'s':''} awaiting IQC — go to QC module to clear</span>
+        <i class="ti ti-chevron-right"></i>
+      </a>` : ''}
     ${invPendingCount && _inwFilt !== '__inv_pending__' ? `
-      <div onclick="_inwFilt='__inv_pending__';renderSection()" style="display:flex;align-items:center;gap:8px;background:#fef9c3;border:1px solid #fde68a;border-radius:6px;padding:8px 12px;margin-bottom:10px;cursor:pointer;font-size:12px;color:#92400e">
+      <button type="button" onclick="_inwFilt='__inv_pending__';renderSection()" class="wbox" style="cursor:pointer;width:100%;text-align:left;border:1px solid var(--warn-bdr);font:inherit">
         <i class="ti ti-alert-triangle"></i>
         <span><strong>${invPendingCount}</strong> receipt${invPendingCount!==1?'s':''} awaiting invoice — tap to view</span>
-      </div>` : ''}
+      </button>` : ''}
 
     ${list.length ? `
       <div style="display:grid;grid-template-columns:80px 1fr auto auto;gap:0;
@@ -352,14 +351,14 @@ function inwardRow(r) {
   return `
     <div style="display:grid;grid-template-columns:80px 1fr auto auto;gap:0;align-items:center;
                 padding:10px 10px;border-bottom:1px solid var(--bdr);cursor:pointer;
-                background:${iqcStatus==='rejected'?'#fff5f5':iqcStatus==='pending'?'#fffbeb':'var(--sur)'};
+                background:${iqcStatus==='rejected'?'var(--err-bg)':iqcStatus==='pending'?'var(--warn-bg)':'var(--sur)'};
                 transition:background .1s" ${onclick}
-         onmouseover="this.style.background='var(--sur2)'" onmouseout="this.style.background='${iqcStatus==='rejected'?'#fff5f5':iqcStatus==='pending'?'#fffbeb':'var(--sur)'}'">
+         onmouseover="this.style.background='var(--sur2)'" onmouseout="this.style.background='${iqcStatus==='rejected'?'var(--err-bg)':iqcStatus==='pending'?'var(--warn-bg)':'var(--sur)'}'">
       <div style="font-size:12px;color:var(--txt-muted)">${fmtDate(r.date)}</div>
       <div style="min-width:0">
         <div style="font-weight:700;font-size:13px;display:flex;align-items:center;gap:8px">
           ${r.supplierName || '—'}
-          ${invPending ? `<span style="font-size:10px;font-weight:700;background:#fef9c3;color:#92400e;border:1px solid #fde68a;border-radius:4px;padding:1px 5px">Invoice Pending</span>` : ''}
+          ${invPending ? `<span class="bdg bdg-a" style="font-size:10px">Invoice Pending</span>` : ''}
         </div>
         <div style="font-size:11px;color:var(--txt-muted);margin-top:2px;display:flex;align-items:center;gap:8px">
           ${r.masterLotCode ? `<span class="mono">${r.masterLotCode}</span>` : ''}
@@ -434,9 +433,9 @@ function openInwardModal(id) {
         <input type="text" id="iw-inv" value="${r?.invoiceNo || ''}" placeholder="e.g. INV/2024/001" autocomplete="off" oninput="toggleInvHint()">
       </div>
     </div>
-    <div id="iw-inv-hint" style="display:${r?.dcNo && !r?.invoiceNo && !isInterCompany(r?.supplierName) ? 'flex' : 'none'};align-items:center;gap:6px;background:#fef9c3;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12px;color:#92400e">
+    <div id="iw-inv-hint" class="wbox" style="display:${r?.dcNo && !r?.invoiceNo && !isInterCompany(r?.supplierName) ? 'flex' : 'none'};margin-bottom:12px">
       <i class="ti ti-alert-triangle"></i>
-      DC entered without invoice — invoice can be added later when received.
+      <div>DC entered without invoice — invoice can be added later when received.</div>
     </div>
 
     <div class="f">
@@ -946,15 +945,12 @@ function issRenderTagSection() {
             <i class="ti ti-plus"></i> Add TAG to Session
           </button>
           ${!minMet && sessionTotal > 0 ? `
-            <div style="margin-top:8px;padding:7px 10px;background:#fffbeb;border:1px solid #fde68a;
-                        border-radius:var(--rxs);font-size:12px;color:#92400e;display:flex;gap:6px;align-items:center">
+            <div class="wbox" style="margin-top:8px">
               <i class="ti ti-info-circle" style="flex-shrink:0"></i>
-              Minimum batch is ${ISS_BATCH_MIN} pcs — add ${ISS_BATCH_MIN - sessionTotal} more to submit.
+              <div>Minimum batch is ${ISS_BATCH_MIN} pcs — add ${ISS_BATCH_MIN - sessionTotal} more to submit.</div>
             </div>` : ''}
         ` : `
-          <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;
-                      background:#f0fdf4;border:1px solid #bbf7d0;border-radius:var(--rs);
-                      font-size:12px;color:#14532d">
+          <div class="sbox">
             <i class="ti ti-circle-check" style="font-size:16px;flex-shrink:0"></i>
             <span>Batch full — ${sessionTotal} pcs assigned (max ${ISS_BATCH_MAX}).</span>
           </div>`}
@@ -1314,7 +1310,7 @@ function renderStock() {
         value: totalAvailable.toLocaleString('en-IN'),
         sub:   'pcs · always current',
         icon:  'ti-package',
-        accent:'#16a34a',
+        accent:'var(--ok)',
         extra: totalValue > 0 ? `${fmtINR(totalValue)} total stock value` : '',
       })}
       ${statCard({
@@ -1322,7 +1318,7 @@ function renderStock() {
         value: rcvdFiltered.toLocaleString('en-IN'),
         sub:   `pcs · ${periodLabel.toLowerCase()}`,
         icon:  'ti-package-import',
-        accent:'#2563eb',
+        accent:'var(--acc)',
       })}
       ${statCard({
         label: 'ISSUED TO WIP',
@@ -1339,21 +1335,18 @@ function renderStock() {
     ${statsHtml}
 
     ${pendingPcs > 0 ? `
-      <div onclick="switchTab('iqc')" style="display:flex;align-items:center;gap:8px;background:#fffbeb;border:1px solid #fde68a;
-                  border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:#92400e;cursor:pointer">
+      <button type="button" onclick="switchTab('iqc')" class="wbox" style="cursor:pointer;width:100%;text-align:left;border:1px solid var(--warn-bdr);font:inherit">
         <i class="ti ti-microscope" style="flex-shrink:0"></i>
         <span><strong>${pendingPcs} pcs</strong> across ${iqcPending.length} lot${iqcPending.length>1?'s':''} are quarantined, pending IQC — not counted in available stock</span>
         <i class="ti ti-chevron-right" style="margin-left:auto"></i>
-      </div>` : ''}
+      </button>` : ''}
     ${rejectedPcs > 0 ? `
-      <div style="display:flex;align-items:center;gap:8px;background:#fef2f2;border:1px solid #fca5a5;
-                  border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:#991b1b">
+      <div class="ebox">
         <i class="ti ti-ban" style="flex-shrink:0"></i>
         <span><strong>${rejectedPcs} pcs</strong> across ${iqcRejected.length} lot${iqcRejected.length>1?'s':''} rejected by IQC — quarantined, excluded from stock</span>
       </div>` : ''}
     ${overIssuedCount ? `
-      <div style="display:flex;align-items:center;gap:8px;background:#fef2f2;border:1px solid #fca5a5;
-                  border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#991b1b">
+      <div class="ebox" style="margin-bottom:10px">
         <i class="ti ti-alert-triangle" style="flex-shrink:0"></i>
         <span><strong>${overIssuedCount} component${overIssuedCount>1?'s':''}</strong> show issued qty exceeding received qty — possible data entry error. Review highlighted rows below.</span>
       </div>` : ''}
@@ -1393,8 +1386,8 @@ function renderStock() {
     const pct    = p.received > 0 ? Math.round((p.available / p.received) * 100) : 0;
     const isOut  = p.available === 0 && !isOver;
     const isLow  = !isOut && !isOver && pct < 20;
-    const barColor  = isOver ? '#dc2626' : isOut ? '#dc2626' : isLow ? '#f59e0b' : 'var(--ok)';
-    const availColor = isOver || isOut ? '#dc2626' : isLow ? '#f59e0b' : 'var(--ok)';
+    const barColor  = isOver ? 'var(--err)' : isOut ? 'var(--err)' : isLow ? 'var(--warn)' : 'var(--ok)';
+    const availColor = isOver || isOut ? 'var(--err)' : isLow ? 'var(--warn)' : 'var(--ok)';
     const expanded  = _stockExpanded[p.key];
 
     const lotRows = p.lots.map(l => {
@@ -1414,11 +1407,11 @@ function renderStock() {
               <div style="font-size:11px;color:var(--txt-muted)">
                 ${l.supplierName} · ${fmtDate(l.date)}
                 ${l.dcNo ? ` · DC: ${l.dcNo}` : ''}
-                ${l.invoiceNo ? ` · INV: ${l.invoiceNo}` : (!l.dcNo || isInterCompany(l.supplierName) ? '' : ` · <span style="color:#92400e">Invoice pending</span>`)}
+                ${l.invoiceNo ? ` · INV: ${l.invoiceNo}` : (!l.dcNo || isInterCompany(l.supplierName) ? '' : ` · <span style="color:var(--warn)">Invoice pending</span>`)}
               </div>
             </div>
             <div style="text-align:right;flex-shrink:0;font-size:12px">
-              <div style="font-weight:700;color:${lotAvail>0?'var(--ok)':'#dc2626'}">
+              <div style="font-weight:700;color:${lotAvail>0?'var(--ok)':'var(--err)'}">
                 ${lotAvail} <span style="font-weight:400;color:var(--txt-muted)">avail</span>
               </div>
               <div style="color:var(--txt-muted)">${lotIssued} issued of ${l.qty}</div>
@@ -1431,18 +1424,19 @@ function renderStock() {
     }).join('');
 
     return `
-      <div style="border-bottom:1px solid var(--bdr);${isOver?'background:#fff5f5;':''}">
-        <div onclick="_stockExpanded['${p.key}']=!_stockExpanded['${p.key}'];renderStock()"
-          style="display:grid;grid-template-columns:1fr 64px 64px 64px;gap:4px;align-items:center;
+      <div style="border-bottom:1px solid var(--bdr);${isOver?'background:var(--err-bg);':''}">
+        <button type="button" onclick="_stockExpanded['${p.key}']=!_stockExpanded['${p.key}'];renderStock()"
+          style="appearance:none;-webkit-appearance:none;font:inherit;color:inherit;background:none;border:none;
+                 display:grid;grid-template-columns:1fr 64px 64px 64px;gap:4px;align-items:center;width:100%;text-align:left;
                  padding:11px 10px;cursor:pointer;user-select:none">
           <div style="min-width:0">
             <div style="font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.partName}</div>
             <div style="font-size:11px;color:var(--txt-muted);margin-top:2px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
               ${p.partNo ? `<span style="font-family:monospace">${p.partNo}</span>` : ''}
               ${p.custName ? `<span>· ${p.custName}</span>` : ''}
-              ${isOver ? `<span style="color:#dc2626;font-weight:700">· ⚠ OVER-ISSUED by ${p.issued - p.received} pcs</span>`
-                       : isOut ? `<span style="color:#dc2626;font-weight:700">· OUT OF STOCK</span>`
-                       : isLow ? `<span style="color:#f59e0b;font-weight:700">· LOW STOCK</span>` : ''}
+              ${isOver ? `<span style="color:var(--err);font-weight:700">· <i class="ti ti-alert-triangle"></i> OVER-ISSUED by ${p.issued - p.received} pcs</span>`
+                       : isOut ? `<span style="color:var(--err);font-weight:700">· OUT OF STOCK</span>`
+                       : isLow ? `<span style="color:var(--warn);font-weight:700">· LOW STOCK</span>` : ''}
             </div>
             <div style="margin-top:5px;height:4px;background:var(--bdr);border-radius:2px;overflow:hidden">
               <div style="height:100%;width:${isOver?100:pct}%;background:${barColor};border-radius:2px"></div>
@@ -1455,7 +1449,7 @@ function renderStock() {
             ${p.issdPeriod > 0 ? p.issdPeriod : '—'}
           </div>
           <div style="text-align:right;font-size:14px;font-weight:800;color:${availColor}">${p.available}</div>
-        </div>
+        </button>
         ${expanded ? `<div style="padding:0 0 10px">${lotRows}</div>` : ''}
       </div>`;
   }).join('');

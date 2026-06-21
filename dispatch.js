@@ -242,8 +242,8 @@ function poCard(p, canEdit) {
         </div>
         <div style="display:flex;gap:6px;align-items:flex-start;flex-shrink:0">
           <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;
-                       background:${p.status==='open'?'#f0fdf4':'var(--bg)'};
-                       border:1px solid ${p.status==='open'?'#86efac':'var(--bdr)'};
+                       background:${p.status==='open'?'var(--ok-bg)':'var(--bg)'};
+                       border:1px solid ${p.status==='open'?'var(--ok-bdr)':'var(--bdr)'};
                        color:${p.status==='open'?'var(--ok)':'var(--txt-muted)'}">
             ${p.status === 'open' ? 'Open' : 'Closed'}
           </span>
@@ -645,7 +645,7 @@ function renderDispatchRows() {
       <button class="btn btn-s" style="width:100%;margin-top:8px" onclick="dspScanTag()">
         <i class="ti ti-search"></i> Verify TAG
       </button>
-      <div id="dsp-scan-err" style="display:none;margin-top:8px;background:#fef2f2;border:1px solid #fca5a5;
+      <div id="dsp-scan-err" style="display:none;margin-top:8px;background:var(--err-bg);border:1px solid var(--err-bdr);
                                     border-radius:var(--rxs);padding:8px 12px;font-size:12px;font-weight:700;color:var(--err)"></div>
     </div>
 
@@ -799,9 +799,8 @@ function dspConfirmFinalize() {
       <div class="kv-row"><span class="kv-key">Total Qty</span><span class="kv-val" style="font-size:18px;font-weight:900">${totalQty} pcs</span></div>
       <div class="kv-row"><span class="kv-key">Est. Value</span><span class="kv-val">${fmtINR(totalVal)}</span></div>
     </div>
-    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rs);padding:10px 14px;
-                font-size:12px;font-weight:700;color:var(--err);margin-bottom:14px">
-      <i class="ti ti-alert-triangle"></i> Route card sub-balances will be permanently decremented. This cannot be undone.
+    <div class="ebox" style="font-weight:700;margin-bottom:14px">
+      <i class="ti ti-alert-triangle"></i> <div>Route card sub-balances will be permanently decremented. This cannot be undone.</div>
     </div>
     <div style="display:flex;gap:8px">
       <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
@@ -959,8 +958,8 @@ function renderTracksheet() {
         <tbody>
           ${allRows.map(({ po, line: l, rag }, i) => {
             const pct    = l.scheduledQty > 0 ? Math.round(((l.dispatchedQty || 0) / l.scheduledQty) * 100) : 0;
-            const ragBg  = rag.code === 'r' ? '#fef2f2' : rag.code === 'a' ? '#fefce8' : '#f0fdf4';
-            const ragBdr = rag.code === 'r' ? '#fca5a5' : rag.code === 'a' ? '#fde68a' : '#86efac';
+            const ragBg  = rag.code === 'r' ? 'var(--err-bg)' : rag.code === 'a' ? 'var(--warn-bg)' : 'var(--ok-bg)';
+            const ragBdr = rag.code === 'r' ? 'var(--err-bdr)' : rag.code === 'a' ? 'var(--warn-bdr)' : 'var(--ok-bdr)';
             const ragCol = rag.code === 'r' ? 'var(--err)' : rag.code === 'a' ? 'var(--warn)' : 'var(--ok)';
             return `
               <tr style="background:${i % 2 === 0 ? 'var(--sur)' : 'var(--bg)'}">
