@@ -1114,6 +1114,17 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
   margin: 0 auto 18px;
 }
 .modal-title { font-size: 17px; font-weight: 700; margin-bottom: 18px; }
+/* Alias used by Production's inline modal markup — keep in sync with .modal-title */
+.mtit {
+  font-size: 17px;
+  font-weight: 700;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mtit i { font-size: 18px; color: var(--imf-navy); }
+.mt8 { margin-top: 8px; }
 
 /* ══════════════════════════════════════════════════════════════════════
    TOAST
@@ -1266,6 +1277,74 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
   color: var(--txt);
   word-break: break-word;
 }
+
+/* ── STICKY BOTTOM ACTION BAR (primary CTA, thumb-reach zone) ─── */
+.action-bar-sticky {
+  position: sticky;
+  bottom: 0;
+  background: linear-gradient(to top, var(--bg) 65%, rgba(243,244,248,0));
+  padding-top: 18px;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 5;
+}
+
+/* ── COMPACT MACHINE TILE (Production matrix) ─── */
+.matrix-tile {
+  background: var(--sur);
+  border-radius: var(--rs);
+  padding: 13px 14px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  border: 2px solid var(--bdr);
+  transition: border-color 0.12s, background 0.12s;
+  -webkit-tap-highlight-color: transparent;
+}
+.matrix-tile:active { background: var(--sur2); }
+.matrix-tile-name {
+  font-weight: 700;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.matrix-tile-code { font-size: 11.5px; color: var(--txt-muted); margin-top: 1px; }
+.matrix-tile-status { font-size: 12px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.matrix-tile-save { font-size: 10.5px; color: var(--txt-muted); margin-top: 2px; }
+
+/* ── RUN / DOWNTIME LIST ITEMS (machine detail drill-down) ─── */
+.det-item {
+  background: var(--bg);
+  border-radius: var(--rs);
+  padding: 11px 12px;
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+.det-item.downtime { background: var(--err-bg); }
+.det-item-body { flex: 1; min-width: 0; }
+.det-item-title { font-weight: 700; font-size: 13.5px; }
+.det-item-tag { font-size: 11.5px; color: var(--acc); font-weight: 600; }
+.det-item-sub { font-size: 11.5px; color: var(--txt-muted); margin-top: 1px; }
+.det-item-empty {
+  font-size: 12.5px;
+  color: var(--txt-muted);
+  padding: 16px 10px;
+  text-align: center;
+  border: 1.5px dashed var(--bdr-mid);
+  border-radius: var(--rs);
+}
+.det-item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.det-item-actions .btn-ic { width: 38px; height: 38px; }
+.det-item-actions .btn-ic i { font-size: 16px; }
 
 /* ── SECTION HEADER WITH OPTIONAL ACTION ─── */
 .sec-hd {

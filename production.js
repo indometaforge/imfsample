@@ -378,27 +378,27 @@ function renderActualEntry() {
     const totalDtMins    = (md?.downtime || []).reduce((s, d) => s + (+d.mins || 0), 0);
     const runsCount      = (md?.runs || []).length;
 
-    let statusColor = 'var(--bdr)';
+    let statusColor = 'var(--bdr-mid)';
     let statusLabel = 'Tap to log';
-    if (isBreakdown) { statusColor = '#f59e0b'; statusLabel = '⚠ Breakdown'; }
+    let statusIcon  = '';
+    if (isBreakdown) { statusColor = 'var(--warn)'; statusLabel = 'Breakdown'; statusIcon = '<i class="ti ti-alert-triangle"></i> '; }
     else if (md?.used === true)  { statusColor = 'var(--ok)'; statusLabel = `${runsCount} run${runsCount!==1?'s':''} · ${totalProcessed} pcs`; }
-    else if (md?.used === false && md?.idleReason) { statusColor = 'var(--bdr)'; statusLabel = `Idle: ${md.idleReason.split(' ')[0]}...`; }
+    else if (md?.used === false && md?.idleReason) { statusColor = 'var(--bdr-mid)'; statusLabel = `Idle: ${md.idleReason.split(' ')[0]}...`; }
 
     const saveStatus = _autoSaveStatus[m.id];
-    const saveLbl = saveStatus === 'saving' ? '⟳ Saving...'
-                  : saveStatus === 'saved'   ? '✓ Saved'
-                  : saveStatus === 'error'   ? '⚠ Save error'
+    const saveLbl = saveStatus === 'saving' ? '<i class="ti ti-loader-2"></i> Saving...'
+                  : saveStatus === 'saved'   ? '<i class="ti ti-check"></i> Saved'
+                  : saveStatus === 'error'   ? '<i class="ti ti-alert-circle"></i> Save error'
                   : '';
+    const statusTxtColor = isBreakdown ? 'var(--warn)' : md?.used ? 'var(--ok)' : 'var(--txt-muted)';
 
     return `
-      <div onclick="openMachineDetail('${m.id}')"
-        style="background:var(--sur);border:2px solid ${statusColor};border-radius:var(--rs);padding:12px 14px;
-               margin-bottom:10px;cursor:pointer;display:flex;align-items:center;gap:12px">
+      <div class="matrix-tile" onclick="openMachineDetail('${m.id}')" style="border-color:${statusColor}">
         <div style="flex:1;min-width:0">
-          <div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.name}</div>
-          <div style="font-size:11px;color:var(--txt-muted)">${m.id_code || m.id}</div>
-          <div style="font-size:12px;color:${md?.used ? 'var(--ok)' : 'var(--txt-muted)'};margin-top:3px">${statusLabel}</div>
-          ${saveLbl ? `<div style="font-size:10px;color:var(--txt-muted)">${saveLbl}</div>` : ''}
+          <div class="matrix-tile-name">${m.name}</div>
+          <div class="matrix-tile-code">${m.id_code || m.id}</div>
+          <div class="matrix-tile-status" style="color:${statusTxtColor}">${statusIcon}${statusLabel}</div>
+          ${saveLbl ? `<div class="matrix-tile-save">${saveLbl}</div>` : ''}
         </div>
         <i class="ti ti-chevron-right" style="color:var(--txt-dim);font-size:20px;flex-shrink:0"></i>
       </div>`;
@@ -438,31 +438,37 @@ function renderActualEntry() {
         </div>
       </div>
 
-      ${lockedView ? `<div class="ibox" style="background:#fefce8;border-color:#facc15;color:#92400e;margin-bottom:10px">
-          <div style="font-weight:700;margin-bottom:2px"><i class="ti ti-info-circle"></i> Finalized report — view only</div>
-          <div style="font-size:12px">${submittedRec.totalProcessed || 0} pcs · ${submittedRec.machinesUsed || 0} machine(s) used${submittedRec.submittedByName ? ' · by ' + submittedRec.submittedByName : ''}. The machines below show the saved data.</div>
+      ${lockedView ? `<div class="wbox" style="margin-bottom:10px">
+          <i class="ti ti-info-circle"></i>
+          <div>
+            <div style="font-weight:700;margin-bottom:2px">Finalized report — view only</div>
+            <div style="font-size:12px">${submittedRec.totalProcessed || 0} pcs · ${submittedRec.machinesUsed || 0} machine(s) used${submittedRec.submittedByName ? ' · by ' + submittedRec.submittedByName : ''}. The machines below show the saved data.</div>
+          </div>
         </div>
         ${canEditReport ? `
-        <button class="btn btn-s" style="width:100%;margin-bottom:10px" onclick="goToReportsForShift()">
+        <button class="btn btn-s btn-full" style="margin-bottom:10px" onclick="goToReportsForShift()">
           <i class="ti ti-chart-bar"></i> View / Edit / Delete in Reports
         </button>` : ''}` : ''}
 
-      ${isEditingThis ? `<div class="ibox" style="background:var(--imf-steel-light,#eff6ff);border-color:var(--imf-steel,#2563eb);color:var(--imf-steel,#2563eb);margin-bottom:10px">
-          <i class="ti ti-edit"></i> Editing an existing report. Change anything below, then tap <strong>Save Changes</strong>.
+      ${isEditingThis ? `<div class="ibox" style="margin-bottom:10px">
+          <i class="ti ti-edit"></i>
+          <div>Editing an existing report. Change anything below, then tap <strong>Save Changes</strong>.</div>
         </div>` : ''}
 
       <div style="font-size:12px;font-weight:700;color:var(--txt-muted);margin-bottom:8px">MACHINES (${machines.length})</div>
       ${machines.length ? matrixHtml : emptyState('ti-tool','No Machines',`No active machines for ${stageLabel}.`)}
 
       ${!lockedView && machines.length ? `
-        ${isEditingThis ? `<button class="btn btn-s" style="width:100%;margin-top:8px" onclick="cancelEditReport()">
+      <div class="action-bar-sticky">
+        ${isEditingThis ? `<button class="btn btn-s btn-full" onclick="cancelEditReport()">
           <i class="ti ti-x"></i> Cancel — Discard Changes
-        </button>` : `<button class="btn btn-s" style="width:100%;margin-top:8px;border-color:var(--warn);color:var(--warn)" onclick="sampleFillActuals()">
+        </button>` : `<button class="btn btn-s btn-full" style="border-color:var(--warn);color:var(--warn)" onclick="sampleFillActuals()">
           <i class="ti ti-wand"></i> Sample Fill (Testing)
         </button>`}
-        <button class="btn btn-p" style="width:100%;margin-top:8px" onclick="finalizeShift()">
+        <button class="btn btn-p btn-full" onclick="finalizeShift()">
           <i class="ti ti-check"></i> ${isEditingThis ? 'Save Changes' : 'Finalize Shift'}
-        </button>` : ''}
+        </button>
+      </div>` : ''}
     </div>`;
 }
 
@@ -498,11 +504,11 @@ function renderMachineDetail() {
 
   const setupHtml = setupSessions.length
     ? setupSessions.map(sa => `
-        <div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--bdr)">
-          <span>${sa.opName || '—'} <span style="color:var(--txt-muted);font-family:monospace">${sa.tagId || ''}</span></span>
-          <span style="font-weight:700">${sa.setupMins} min</span>
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px solid var(--bdr)">
+          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sa.opName || '—'} <span style="color:var(--txt-muted);font-family:monospace">${sa.tagId || ''}</span></span>
+          <span style="font-weight:700;flex-shrink:0">${sa.setupMins} min</span>
         </div>`).join('') +
-      `<div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;padding:6px 0 0;color:var(--acc)">
+      `<div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;padding:7px 0 0;color:var(--acc)">
         <span>Total Setup</span><span>${totalSetupMins} min</span>
       </div>`
     : `<div style="font-size:12px;color:var(--txt-muted)">No approved setup logged for this shift</div>`;
@@ -520,41 +526,37 @@ function renderMachineDetail() {
                 : 'Changes save automatically';
 
   const runsHtml = (md.runs || []).length === 0
-    ? `<div style="font-size:12px;color:var(--txt-muted);padding:10px;text-align:center;border:1px dashed var(--bdr);border-radius:6px">No runs logged yet</div>`
+    ? `<div class="det-item-empty">No runs logged yet</div>`
     : (md.runs || []).map((r, i) => {
         const eff = (+r.targetQty) ? Math.round((+r.processed || 0) / (+r.targetQty) * 100) : 0;
         const effColor = eff >= 90 ? 'ok' : eff >= 70 ? 'warn' : 'err';
         return `
-        <div style="background:var(--bg);border-radius:6px;padding:10px 12px;margin-bottom:8px">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-            <div style="flex:1;min-width:0">
-              <div style="font-weight:700;font-size:13px">${r.tagId}</div>
-              <div style="font-size:11px;color:var(--acc);font-family:monospace">${r.opName || ''}</div>
-              <div style="font-size:11px;color:var(--txt-muted)">${r.partName || ''}</div>
-              <div style="margin-top:4px;font-size:13px">
-                <span style="color:var(--ok);font-weight:700">${r.processed}</span> pcs${(+r.targetQty) ? `<span style="color:var(--txt-muted)"> / ${r.targetQty} target · <span style="color:var(--${effColor});font-weight:700">${eff}%</span></span>` : ' produced'} &nbsp;
-                <span style="color:var(--err,#dc2626);font-weight:700">${r.rejected || 0}</span> rej
-              </div>
+        <div class="det-item">
+          <div class="det-item-body">
+            <div class="det-item-title">${r.tagId}</div>
+            <div class="det-item-tag" style="font-family:monospace">${r.opName || ''}</div>
+            <div class="det-item-sub">${r.partName || ''}</div>
+            <div style="margin-top:5px;font-size:13px">
+              <span style="color:var(--ok);font-weight:700">${r.processed}</span> pcs${(+r.targetQty) ? `<span style="color:var(--txt-muted)"> / ${r.targetQty} target · <span style="color:var(--${effColor});font-weight:700">${eff}%</span></span>` : ' produced'}
+              <span style="color:var(--err);font-weight:700;margin-left:6px">${r.rejected || 0}</span> rej
             </div>
-            ${readOnly ? '' : `<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">
-              <button onclick="openEditRunModal('${machId}',${i})" style="border:none;background:var(--imf-steel-light,#eff6ff);color:var(--imf-steel,#2563eb);border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px">Edit</button>
-              <button onclick="removeRunDetail(${i})" style="border:none;background:#fef2f2;color:#dc2626;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px">Remove</button>
-            </div>`}
           </div>
+          ${readOnly ? '' : `<div class="det-item-actions" style="flex-direction:column">
+            <button class="btn btn-s btn-sm" style="min-height:36px" onclick="openEditRunModal('${machId}',${i})"><i class="ti ti-edit"></i> Edit</button>
+            <button class="btn btn-d btn-sm" style="min-height:36px" onclick="removeRunDetail(${i})"><i class="ti ti-trash"></i> Remove</button>
+          </div>`}
         </div>`;
       }).join('');
 
   const downtimeHtml = (md.downtime || []).length === 0
-    ? `<div style="font-size:12px;color:var(--txt-muted);padding:10px;text-align:center;border:1px dashed var(--bdr);border-radius:6px">No downtime logged</div>`
+    ? `<div class="det-item-empty">No downtime logged</div>`
     : (md.downtime || []).map((d, i) => `
-        <div style="background:#fef2f2;border-radius:6px;padding:10px 12px;margin-bottom:8px">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start">
-            <div>
-              <div style="font-weight:700;font-size:13px">${d.startTime} → ${d.endTime} <span style="font-weight:400;color:var(--txt-muted)">(${d.mins} min)</span></div>
-              <div style="font-size:12px;color:var(--txt-muted)">${d.type || 'Other'}${d.description ? ' · ' + d.description : ''}</div>
-            </div>
-            ${readOnly ? '' : `<button onclick="removeDowntimeDetail(${i})" style="border:none;background:transparent;color:#dc2626;cursor:pointer;font-size:13px;flex-shrink:0">✕</button>`}
+        <div class="det-item downtime">
+          <div class="det-item-body">
+            <div class="det-item-title">${d.startTime} → ${d.endTime} <span style="font-weight:400;color:var(--txt-muted)">(${d.mins} min)</span></div>
+            <div class="det-item-sub">${d.type || 'Other'}${d.description ? ' · ' + d.description : ''}</div>
           </div>
+          ${readOnly ? '' : `<button class="btn btn-ic btn-d" onclick="removeDowntimeDetail(${i})" aria-label="Remove downtime"><i class="ti ti-trash"></i></button>`}
         </div>`).join('');
 
   document.getElementById('page-content').innerHTML = `
@@ -568,11 +570,11 @@ function renderMachineDetail() {
           <div style="font-weight:800;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.name}</div>
           <div style="font-size:11px;color:var(--acc);font-family:monospace">${m.id_code || m.id}</div>
         </div>
-        <div id="autosave-lbl" style="font-size:10px;color:${readOnly?'var(--txt-muted)':saveStatus==='error'?'#dc2626':saveStatus==='saving'?'#f59e0b':'var(--ok)'};text-align:right;flex-shrink:0;max-width:90px">${readOnly ? 'Finalized · view only' : saveLbl}</div>
+        <div id="autosave-lbl" style="font-size:10px;color:${readOnly?'var(--txt-muted)':saveStatus==='error'?'var(--err)':saveStatus==='saving'?'var(--warn)':'var(--ok)'};text-align:right;flex-shrink:0;max-width:100px">${readOnly ? 'Finalized · view only' : saveLbl}</div>
       </div>
 
-      ${readOnly ? `<div class="ibox" style="background:#fefce8;border-color:#facc15;color:#92400e;margin-bottom:12px"><i class="ti ti-lock"></i> Finalized report — view only. Re-open it from the matrix screen (admin) to edit.</div>` : ''}
-      ${isBreakdown ? `<div class="ibox" style="background:#fef2f2;border-color:#fca5a5;color:#991b1b;margin-bottom:12px">⚠ This machine has an open breakdown. Logging actuals may be inaccurate.</div>` : ''}
+      ${readOnly ? `<div class="wbox" style="margin-bottom:12px"><i class="ti ti-lock"></i> <div>Finalized report — view only. Re-open it from the matrix screen (admin) to edit.</div></div>` : ''}
+      ${isBreakdown ? `<div class="ebox" style="margin-bottom:12px"><i class="ti ti-alert-triangle"></i> <div>This machine has an open breakdown. Logging actuals may be inaccurate.</div></div>` : ''}
 
       <!-- Used / Not Used toggle -->
       <div class="card" style="margin-bottom:12px">
@@ -644,17 +646,17 @@ function renderMachineDetail() {
               <div style="font-size:18px;font-weight:800;color:var(--${shiftEff>=90?'ok':shiftEff>=70?'warn':'err'})">${totalTarget ? shiftEff + '%' : '—'}</div>
             </div>
           </div>
-          <div class="row-3" style="gap:8px;text-align:center">
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center">
             <div style="background:var(--sur);border-radius:8px;padding:10px 4px">
               <div style="font-size:20px;font-weight:800;color:var(--ok)">${totalProcessed}</div>
               <div style="font-size:10px;color:var(--txt-muted)">Produced</div>
             </div>
             <div style="background:var(--sur);border-radius:8px;padding:10px 4px">
-              <div style="font-size:20px;font-weight:800;color:#dc2626">${totalRejected}</div>
+              <div style="font-size:20px;font-weight:800;color:var(--err)">${totalRejected}</div>
               <div style="font-size:10px;color:var(--txt-muted)">Rejected</div>
             </div>
             <div style="background:var(--sur);border-radius:8px;padding:10px 4px">
-              <div style="font-size:20px;font-weight:800;color:#f59e0b">${totalDtMins + totalSetupMins}</div>
+              <div style="font-size:20px;font-weight:800;color:var(--warn)">${totalDtMins + totalSetupMins}</div>
               <div style="font-size:10px;color:var(--txt-muted)">Lost Mins</div>
             </div>
           </div>
@@ -796,7 +798,7 @@ function updateAutoSaveLabel() {
                  : status === 'saved'   ? '✓ All changes saved'
                  : status === 'error'   ? '⚠ Save failed'
                  : 'Auto-saves';
-  el.style.color = status === 'error' ? '#dc2626' : status === 'saving' ? '#f59e0b' : 'var(--ok)';
+  el.style.color = status === 'error' ? 'var(--err)' : status === 'saving' ? 'var(--warn)' : 'var(--ok)';
 }
 
 async function doAutoSave(machId) {
@@ -848,7 +850,7 @@ function openAddRunModal(machId) {
         oninput="this.value=this.value.toUpperCase()"
         autocomplete="off" spellcheck="false" style="flex:1"
         onkeydown="if(event.key==='Enter')runFetchTag()">
-      <button class="btn btn-s qr-scan-btn" onclick="openQrScanner(v=>{document.getElementById('run-tag-input').value=v.toUpperCase();runFetchTag();},'Scan TAG')" title="Scan QR">
+      <button class="btn btn-s btn-ic" style="width:44px;height:44px" title="Scan QR" onclick="openQrScanner(v=>{document.getElementById('run-tag-input').value=v.toUpperCase();runFetchTag();},'Scan TAG')">
         <i class="ti ti-camera"></i>
       </button>
     </div>
@@ -883,13 +885,13 @@ async function runFetchTag() {
   try {
     const card = await fetchRouteCard(tagId);
     if (!card) {
-      if (infoDiv) infoDiv.innerHTML = `<div class="ibox" style="background:#fef2f2;border-color:var(--err,#dc2626);color:var(--err,#dc2626)">TAG ${tagId} not found</div>`;
+      if (infoDiv) infoDiv.innerHTML = `<div class="ebox">TAG ${tagId} not found</div>`;
       return;
     }
 
     // Hard stage: heatCode required
     if (_actStage === 'hard' && !card.heatCode) {
-      if (infoDiv) infoDiv.innerHTML = `<div class="ibox" style="background:#fef2f2;border-color:var(--err,#dc2626);color:var(--err,#dc2626)">Hard stage requires a heat code on this TAG. Check Heat Treatment.</div>`;
+      if (infoDiv) infoDiv.innerHTML = `<div class="ebox">Hard stage requires a heat code on this TAG. Check Heat Treatment.</div>`;
       return;
     }
 
@@ -908,12 +910,12 @@ async function runFetchTag() {
         if (!completedOpIds.includes(prevRequired.opId)) {
           const prevOpName = (S.operations || []).find(o => o.id === prevRequired.opId)?.name || 'Previous Op';
           deviationHtml = `
-            <div style="background:#fff7ed;border:1.5px solid #f97316;border-radius:var(--rs);padding:10px 12px;margin-bottom:10px">
-              <div style="font-weight:700;color:#ea580c;font-size:12px">⚠ Sequence Deviation Detected</div>
-              <div style="font-size:11px;color:#9a3412;margin-top:4px">
+            <div class="wbox" style="flex-direction:column;align-items:stretch">
+              <div style="font-weight:700;font-size:12px"><i class="ti ti-alert-triangle"></i> Sequence Deviation Detected</div>
+              <div style="font-size:11px;margin-top:2px">
                 Previous operation "<strong>${prevOpName}</strong>" (seq ${prevRequired.seqNo}) has no completion on this TAG.
               </div>
-              <button class="btn btn-sm" style="margin-top:8px;width:100%;border-color:#f97316;color:#ea580c;font-size:11px"
+              <button class="btn btn-warn btn-sm btn-full" style="margin-top:8px"
                 onclick="showDeviationConfirmModal('${tagId}','${prevOpName}',${prevRequired.seqNo})">
                 Request Sequence Deviation Approval
               </button>
@@ -933,21 +935,21 @@ async function runFetchTag() {
 
     if (infoDiv) infoDiv.innerHTML = `
       ${deviationHtml}
-      <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:var(--rs);padding:10px 12px;margin-bottom:10px;font-size:12px">
-        <div style="font-weight:700;color:var(--ok);margin-bottom:6px">✓ TAG Valid</div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--txt-muted)">TAG</span><strong style="font-family:monospace">${tagId}</strong></div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--txt-muted)">Part</span><strong>${card.partName}</strong></div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--txt-muted)">Next Op</span><strong>${opName}</strong></div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--txt-muted)">Qty on TAG</span><strong>${card.currentQty} pcs</strong></div>
-        ${targetQty ? `<div style="display:flex;justify-content:space-between"><span style="color:var(--txt-muted)">Target (after setup)</span><strong style="color:var(--acc)">${targetQty} pcs</strong></div>` : ''}
-        ${card.heatCode ? `<div style="display:flex;justify-content:space-between"><span style="color:var(--txt-muted)">Heat Code</span><strong style="color:var(--ok)">🔥 ${card.heatCode}</strong></div>` : ''}
+      <div class="sbox" style="flex-direction:column;align-items:stretch;font-size:12px">
+        <div style="font-weight:700;margin-bottom:6px"><i class="ti ti-circle-check"></i> TAG Valid</div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">TAG</span><strong style="font-family:monospace;margin-left:auto">${tagId}</strong></div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Part</span><strong style="margin-left:auto;text-align:right">${card.partName}</strong></div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Next Op</span><strong style="margin-left:auto;text-align:right">${opName}</strong></div>
+        <div class="kv-row" style="padding:3px 0;border-bottom:none"><span class="text-muted">Qty on TAG</span><strong style="margin-left:auto">${card.currentQty} pcs</strong></div>
+        ${targetQty ? `<div class="kv-row" style="padding:3px 0;border-bottom:none"><span class="text-muted">Target (after setup)</span><strong style="color:var(--acc);margin-left:auto">${targetQty} pcs</strong></div>` : ''}
+        ${card.heatCode ? `<div class="kv-row" style="padding:3px 0;border-bottom:none"><span class="text-muted">Heat Code</span><strong style="color:var(--ok);margin-left:auto"><i class="ti ti-flame"></i> ${card.heatCode}</strong></div>` : ''}
       </div>`;
 
     const runForm = document.getElementById('run-form');
     if (runForm) runForm.style.display = 'block';
 
   } catch (e) {
-    if (infoDiv) infoDiv.innerHTML = `<div class="ibox" style="background:#fef2f2;border-color:var(--err,#dc2626);color:var(--err,#dc2626)">Error: ${e.message}</div>`;
+    if (infoDiv) infoDiv.innerHTML = `<div class="ebox">Error: ${e.message}</div>`;
   }
 }
 
@@ -1371,8 +1373,8 @@ function confirmDeleteReport(recId) {
   openModal(`
     <div class="modal-handle"></div>
     <div style="text-align:center;margin-bottom:12px">
-      <div style="width:52px;height:52px;border-radius:26px;background:#fef2f2;border:2px solid var(--err);
-                  display:inline-flex;align-items:center;justify-content:center;font-size:24px">🗑</div>
+      <div style="width:52px;height:52px;border-radius:26px;background:var(--err-bg);border:2px solid var(--err);color:var(--err);
+                  display:inline-flex;align-items:center;justify-content:center;font-size:22px"><i class="ti ti-trash"></i></div>
       <div style="font-size:16px;font-weight:800;color:var(--err);margin-top:8px">Delete this report?</div>
     </div>
     <p style="font-size:13px;color:var(--txt);text-align:center;margin-bottom:12px">
@@ -1684,7 +1686,7 @@ function buildSetupHtml() {
             oninput="this.value=this.value.toUpperCase()"
             autocomplete="off" spellcheck="false" style="flex:1"
             onkeydown="if(event.key==='Enter')setupFetchTag()">
-          <button class="btn btn-s qr-scan-btn" title="Scan QR"
+          <button class="btn btn-s btn-ic" style="width:44px;height:44px" title="Scan QR"
             onclick="openQrScanner(v=>{document.getElementById('setup-tag-input').value=v.toUpperCase();setupFetchTag();},'Scan TAG')">
             <i class="ti ti-camera"></i>
           </button>
@@ -1734,10 +1736,10 @@ function setupLogRow(sa, canDelete) {
       </div>
       <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
         <span style="font-size:10px;font-weight:700;background:${statusColor};color:#fff;
-                     border-radius:4px;padding:2px 7px;text-transform:uppercase">${sa.status}</span>
+                     border-radius:4px;padding:3px 8px;text-transform:uppercase">${sa.status}</span>
         ${canDelete ? `
-        <button class="btn btn-s" style="padding:4px 8px;font-size:11px;background:var(--err);border-color:var(--err);color:#fff"
-          onclick="confirmDeleteSetup('${sa.id}')">
+        <button class="btn btn-ic" style="background:var(--err);border-color:var(--err);color:#fff;width:36px;height:36px"
+          onclick="confirmDeleteSetup('${sa.id}')" aria-label="Delete setup log">
           <i class="ti ti-trash"></i>
         </button>` : ''}
       </div>
@@ -1757,13 +1759,12 @@ function confirmDeleteSetup(id) {
         ${sa.date || ''} · Shift ${sa.shift || '—'} · ${sa.setupMins || 0} min
       </div>
     </div>
-    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:var(--rs);
-                padding:10px 14px;font-size:12px;font-weight:700;color:var(--err);margin-bottom:14px">
-      <i class="ti ti-alert-triangle"></i> This will permanently remove the setup record. The duplicate-check guard for this TAG+machine will also be cleared.
+    <div class="ebox" style="font-weight:700;margin-bottom:14px">
+      <i class="ti ti-alert-triangle"></i> <div>This will permanently remove the setup record. The duplicate-check guard for this TAG+machine will also be cleared.</div>
     </div>
     <div style="display:flex;gap:8px">
       <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-s" style="flex:1;background:var(--err);border-color:var(--err);color:#fff"
+      <button class="btn btn-d" style="flex:1"
         onclick="closeModal();deleteSetup('${id}')">
         <i class="ti ti-trash"></i> Delete
       </button>
@@ -1846,13 +1847,13 @@ async function setupFetchTag() {
   try {
     const card = await fetchRouteCard(tagId);
     if (!card) {
-      if (infoDiv) infoDiv.innerHTML = `<div class="ibox" style="background:#fef2f2;border-color:var(--err,#dc2626);color:var(--err,#dc2626)">TAG ${tagId} not found</div>`;
+      if (infoDiv) infoDiv.innerHTML = `<div class="ebox">TAG ${tagId} not found</div>`;
       return;
     }
 
     const validStatuses = ['store_issued','soft_wip','soft_done','ht_done','hard_wip'];
     if (!validStatuses.includes(card.status)) {
-      if (infoDiv) infoDiv.innerHTML = `<div class="ibox" style="background:#fef2f2;border-color:var(--err,#dc2626);color:var(--err,#dc2626)">TAG status is "${card.status}" — expected: store_issued / soft_done / ht_done</div>`;
+      if (infoDiv) infoDiv.innerHTML = `<div class="ebox">TAG status is "${card.status}" — expected: store_issued / soft_done / ht_done</div>`;
       return;
     }
 
@@ -1865,7 +1866,7 @@ async function setupFetchTag() {
 
     // Hard stage: heatCode required
     if (_setupStage === 'hard' && !card.heatCode) {
-      if (infoDiv) infoDiv.innerHTML = `<div class="ibox" style="background:#fef2f2;border-color:var(--err,#dc2626);color:var(--err,#dc2626)">Hard stage setup requires a heat code. This TAG has not cleared Heat Treatment.</div>`;
+      if (infoDiv) infoDiv.innerHTML = `<div class="ebox">Hard stage setup requires a heat code. This TAG has not cleared Heat Treatment.</div>`;
       return;
     }
 
@@ -1884,15 +1885,15 @@ async function setupFetchTag() {
         if (!completedOpIds.includes(prevRequired.opId)) {
           const prevOpName = (S.operations || []).find(o => o.id === prevRequired.opId)?.name || 'Previous Op';
           seqWarningHtml = `
-            <div style="background:#fff7ed;border:1.5px solid #f97316;border-radius:var(--rs);padding:10px 12px;margin-bottom:10px">
-              <div style="font-weight:700;color:#ea580c;font-size:13px">⚠ Sequence Deviation Detected</div>
-              <div style="font-size:12px;color:#9a3412;margin-top:4px">
+            <div class="wbox" style="flex-direction:column;align-items:stretch">
+              <div style="font-weight:700;font-size:13px"><i class="ti ti-alert-triangle"></i> Sequence Deviation Detected</div>
+              <div style="font-size:12px;margin-top:2px">
                 Previous operation "<strong>${prevOpName}</strong>" (seq ${prevRequired.seqNo}) has no completion on this TAG.
               </div>
-              <div style="font-size:11px;color:#9a3412;margin-top:4px">
+              <div style="font-size:11px;margin-top:4px">
                 If it <strong>was</strong> produced this shift (report not filed yet), you can verify it on submit.
               </div>
-              <button class="btn btn-sm" style="margin-top:8px;width:100%;border-color:#f97316;color:#ea580c"
+              <button class="btn btn-warn btn-sm btn-full" style="margin-top:8px"
                 onclick="seqResolveFromUi()">
                 Verify / Resolve Prior Op
               </button>
@@ -1908,15 +1909,15 @@ async function setupFetchTag() {
 
     if (infoDiv) infoDiv.innerHTML = `
       ${seqWarningHtml}
-      <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:var(--rs);padding:10px 12px;margin-bottom:4px;font-size:13px">
-        <div style="font-weight:700;color:var(--ok);margin-bottom:6px">✓ TAG Valid</div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:2px"><span style="color:var(--txt-muted)">TAG</span><strong style="font-family:monospace;color:var(--acc)">${tagId}</strong></div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:2px"><span style="color:var(--txt-muted)">Part</span><strong>${card.partName}</strong></div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:2px"><span style="color:var(--txt-muted)">Part No.</span><span style="font-family:monospace">${card.partNo}</span></div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:2px"><span style="color:var(--txt-muted)">Customer</span><span>${card.customerName || '—'}</span></div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:2px"><span style="color:var(--txt-muted)">Batch</span><span style="font-family:monospace">${card.batchCode || '—'}</span></div>
-        ${card.heatCode ? `<div style="display:flex;justify-content:space-between"><span style="color:var(--txt-muted)">Heat Code</span><strong style="color:var(--ok)">🔥 ${card.heatCode}</strong></div>` : ''}
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--txt-muted)">Qty on TAG</span><strong style="color:var(--acc)">${card.currentQty} pcs</strong></div>
+      <div class="sbox" style="flex-direction:column;align-items:stretch;font-size:13px">
+        <div style="font-weight:700;margin-bottom:6px"><i class="ti ti-circle-check"></i> TAG Valid</div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">TAG</span><strong style="font-family:monospace;color:var(--acc);margin-left:auto">${tagId}</strong></div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Part</span><strong style="margin-left:auto;text-align:right">${card.partName}</strong></div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Part No.</span><span style="font-family:monospace;margin-left:auto">${card.partNo}</span></div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Customer</span><span style="margin-left:auto;text-align:right">${card.customerName || '—'}</span></div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Batch</span><span style="font-family:monospace;margin-left:auto">${card.batchCode || '—'}</span></div>
+        ${card.heatCode ? `<div class="kv-row" style="padding:3px 0"><span class="text-muted">Heat Code</span><strong style="color:var(--ok);margin-left:auto"><i class="ti ti-flame"></i> ${card.heatCode}</strong></div>` : ''}
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Qty on TAG</span><strong style="color:var(--acc);margin-left:auto">${card.currentQty} pcs</strong></div>
       </div>`;
 
     if (formDiv) {
@@ -1944,30 +1945,31 @@ async function setupFetchTag() {
         </div>`;
     }
   } catch (e) {
-    if (infoDiv) infoDiv.innerHTML = `<div class="ibox" style="background:#fef2f2;border-color:var(--err,#dc2626);color:var(--err,#dc2626)">Error: ${e.message}</div>`;
+    if (infoDiv) infoDiv.innerHTML = `<div class="ebox">Error: ${e.message}</div>`;
   }
 }
 
 /* — Sequence Deviation Confirm Modal — */
 function showDeviationConfirmModal(tagId, missingOpName, missingSeqNo) {
   openModal(`
+    <div class="modal-handle"></div>
     <div style="text-align:center;margin-bottom:12px">
-      <div style="width:56px;height:56px;border-radius:28px;background:#fff7ed;border:2px solid #f97316;display:inline-flex;align-items:center;justify-content:center;font-size:28px">⚠</div>
+      <div style="width:56px;height:56px;border-radius:28px;background:var(--warn-bg);border:2px solid var(--warn);display:inline-flex;align-items:center;justify-content:center;font-size:26px;color:var(--warn)"><i class="ti ti-alert-triangle"></i></div>
     </div>
-    <div class="mtit" style="color:#ea580c">Log Sequence Deviation?</div>
+    <div class="mtit" style="color:var(--warn);justify-content:center">Log Sequence Deviation?</div>
     <p style="font-size:13px;color:var(--txt-muted);text-align:center;margin-bottom:12px">
       You are about to request a <strong>sequence deviation</strong> for:
     </p>
-    <div style="background:#fff7ed;border:1px solid #f97316;border-radius:var(--rs);padding:10px 14px;margin-bottom:14px;font-size:13px">
+    <div class="wbox" style="flex-direction:column;align-items:stretch;font-size:13px">
       <div><strong>TAG:</strong> ${tagId}</div>
       <div style="margin-top:4px"><strong>Missing Operation:</strong> ${missingOpName} (seq ${missingSeqNo})</div>
     </div>
-    <p style="font-size:12px;color:var(--txt-muted);text-align:center;margin-bottom:16px">
+    <p style="font-size:12px;color:var(--txt-muted);text-align:center;margin:14px 0 16px">
       This sends a request to the <strong>Plant Head</strong> for approval. Only proceed if this deviation is <strong>intentional and required</strong>.
     </p>
     <div style="display:flex;gap:10px">
       <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel — Go Back</button>
-      <button class="btn btn-p" style="flex:1;background:#ea580c;border-color:#ea580c" onclick="closeModal();confirmRequestDeviation('${tagId}','${missingOpName.replace(/'/g,"\\'")}',${missingSeqNo})">
+      <button class="btn btn-warn" style="flex:1" onclick="closeModal();confirmRequestDeviation('${tagId}','${missingOpName.replace(/'/g,"\\'")}',${missingSeqNo})">
         Yes, Log Deviation
       </button>
     </div>
@@ -2083,8 +2085,9 @@ function _renderSeqResolveModal() {
   const cur     = st.unverified[0];
   const curName = _opName(cur.opId);
   const verifiedNote = st.verified.length
-    ? `<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:var(--rs);padding:8px 12px;margin-bottom:12px;font-size:12px;color:#15803d">
-         ✓ Verified from this shift: ${st.verified.map(v => `${_opName(v.po.opId)} (${v.qty} pcs)`).join(', ')}
+    ? `<div class="sbox" style="font-size:12px">
+         <i class="ti ti-circle-check"></i>
+         <div>Verified from this shift: ${st.verified.map(v => `${_opName(v.po.opId)} (${v.qty} pcs)`).join(', ')}</div>
        </div>`
     : '';
 
@@ -2101,32 +2104,32 @@ function _renderSeqResolveModal() {
          onclick="seqRescanTag()">
          <i class="ti ti-qrcode"></i> ${st._rescanOk ? '✓ TAG confirmed in hand' : 'Scan TAG to confirm'}
        </button>
-       <div style="display:flex;gap:8px">
-         <button class="btn btn-s" style="flex:1" onclick="_seqResolveState._attesting=false;_renderSeqResolveModal()">
-           <i class="ti ti-arrow-left"></i> Back
+       <div style="display:flex;flex-direction:column;gap:8px">
+         <button class="btn btn-p btn-full" onclick="seqAttestConfirm()">
+           <i class="ti ti-check"></i> Confirm &amp; Continue
          </button>
-         <button class="btn btn-p" style="flex:1" onclick="seqAttestConfirm()">
-           <i class="ti ti-check"></i> Confirm & Continue
+         <button class="btn btn-s btn-full" onclick="_seqResolveState._attesting=false;_renderSeqResolveModal()">
+           <i class="ti ti-arrow-left"></i> Back
          </button>
        </div>`
     : `<p style="font-size:13px;color:var(--txt);text-align:center;margin-bottom:14px">
          Was <strong>${curName}</strong> (seq ${cur.seqNo}) produced on <strong>${_setupTagId}</strong> in this shift?
        </p>
-       <div style="display:flex;gap:8px">
-         <button class="btn btn-s" style="flex:1;border-color:#f97316;color:#ea580c" onclick="seqAttestNo()">
-           No — wasn’t done
-         </button>
-         <button class="btn btn-p" style="flex:1"
+       <div style="display:flex;flex-direction:column;gap:8px">
+         <button class="btn btn-p btn-full"
            onclick="_seqResolveState._attesting=true;_seqResolveState._rescanOk=false;_renderSeqResolveModal()">
            Yes — I produced it
+         </button>
+         <button class="btn btn-s btn-full" style="border-color:var(--warn);color:var(--warn)" onclick="seqAttestNo()">
+           No — wasn’t done
          </button>
        </div>`;
 
   openModal(`
     <div class="modal-handle"></div>
     <div style="text-align:center;margin-bottom:12px">
-      <div style="width:52px;height:52px;border-radius:26px;background:#eff6ff;border:2px solid var(--imf-steel,#2563EB);
-                  display:inline-flex;align-items:center;justify-content:center;font-size:24px">🔍</div>
+      <div style="width:52px;height:52px;border-radius:26px;background:var(--info-bg);border:2px solid var(--imf-steel);
+                  display:inline-flex;align-items:center;justify-content:center;font-size:22px;color:var(--imf-steel)"><i class="ti ti-search"></i></div>
       <div style="font-size:16px;font-weight:800;margin-top:8px">Verify Prior Operation</div>
     </div>
     ${verifiedNote}
@@ -2327,7 +2330,7 @@ function buildBreakdownHtml() {
 
   const activeHtml = active.length
     ? active.map(b => breakdownCard(b)).join('')
-    : `<div class="ibox" style="background:#f0fdf4;border-color:#86efac;color:#15803d;text-align:center">✓ No active breakdowns</div>`;
+    : `<div class="sbox" style="justify-content:center"><i class="ti ti-circle-check"></i> No active breakdowns</div>`;
 
   const recentHtml = recent.length
     ? recent.map(b => breakdownCard(b)).join('')
@@ -2667,7 +2670,7 @@ function viewReqModal(id) {
       </div>
     </div>`;
   });
-  if (r.rejectionReason) h += `<div class="ibox" style="background:#fef2f2;border-color:var(--err,#dc2626);color:var(--err,#dc2626)">Rejected: ${r.rejectionReason}</div>`;
+  if (r.rejectionReason) h += `<div class="ebox">Rejected: ${r.rejectionReason}</div>`;
   if (r.notes) h += `<div style="font-size:12px;color:var(--txt-muted);margin-top:8px">${r.notes}</div>`;
   h += `<button class="btn btn-s mt12" style="width:100%" onclick="closeModal()">Close</button>`;
   if (r.status === 'pending' && r.requestedBy === S.sess.userId) {
@@ -2770,28 +2773,28 @@ async function loadAndRenderReports() {
             <div style="font-size:11px;color:var(--txt-muted)">${r.machinesUsed || 0} machines</div>
           </div>
         </div>
-        <div class="row-3" style="gap:8px;margin-bottom:8px">
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px">
           <div style="text-align:center;background:var(--bg);border-radius:6px;padding:6px">
             <div style="font-size:15px;font-weight:800;color:var(--ok)">${r.totalProcessed || 0}</div>
             <div style="font-size:10px;color:var(--txt-muted)">Processed</div>
           </div>
           <div style="text-align:center;background:var(--bg);border-radius:6px;padding:6px">
-            <div style="font-size:15px;font-weight:800;color:var(--err,#dc2626)">${(r.machines || []).reduce((s,m)=>s+(m.totalRejected||0),0)}</div>
+            <div style="font-size:15px;font-weight:800;color:var(--err)">${(r.machines || []).reduce((s,m)=>s+(m.totalRejected||0),0)}</div>
             <div style="font-size:10px;color:var(--txt-muted)">Rejected</div>
           </div>
           <div style="text-align:center;background:var(--bg);border-radius:6px;padding:6px">
-            <div style="font-size:15px;font-weight:800;color:${r.avgOEE>=75?'var(--ok)':r.avgOEE>=50?'#f59e0b':'var(--err,#dc2626)'}">${r.avgOEE || 0}%</div>
+            <div style="font-size:15px;font-weight:800;color:${r.avgOEE>=75?'var(--ok)':r.avgOEE>=50?'var(--warn)':'var(--err)'}">${r.avgOEE || 0}%</div>
             <div style="font-size:10px;color:var(--txt-muted)">Avg OEE</div>
           </div>
         </div>
         ${machUsed.length ? `
           <div style="font-size:11px;font-weight:700;color:var(--txt-muted);margin-bottom:4px">PER MACHINE</div>
           ${machUsed.map(m => `
-            <div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--bdr)">
-              <span style="font-weight:600">${m.machineName}</span>
-              <span style="color:var(--txt-muted)">${m.operatorName || '—'}</span>
-              <span><strong>${m.totalProcessed}</strong> pcs</span>
-              <span style="color:${m.oee>=75?'var(--ok)':m.oee>=50?'#f59e0b':'var(--err,#dc2626)'}">${m.oee || 0}% OEE</span>
+            <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 10px;font-size:12px;padding:6px 0;border-bottom:1px solid var(--bdr)">
+              <span style="font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto">${m.machineName}</span>
+              <span style="color:var(--txt-muted);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto">${m.operatorName || '—'}</span>
+              <span style="flex-shrink:0"><strong>${m.totalProcessed}</strong> pcs</span>
+              <span style="flex-shrink:0;font-weight:600;color:${m.oee>=75?'var(--ok)':m.oee>=50?'var(--warn)':'var(--err)'}">${m.oee || 0}% OEE</span>
             </div>`).join('')}
         ` : ''}
         ${canManageReports() ? `
