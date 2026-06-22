@@ -266,7 +266,9 @@ function poCard(p, canEdit) {
               </div>
             </div>
             <div style="background:var(--bdr);border-radius:99px;height:4px;margin-top:6px;overflow:hidden">
-              <div style="height:100%;border-radius:99px;background:${pctCol};width:${Math.min(pct,100)}%;transition:width .3s"></div>
+              <div style="height:100%;border-radius:99px;background:${pctCol};width:100%;
+                          transform:scaleX(${(Math.min(pct,100) / 100).toFixed(4)});transform-origin:left;
+                          transition:transform .3s"></div>
             </div>
           </div>`;
       }).join('')}
@@ -725,7 +727,7 @@ async function dspScanTag() {
 function dspRow(row, idx) {
   const maxQty = row.tagData ? (row.tagData[`qty_${_dispHeader.stream}`] || 0) : row.qty;
   return `
-    <div class="card" style="margin-bottom:8px;border-left:3px solid var(--ok)">
+    <div class="card" style="margin-bottom:8px;border:1.5px solid var(--ok)">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
         <span class="tag-uid">${row.tagId}</span>
         <button onclick="dspRemoveRow(${idx})" style="border:none;background:none;color:var(--err);cursor:pointer;font-size:14px;padding:2px 4px">
@@ -944,7 +946,7 @@ function renderTracksheet() {
       <div style="font-size:11px;color:var(--txt-muted)">${allRows.length} active PO line${allRows.length !== 1 ? 's' : ''}</div>
       <button class="btn btn-s btn-sm" onclick="refreshDSP()"><i class="ti ti-refresh"></i></button>
     </div>
-    <div style="overflow-x:auto">
+    <div class="tracksheet-table" style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead>
           <tr style="background:var(--imf-navy);color:#fff">
@@ -961,6 +963,7 @@ function renderTracksheet() {
             const ragBg  = rag.code === 'r' ? 'var(--err-bg)' : rag.code === 'a' ? 'var(--warn-bg)' : 'var(--ok-bg)';
             const ragBdr = rag.code === 'r' ? 'var(--err-bdr)' : rag.code === 'a' ? 'var(--warn-bdr)' : 'var(--ok-bdr)';
             const ragCol = rag.code === 'r' ? 'var(--err)' : rag.code === 'a' ? 'var(--warn)' : 'var(--ok)';
+            const ragIcon = rag.code === 'r' ? 'ti-alert-circle' : rag.code === 'a' ? 'ti-clock' : 'ti-check';
             return `
               <tr style="background:${i % 2 === 0 ? 'var(--sur)' : 'var(--bg)'}">
                 <td style="padding:8px 10px">
@@ -979,13 +982,42 @@ function renderTracksheet() {
                 <td style="padding:8px 6px;text-align:center;font-size:11px;color:var(--txt-muted);white-space:nowrap">${fmtDate(l.dueDate)}</td>
                 <td style="padding:8px 6px;text-align:center">
                   <span style="font-size:11px;font-weight:700;background:${ragBg};border:1px solid ${ragBdr};color:${ragCol};border-radius:4px;padding:2px 8px;white-space:nowrap">
-                    ${rag.label}
+                    <i class="ti ${ragIcon}" aria-hidden="true"></i> ${rag.label}
                   </span>
                 </td>
               </tr>`;
           }).join('')}
         </tbody>
       </table>
+    </div>
+    <div class="tracksheet-cards">
+      ${allRows.map(({ po, line: l, rag }) => {
+        const pct    = l.scheduledQty > 0 ? Math.round(((l.dispatchedQty || 0) / l.scheduledQty) * 100) : 0;
+        const ragBg  = rag.code === 'r' ? 'var(--err-bg)' : rag.code === 'a' ? 'var(--warn-bg)' : 'var(--ok-bg)';
+        const ragBdr = rag.code === 'r' ? 'var(--err-bdr)' : rag.code === 'a' ? 'var(--warn-bdr)' : 'var(--ok-bdr)';
+        const ragCol = rag.code === 'r' ? 'var(--err)' : rag.code === 'a' ? 'var(--warn)' : 'var(--ok)';
+        const ragIcon = rag.code === 'r' ? 'ti-alert-circle' : rag.code === 'a' ? 'ti-clock' : 'ti-check';
+        return `
+          <div class="card" style="margin-bottom:8px">
+            <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+              <div style="min-width:0">
+                <div style="font-weight:700;font-size:13px">${po.customerName}</div>
+                <div style="font-size:10px;color:var(--txt-muted)">${po.poNo}</div>
+              </div>
+              <span style="flex-shrink:0;font-size:11px;font-weight:700;background:${ragBg};border:1px solid ${ragBdr};color:${ragCol};border-radius:4px;padding:2px 8px;white-space:nowrap">
+                <i class="ti ${ragIcon}" aria-hidden="true"></i> ${rag.label}
+              </span>
+            </div>
+            <div style="font-size:12px;font-weight:600;margin-top:8px">${l.partName || '—'}</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:11px;color:var(--txt-muted)">
+              <span><strong style="color:var(--txt)">${l.dispatchedQty||0} / ${l.scheduledQty}</strong> dispatched</span>
+              <span>Due ${fmtDate(l.dueDate)}</span>
+            </div>
+            <div style="background:var(--bdr);border-radius:99px;height:4px;margin-top:6px;overflow:hidden">
+              <div style="height:100%;border-radius:99px;background:${ragCol};width:${Math.min(pct,100)}%"></div>
+            </div>
+          </div>`;
+      }).join('')}
     </div>`;
 }
 

@@ -257,12 +257,16 @@ const REQ_BADGE = { pending: 'bdg-a', approved: 'bdg-g', partial: 'bdg-b', fulfi
 const REQ_LABEL = { pending: 'Pending Approval', approved: 'Approved', partial: 'Partially Issued', fulfilled: 'Fulfilled', rejected: 'Rejected' };
 
 const RC_BADGE = {
-  store_issued: 'bdg-b', soft_wip: 'bdg-soft', ht_pending: 'bdg-a', ht_wip: 'bdg-a',
-  hard_wip: 'bdg-hard', qc_pending: 'bdg-a', qc_cleared: 'bdg-g', dispatched: 'bdg-gr'
+  store_issued: 'bdg-b', soft_wip: 'bdg-soft', soft_done: 'bdg-soft',
+  ht_queue: 'bdg-a', ht_done: 'bdg-a',
+  hard_wip: 'bdg-hard', qc_pending: 'bdg-a', qc_cleared: 'bdg-g', dispatched: 'bdg-gr',
+  scrapped: 'bdg-r'
 };
 const RC_LABEL = {
-  store_issued: 'Store Issued', soft_wip: 'Soft WIP', ht_pending: 'HT Pending', ht_wip: 'HT In Progress',
-  hard_wip: 'Hard WIP', qc_pending: 'QC Pending', qc_cleared: 'QC Cleared', dispatched: 'Dispatched'
+  store_issued: 'Store Issued', soft_wip: 'Soft WIP', soft_done: 'Soft Done',
+  ht_queue: 'HT Queue', ht_done: 'HT Done',
+  hard_wip: 'Hard WIP', qc_pending: 'QC Pending', qc_cleared: 'QC Cleared', dispatched: 'Dispatched',
+  scrapped: 'Scrapped'
 };
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -348,14 +352,11 @@ function inwardRow(r) {
   const iqcStatus = r.iqcStatus || null; /* legacy records without iqcStatus are grandfathered */
   const docLine = [r.dcNo ? `DC: ${r.dcNo}` : '', r.invoiceNo ? `INV: ${r.invoiceNo}` : ''].filter(Boolean).join(' · ');
   const partSummary = parts.slice(0, 2).map(p => p.partName).join(', ') + (parts.length > 2 ? ` +${parts.length - 2}` : '');
+  const iqcClass = iqcStatus === 'rejected' ? ' iqc-rejected' : iqcStatus === 'pending' ? ' iqc-pending' : '';
   return `
-    <div style="display:grid;grid-template-columns:80px 1fr auto auto;gap:0;align-items:center;
-                padding:10px 10px;border-bottom:1px solid var(--bdr);cursor:pointer;
-                background:${iqcStatus==='rejected'?'var(--err-bg)':iqcStatus==='pending'?'var(--warn-bg)':'var(--sur)'};
-                transition:background .1s" ${onclick}
-         onmouseover="this.style.background='var(--sur2)'" onmouseout="this.style.background='${iqcStatus==='rejected'?'var(--err-bg)':iqcStatus==='pending'?'var(--warn-bg)':'var(--sur)'}'">
-      <div style="font-size:12px;color:var(--txt-muted)">${fmtDate(r.date)}</div>
-      <div style="min-width:0">
+    <div class="inw-row${iqcClass}" ${onclick}>
+      <div class="inw-date">${fmtDate(r.date)}</div>
+      <div class="inw-info">
         <div style="font-weight:700;font-size:13px;display:flex;align-items:center;gap:8px">
           ${r.supplierName || '—'}
           ${invPending ? `<span class="bdg bdg-a" style="font-size:10px">Invoice Pending</span>` : ''}
@@ -367,8 +368,8 @@ function inwardRow(r) {
         </div>
         ${totalVal > 0 ? `<div style="font-size:11px;color:var(--txt-muted);margin-top:2px">${fmtINR(totalVal)}</div>` : ''}
       </div>
-      <div style="font-size:14px;font-weight:800;color:var(--txt);padding-right:12px;text-align:right">${totalPcs}</div>
-      <div style="text-align:right">
+      <div class="inw-qty">${totalPcs}</div>
+      <div class="inw-badge">
         ${iqcStatus ? `<span class="bdg ${IQC_BADGE[iqcStatus] || 'bdg-gr'}" style="font-size:10px"><span class="bdg-dot"></span>${IQC_LABEL[iqcStatus]||iqcStatus}</span>` : ''}
       </div>
     </div>`;
@@ -911,8 +912,9 @@ function issRenderTagSection() {
           <div style="position:absolute;left:${ISS_BATCH_MIN}%;top:-2px;width:2px;height:10px;
                       background:var(--warn);border-radius:1px;z-index:1"></div>
           <!-- Fill -->
-          <div style="height:100%;width:${Math.min(100, pct)}%;background:${barColor};
-                      border-radius:3px;transition:width .2s,background .2s"></div>
+          <div style="height:100%;width:100%;background:${barColor};border-radius:3px;
+                      transform:scaleX(${(Math.min(100, pct) / 100).toFixed(4)});transform-origin:left;
+                      transition:transform .2s,background .2s"></div>
         </div>
         <!-- Stats row -->
         <div style="display:flex;gap:16px;padding-bottom:10px;font-size:12px">
@@ -1366,9 +1368,7 @@ function renderStock() {
 
     ${partList.length === 0
       ? emptyState('ti-chart-pie', 'No stock found', q || _stockCustFilt!=='all' ? 'Try clearing the filter.' : 'Add inward receipts to start tracking stock.')
-      : `<div style="display:grid;grid-template-columns:1fr 64px 64px 64px;gap:4px;padding:6px 10px;
-                     font-size:10px;font-weight:700;color:var(--txt-muted);letter-spacing:.05em;
-                     border-bottom:2px solid var(--bdr);margin-bottom:4px">
+      : `<div class="stk-head-row">
            <div>COMPONENT</div>
            <div style="text-align:right">RCVD</div>
            <div style="text-align:right">ISSUED</div>
@@ -1418,7 +1418,7 @@ function renderStock() {
             </div>
           </div>
           <div class="prog" style="margin-top:6px">
-            <div class="pf ${lotPct>50?'pg':lotPct>20?'pa':'pr'}" style="width:${Math.min(100,lotPct)}%"></div>
+            <div class="pf ${lotPct>50?'pg':lotPct>20?'pa':'pr'}" style="transform:scaleX(${(Math.min(100,lotPct)/100).toFixed(4)})"></div>
           </div>
         </div>`;
     }).join('');
@@ -1426,10 +1426,9 @@ function renderStock() {
     return `
       <div style="border-bottom:1px solid var(--bdr);${isOver?'background:var(--err-bg);':''}">
         <button type="button" onclick="_stockExpanded['${p.key}']=!_stockExpanded['${p.key}'];renderStock()"
-          style="appearance:none;-webkit-appearance:none;font:inherit;color:inherit;background:none;border:none;
-                 display:grid;grid-template-columns:1fr 64px 64px 64px;gap:4px;align-items:center;width:100%;text-align:left;
-                 padding:11px 10px;cursor:pointer;user-select:none">
-          <div style="min-width:0">
+          class="stk-row" style="appearance:none;-webkit-appearance:none;font:inherit;color:inherit;background:none;border:none;
+                 width:100%;text-align:left;cursor:pointer;user-select:none">
+          <div class="stk-name">
             <div style="font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.partName}</div>
             <div style="font-size:11px;color:var(--txt-muted);margin-top:2px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
               ${p.partNo ? `<span style="font-family:monospace">${p.partNo}</span>` : ''}
@@ -1442,13 +1441,15 @@ function renderStock() {
               <div style="height:100%;width:${isOver?100:pct}%;background:${barColor};border-radius:2px"></div>
             </div>
           </div>
-          <div style="text-align:right;font-size:13px;font-weight:600;color:${p.rcvdPeriod>0?'var(--txt-muted)':'var(--bdr-strong)'}">
-            ${p.rcvdPeriod > 0 ? p.rcvdPeriod : '—'}
+          <div class="stk-num" style="grid-area:rcvd;color:${p.rcvdPeriod>0?'var(--txt-muted)':'var(--bdr-strong)'}">
+            <span class="stk-num-lbl">Rcvd</span>${p.rcvdPeriod > 0 ? p.rcvdPeriod : '—'}
           </div>
-          <div style="text-align:right;font-size:13px;font-weight:600;color:${p.issdPeriod>0?'var(--txt-muted)':'var(--bdr-strong)'}">
-            ${p.issdPeriod > 0 ? p.issdPeriod : '—'}
+          <div class="stk-num" style="grid-area:issued;color:${p.issdPeriod>0?'var(--txt-muted)':'var(--bdr-strong)'}">
+            <span class="stk-num-lbl">Issued</span>${p.issdPeriod > 0 ? p.issdPeriod : '—'}
           </div>
-          <div style="text-align:right;font-size:14px;font-weight:800;color:${availColor}">${p.available}</div>
+          <div class="stk-num" style="grid-area:avail;font-size:14px;font-weight:800;color:${availColor}">
+            <span class="stk-num-lbl">Avail</span>${p.available}
+          </div>
         </button>
         ${expanded ? `<div style="padding:0 0 10px">${lotRows}</div>` : ''}
       </div>`;
@@ -1463,12 +1464,14 @@ function renderRouteCards() {
     { v: 'all', l: 'All Status' },
     { v: 'store_issued', l: 'Store Issued' },
     { v: 'soft_wip', l: 'Soft WIP' },
-    { v: 'ht_pending', l: 'HT Pending' },
-    { v: 'ht_wip', l: 'HT In Progress' },
+    { v: 'soft_done', l: 'Soft Done' },
+    { v: 'ht_queue', l: 'HT Queue' },
+    { v: 'ht_done', l: 'HT Done' },
     { v: 'hard_wip', l: 'Hard WIP' },
     { v: 'qc_pending', l: 'QC Pending' },
     { v: 'qc_cleared', l: 'QC Cleared' },
     { v: 'dispatched', l: 'Dispatched' },
+    { v: 'scrapped', l: 'Scrapped' },
   ];
 
   const q = searchQ.trim().toLowerCase();

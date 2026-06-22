@@ -245,9 +245,10 @@ function renderPipelinePanel(pipeline, totalActive) {
       : '';
 
     return `
-      <div class="ps-row" onclick="toggleExpand('${detId}','${chevId}')">
+      <div class="ps-row" role="button" tabindex="0" aria-expanded="false" aria-controls="${detId}"
+        onclick="toggleExpand('${detId}','${chevId}')" onkeydown="onRowKey(event,()=>toggleExpand('${detId}','${chevId}'))">
         <span class="ps-label">${p.label}</span>
-        <div class="ps-bar-wrap"><div class="ps-bar ps-bar-${p.color}" style="width:${pct}%"></div></div>
+        <div class="ps-bar-wrap"><div class="ps-bar ps-bar-${p.color}" style="transform:scaleX(${(pct/100).toFixed(4)})"></div></div>
         <span class="ps-count${count === 0 ? ' zero' : ''}">${count}</span>
         <i class="ti ti-chevron-down ps-chev" id="${chevId}" aria-hidden="true"></i>
       </div>
@@ -285,7 +286,8 @@ function renderTodayPanel(dispatches, qcCleared, htDone, softDone) {
         <span class="home-panel-title">Today &middot; ${today}</span>
       </div>
 
-      <div class="act-row" onclick="toggleExpand('td-disp','td-disp-c')">
+      <div class="act-row" role="button" tabindex="0" aria-expanded="false" aria-controls="td-disp"
+        onclick="toggleExpand('td-disp','td-disp-c')" onkeydown="onRowKey(event,()=>toggleExpand('td-disp','td-disp-c'))">
         <div class="act-icon ok"><i class="ti ti-truck" aria-hidden="true"></i></div>
         <div class="act-body">
           <a href="dispatch.html" class="act-label" onclick="event.stopPropagation()">Dispatches</a>
@@ -368,7 +370,8 @@ function renderAlertsPanel(breakdowns, requisitions, spares) {
       : '');
 
   const bdBlock = breakdowns.length > 0 ? `
-    <div class="alert-block err" onclick="toggleExpand('al-bd','al-bd-c')">
+    <div class="alert-block err" role="button" tabindex="0" aria-expanded="false" aria-controls="al-bd"
+      onclick="toggleExpand('al-bd','al-bd-c')" onkeydown="onRowKey(event,()=>toggleExpand('al-bd','al-bd-c'))">
       <div class="alert-hd">
         <i class="ti ti-alert-triangle" aria-hidden="true"></i>
         <a href="maintenance.html" class="alert-title" onclick="event.stopPropagation()">Open Breakdowns</a>
@@ -384,7 +387,8 @@ function renderAlertsPanel(breakdowns, requisitions, spares) {
     </div>`;
 
   const apprBlock = pendingAll.length > 0 ? `
-    <div class="alert-block warn" onclick="toggleExpand('al-ap','al-ap-c')">
+    <div class="alert-block warn" role="button" tabindex="0" aria-expanded="false" aria-controls="al-ap"
+      onclick="toggleExpand('al-ap','al-ap-c')" onkeydown="onRowKey(event,()=>toggleExpand('al-ap','al-ap-c'))">
       <div class="alert-hd">
         <i class="ti ti-clock-exclamation" aria-hidden="true"></i>
         <a href="approvals.html" class="alert-title" onclick="event.stopPropagation()">Pending Approvals</a>
@@ -465,6 +469,7 @@ function renderOperatorDashboard() {
 function toggleExpand(detailId, chevId) {
   const detail = document.getElementById(detailId);
   const chev   = document.getElementById(chevId);
+  const trigger = document.querySelector(`[aria-controls="${detailId}"]`);
   if (!detail) return;
   const opening = detail.hasAttribute('hidden');
   if (opening) {
@@ -474,6 +479,7 @@ function toggleExpand(detailId, chevId) {
     detail.setAttribute('hidden', '');
     if (chev) { chev.classList.remove('ti-chevron-up'); chev.classList.add('ti-chevron-down'); }
   }
+  if (trigger) trigger.setAttribute('aria-expanded', String(opening));
 }
 
 /* ══ BOOT ════════════════════════════════════════════════════════════ */

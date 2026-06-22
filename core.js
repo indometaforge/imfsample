@@ -328,13 +328,20 @@ function toast(msg, duration = 2800) {
 /* ══════════════════════════════════════════════════════════════════════
    MODAL
    ══════════════════════════════════════════════════════════════════════ */
+let _modalLastFocus = null;
 function openModal(html) {
   const cont = document.getElementById('modal-content');
   const mov  = document.getElementById('modal-overlay');
   if (!cont || !mov) return;
   cont.innerHTML = '<div class="modal-handle"></div>' + html;
+  cont.setAttribute('role', 'dialog');
+  cont.setAttribute('aria-modal', 'true');
+  cont.setAttribute('tabindex', '-1');
   mov.classList.add('open');
   document.body.style.overflow = 'hidden';
+  _modalLastFocus = document.activeElement;
+  const focusable = cont.querySelector('input, select, textarea, button, [href], [tabindex]:not([tabindex="-1"])');
+  (focusable || cont).focus({ preventScroll: true });
 }
 
 function closeModal() {
@@ -342,6 +349,13 @@ function closeModal() {
   if (!mov) return;
   mov.classList.remove('open');
   document.body.style.overflow = '';
+  if (_modalLastFocus && typeof _modalLastFocus.focus === 'function') _modalLastFocus.focus();
+  _modalLastFocus = null;
+}
+
+/* Keyboard activation for role="button" custom interactive rows (Enter/Space) */
+function onRowKey(e, fn) {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -371,13 +385,17 @@ function initSidebar() {
   const menuBtn  = document.getElementById('topbar-menu-btn');
 
   if (menuBtn && sidebar && overlay) {
+    menuBtn.setAttribute('aria-controls', 'sidebar');
+    menuBtn.setAttribute('aria-expanded', 'false');
     menuBtn.addEventListener('click', () => {
-      sidebar.classList.toggle('open');
+      const isOpen = sidebar.classList.toggle('open');
       overlay.classList.toggle('on');
+      menuBtn.setAttribute('aria-expanded', String(isOpen));
     });
     overlay.addEventListener('click', () => {
       sidebar.classList.remove('open');
       overlay.classList.remove('on');
+      menuBtn.setAttribute('aria-expanded', 'false');
     });
   }
 
@@ -871,6 +889,18 @@ document.addEventListener('click', (e) => {
 /* Keyboard shortcuts: Escape closes modal, Enter submits it */
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { closeModal(); return; }
+
+  if (e.key === 'Tab') {
+    const overlay = document.getElementById('modal-overlay');
+    const cont = document.getElementById('modal-content');
+    if (!overlay || !overlay.classList.contains('open') || !cont) return;
+    const focusables = cont.querySelectorAll('input, select, textarea, button, [href], [tabindex]:not([tabindex="-1"])');
+    if (!focusables.length) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    return;
+  }
 
   if (e.key === 'Enter') {
     /* Only fire when a modal is open and focus is NOT on textarea/select/button */

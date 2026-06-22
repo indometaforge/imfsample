@@ -48,6 +48,7 @@ let _setupCard             = null;
 let _setupTagId            = '';
 let _setupStage            = '';
 let _setupDeviationCleared = false; // set to true after plant-head deviation request confirmed
+let _setupDeviationId      = null;  // id of the setupDeviations doc just filed — gates the setupApprovals doc behind Plant Head approval
 let _seqResolveState       = null;  // in-flight "verify prior op done this shift" flow state
 
 // Requisition state
@@ -357,7 +358,7 @@ function renderActualEntry() {
     .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
 
   const stageLabel = _actStage === 'soft' ? 'Soft Stage' : 'Hard Stage';
-  const shiftOpts = Object.entries(S.shifts || { A:{label:'Shift A'}, B:{label:'Shift B'}, C:{label:'Shift C'} })
+  const shiftOpts = Object.entries(S.shifts || { s1:{label:'Shift 1'}, s2:{label:'Shift 2'}, s3:{label:'Shift 3'} })
     .map(([k, v]) => `<option value="${k}" ${_actShift === k ? 'selected' : ''}>${v.label || k}</option>`).join('');
   const supervisorOpts = (S.users || [])
     .filter(u => ['supervisor','hod','admin'].includes(u.role))
@@ -382,8 +383,8 @@ function renderActualEntry() {
     let statusLabel = 'Tap to log';
     let statusIcon  = '';
     if (isBreakdown) { statusColor = 'var(--warn)'; statusLabel = 'Breakdown'; statusIcon = '<i class="ti ti-alert-triangle"></i> '; }
-    else if (md?.used === true)  { statusColor = 'var(--ok)'; statusLabel = `${runsCount} run${runsCount!==1?'s':''} · ${totalProcessed} pcs`; }
-    else if (md?.used === false && md?.idleReason) { statusColor = 'var(--bdr-mid)'; statusLabel = `Idle: ${md.idleReason.split(' ')[0]}...`; }
+    else if (md?.used === true)  { statusColor = 'var(--ok)'; statusLabel = `${runsCount} run${runsCount!==1?'s':''} · ${totalProcessed} pcs`; statusIcon = '<i class="ti ti-check"></i> '; }
+    else if (md?.used === false && md?.idleReason) { statusColor = 'var(--bdr-mid)'; statusLabel = `Idle: ${md.idleReason.split(' ')[0]}...`; statusIcon = '<i class="ti ti-player-pause"></i> '; }
 
     const saveStatus = _autoSaveStatus[m.id];
     const saveLbl = saveStatus === 'saving' ? '<i class="ti ti-loader-2"></i> Saving...'
@@ -462,9 +463,9 @@ function renderActualEntry() {
       <div class="action-bar-sticky">
         ${isEditingThis ? `<button class="btn btn-s btn-full" onclick="cancelEditReport()">
           <i class="ti ti-x"></i> Cancel — Discard Changes
-        </button>` : `<button class="btn btn-s btn-full" style="border-color:var(--warn);color:var(--warn)" onclick="sampleFillActuals()">
+        </button>` : (TEST_MODE ? `<button class="btn btn-s btn-full" style="border-color:var(--warn);color:var(--warn)" onclick="sampleFillActuals()">
           <i class="ti ti-wand"></i> Sample Fill (Testing)
-        </button>`}
+        </button>` : '')}
         <button class="btn btn-p btn-full" onclick="finalizeShift()">
           <i class="ti ti-check"></i> ${isEditingThis ? 'Save Changes' : 'Finalize Shift'}
         </button>
@@ -896,31 +897,52 @@ async function runFetchTag() {
       return;
     }
 
-    // Sequence check
     const partOpsForStage = (S.partOps || [])
       .filter(po => po.partId === card.partId && po.workCenterType === _actStage)
       .sort((a, b) => (a.seqNo || 0) - (b.seqNo || 0));
     const completedOpIds = (card.opHistory || []).filter(h => h.stage === _actStage).map(h => h.opId);
-    const nextOp = partOpsForStage.find(po => !completedOpIds.includes(po.opId));
 
+    // Prefer the operation actually approved via Setup for THIS exact TAG +
+    // machine + date/shift — that's the ground truth of what was physically
+    // run. Falling back to "next incomplete op in sequence" breaks the
+    // moment a deviation-approved run jumps ahead of a step that's still
+    // missing from opHistory: it would silently attribute the run to the
+    // skipped, non-final op instead of the one actually performed (and the
+    // route card would never reach *_done). S.setupApprovals is loaded
+    // orderBy('createdAt','desc'), so [0] after filtering is the most recent.
+    const approvedSetupsForTag = (S.setupApprovals || []).filter(sa =>
+      sa.tagId === tagId && sa.machineId === _runMachId &&
+      sa.date === _actDate && sa.shift === _actShift && sa.status === 'approved'
+    );
+    const matchedSetup = approvedSetupsForTag[0];
+
+    let nextOp;
     let deviationHtml = '';
-    if (nextOp && partOpsForStage.length > 1) {
-      const nextIdx = partOpsForStage.findIndex(po => po.opId === nextOp.opId);
-      if (nextIdx > 0) {
-        const prevRequired = partOpsForStage[nextIdx - 1];
-        if (!completedOpIds.includes(prevRequired.opId)) {
-          const prevOpName = (S.operations || []).find(o => o.id === prevRequired.opId)?.name || 'Previous Op';
-          deviationHtml = `
-            <div class="wbox" style="flex-direction:column;align-items:stretch">
-              <div style="font-weight:700;font-size:12px"><i class="ti ti-alert-triangle"></i> Sequence Deviation Detected</div>
-              <div style="font-size:11px;margin-top:2px">
-                Previous operation "<strong>${prevOpName}</strong>" (seq ${prevRequired.seqNo}) has no completion on this TAG.
-              </div>
-              <button class="btn btn-warn btn-sm btn-full" style="margin-top:8px"
-                onclick="showDeviationConfirmModal('${tagId}','${prevOpName}',${prevRequired.seqNo})">
-                Request Sequence Deviation Approval
-              </button>
-            </div>`;
+    if (matchedSetup) {
+      nextOp = partOpsForStage.find(po => po.opId === matchedSetup.opId) || { opId: matchedSetup.opId, seqNo: 0 };
+      // No deviation banner here — if this setup required a deviation, it
+      // already went through Plant Head approval before it could be
+      // approved at all (see confirmRequestDeviation / approveDeviation).
+    } else {
+      nextOp = partOpsForStage.find(po => !completedOpIds.includes(po.opId));
+      if (nextOp && partOpsForStage.length > 1) {
+        const nextIdx = partOpsForStage.findIndex(po => po.opId === nextOp.opId);
+        if (nextIdx > 0) {
+          const prevRequired = partOpsForStage[nextIdx - 1];
+          if (!completedOpIds.includes(prevRequired.opId)) {
+            const prevOpName = (S.operations || []).find(o => o.id === prevRequired.opId)?.name || 'Previous Op';
+            deviationHtml = `
+              <div class="wbox" style="flex-direction:column;align-items:stretch">
+                <div style="font-weight:700;font-size:12px"><i class="ti ti-alert-triangle"></i> Sequence Deviation Detected</div>
+                <div style="font-size:11px;margin-top:2px">
+                  Previous operation "<strong>${prevOpName}</strong>" (seq ${prevRequired.seqNo}) has no completion on this TAG.
+                </div>
+                <button class="btn btn-warn btn-sm btn-full" style="margin-top:8px"
+                  onclick="showDeviationConfirmModal('${tagId}','${prevOpName}',${prevRequired.seqNo})">
+                  Request Sequence Deviation Approval
+                </button>
+              </div>`;
+          }
         }
       }
     }
@@ -1051,13 +1073,46 @@ function sampleFillActuals() {
 }
 
 /* — Finalize Shift — */
-async function finalizeShift() {
+function finalizeShift() {
   if (!_actShift) { toast('Select a shift'); return; }
   if (!_actSupervisor) {
     _actSupervisor = document.getElementById('act-sup')?.value || '';
   }
   if (!_actSupervisor) { toast('Select a supervisor'); return; }
 
+  if (_editingReportId) { _doFinalizeShift(); return; }
+
+  const machines = (S.machines || []).filter(m => m.stage === _actStage && m.active !== false);
+  let totalProcessed = 0, machinesUsed = 0;
+  machines.forEach(m => {
+    const md = _machineData[m.id];
+    if (!md || !md.used) return;
+    machinesUsed++;
+    totalProcessed += (md.runs || []).reduce((s, r) => s + (+r.processed || 0), 0);
+  });
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <div style="text-align:center;margin-bottom:12px">
+      <div style="width:56px;height:56px;border-radius:28px;background:var(--imf-navy-muted);border:2px solid var(--imf-navy);display:inline-flex;align-items:center;justify-content:center;font-size:26px;color:var(--imf-navy)"><i class="ti ti-check"></i></div>
+    </div>
+    <div class="mtit" style="justify-content:center">Finalize Shift?</div>
+    <p style="font-size:13px;color:var(--txt-muted);text-align:center;margin-bottom:12px">
+      This locks the shift report and updates Route Card statuses. It cannot be undone from this screen.
+    </p>
+    <div class="wbox" style="flex-direction:column;align-items:stretch;font-size:13px">
+      <div><strong>Machines used:</strong> ${machinesUsed} of ${machines.length}</div>
+      <div style="margin-top:4px"><strong>Total processed:</strong> ${totalProcessed} pcs</div>
+      <div style="margin-top:4px"><strong>Shift:</strong> ${_actDate} · ${_actShift}</div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel — Go Back</button>
+      <button class="btn btn-p" style="flex:1" onclick="closeModal();_doFinalizeShift()">Yes, Finalize</button>
+    </div>
+  `);
+}
+
+async function _doFinalizeShift() {
   // If saving an edit of an existing report, reverse the OLD report first
   // (strip its route-card effects + delete it) so the corrected one replaces it
   // cleanly with no double-posting. Done before writing the new report.
@@ -1775,7 +1830,9 @@ function buildSetupLogHtml() {
 }
 
 function setupLogRow(sa, canDelete) {
-  const statusColor = sa.status === 'approved' ? 'var(--ok)' : sa.status === 'rejected' ? 'var(--err)' : 'var(--warn)';
+  const statusColor = sa.status === 'approved' ? 'var(--ok)' : sa.status === 'rejected' ? 'var(--err)'
+    : sa.status === 'awaiting_deviation' ? 'var(--imf-steel)' : 'var(--warn)';
+  const statusLabel = sa.status === 'awaiting_deviation' ? 'Awaiting Deviation' : sa.status;
   return `
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;
                 padding:10px 0;border-bottom:1px solid var(--bdr)">
@@ -1791,7 +1848,7 @@ function setupLogRow(sa, canDelete) {
       </div>
       <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
         <span style="font-size:10px;font-weight:700;background:${statusColor};color:#fff;
-                     border-radius:4px;padding:3px 8px;text-transform:uppercase">${sa.status}</span>
+                     border-radius:4px;padding:3px 8px;text-transform:uppercase">${statusLabel}</span>
         ${canDelete ? `
         <button class="btn btn-ic" style="background:var(--err);border-color:var(--err);color:#fff;width:36px;height:36px"
           onclick="confirmDeleteSetup('${sa.id}')" aria-label="Delete setup log">
@@ -1957,10 +2014,11 @@ async function setupFetchTag() {
       }
     }
 
-    const opOpts = partOpsForStage.map(po => {
-      const o = (S.operations || []).find(x => x.id === po.opId);
-      return `<option value="${po.opId}" ${nextOp && nextOp.opId === po.opId ? 'selected' : ''}>${o ? o.name : '?'} (seq ${po.seqNo})</option>`;
-    }).join('');
+    // Setup is locked to the next operation in sequence — same pattern as
+    // the Add Run screen. Out-of-order setup goes through the deviation
+    // banner/approval below, not a free pick from the full op list.
+    const nextOpIdx  = nextOp ? partOpsForStage.findIndex(po => po.opId === nextOp.opId) : -1;
+    const nextOpName = nextOp ? ((S.operations || []).find(o => o.id === nextOp.opId)?.name || '—') : '';
 
     if (infoDiv) infoDiv.innerHTML = `
       ${seqWarningHtml}
@@ -1981,8 +2039,15 @@ async function setupFetchTag() {
         <div class="card">
           <div class="card-hd">Setup Details</div>
           <div class="f">
-            <label>Operation *</label>
-            <select id="setup-op-sel">${opOpts || `<option value="">No operations defined for this part/${_setupStage}</option>`}</select>
+            <label>Operation</label>
+            <div class="sbox" style="font-size:13px;font-weight:600">
+              ${nextOp
+                ? `${nextOpName} <span class="bdg bdg-n" style="margin-left:6px">Step ${nextOpIdx + 1} of ${partOpsForStage.length}</span>`
+                : partOpsForStage.length
+                  ? `All ${_setupStage} operations already completed on this TAG`
+                  : `No operations defined for this part/${_setupStage}`}
+            </div>
+            <input type="hidden" id="setup-op-sel" value="${nextOp?.opId || ''}">
           </div>
           <div class="f">
             <label>Setup Time (minutes) *</label>
@@ -2033,7 +2098,7 @@ function showDeviationConfirmModal(tagId, missingOpName, missingSeqNo) {
 
 async function confirmRequestDeviation(tagId, missingOpName, missingSeqNo) {
   try {
-    await db.collection('setupDeviations').add({
+    const ref = await db.collection('setupDeviations').add({
       tagId, missingOpName, missingSeqNo,
       requestedBy:     S.sess.userId,
       requestedByName: S.sess.name,
@@ -2044,8 +2109,13 @@ async function confirmRequestDeviation(tagId, missingOpName, missingSeqNo) {
     });
     await logAudit('seq_deviation_request', 'production', tagId, null, { missingOpName, missingSeqNo });
     toast('Deviation request sent to Plant Head ✓ — submitting setup…');
-    // Allow the setup to proceed now that the deviation has been formally requested
+    // Allow the setup to proceed now that the deviation has been formally
+    // requested — but it must NOT go to QC yet. submitSetupLog() checks
+    // _setupDeviationId and holds the setup at status 'awaiting_deviation'
+    // until the Plant Head approves/rejects this deviation (see approvals.js
+    // approveDeviation/rejectDeviation, which cascade onto the linked setup).
     _setupDeviationCleared = true;
+    _setupDeviationId = ref.id;
     await submitSetupLog();
   } catch (e) { toast('Error: ' + e.message); }
 }
@@ -2332,13 +2402,19 @@ async function submitSetupLog() {
     toast(existing.status === 'approved'
       ? 'This exact setup (same machine, part, operation, operator & shift) is already approved ✓'
       : 'A pending setup for this exact machine, part, operation & shift already exists');
-    _setupCard = null; _setupTagId = ''; _setupStage = '';
+    _setupCard = null; _setupTagId = ''; _setupStage = ''; _setupDeviationId = null;
     switchTab('setup');
     return;
   }
 
   const btn = document.querySelector('#setup-form .btn-p');
   if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
+
+  // A deviation request gates QC approval: hold the setup at
+  // 'awaiting_deviation' (invisible to QC's pending queue) until the Plant
+  // Head approves the linked setupDeviations doc. Reject there → this setup
+  // is rejected too and never reaches QC.
+  const deviationId = _setupDeviationId;
 
   try {
     const ref = await db.collection('setupApprovals').add({
@@ -2356,16 +2432,23 @@ async function submitSetupLog() {
       setupMins:       mins,
       operatorId:      operId, operatorName: operName,
       shift, date, remarks,
-      status:          'pending',
+      status:          deviationId ? 'awaiting_deviation' : 'pending',
+      deviationId:     deviationId || null,
       requestedBy:     S.sess.userId,
       requestedByName: S.sess.name,
       createdAt:       serverTS(),
     });
 
-    S.setupApprovals.unshift({ id: ref.id, tagId: _setupTagId, machineId: machId, stage: resolvedStage, date, status: 'pending' });
-    toast('Setup logged ✓ — sent to QC for approval');
-    await logAudit('setup_log', 'production', _setupTagId, null, { machineId: machId, opId: opId_val, mins });
-    _setupCard = null; _setupTagId = ''; _setupStage = ''; _setupDeviationCleared = false;
+    if (deviationId) {
+      await db.collection('setupDeviations').doc(deviationId).update({ setupApprovalId: ref.id });
+    }
+
+    S.setupApprovals.unshift({ id: ref.id, tagId: _setupTagId, machineId: machId, stage: resolvedStage, date, status: deviationId ? 'awaiting_deviation' : 'pending' });
+    toast(deviationId
+      ? 'Setup logged ✓ — held for Plant Head deviation approval before QC review'
+      : 'Setup logged ✓ — sent to QC for approval');
+    await logAudit('setup_log', 'production', _setupTagId, null, { machineId: machId, opId: opId_val, mins, deviationId: deviationId || null });
+    _setupCard = null; _setupTagId = ''; _setupStage = ''; _setupDeviationCleared = false; _setupDeviationId = null;
     switchTab('hub');
   } catch (e) {
     toast('Error: ' + e.message);
@@ -2432,7 +2515,7 @@ function openLogBreakdownModal() {
     ...allMachines.filter(m => m.stage !== 'soft' && m.stage !== 'hard').map(m => `<option value="${m.id}|${m.name}">${m.name}</option>`),
   ].join('');
 
-  const shiftOpts = Object.entries(S.shifts || { A: { label: 'Shift A' }, B: { label: 'Shift B' }, C: { label: 'Shift C' } })
+  const shiftOpts = Object.entries(S.shifts || { s1:{label:'Shift 1'}, s2:{label:'Shift 2'}, s3:{label:'Shift 3'} })
     .map(([k, v]) => `<option value="${k}">${v.label || k}</option>`).join('');
 
   const now = new Date();
@@ -2759,7 +2842,7 @@ async function _doCancelReq(id) {
 function buildReportsHtml() {
   const shiftOpts = [
     `<option value="">All Shifts</option>`,
-    ...Object.entries(S.shifts || { A:{label:'Shift A'}, B:{label:'Shift B'}, C:{label:'Shift C'} })
+    ...Object.entries(S.shifts || { s1:{label:'Shift 1'}, s2:{label:'Shift 2'}, s3:{label:'Shift 3'} })
       .map(([k, v]) => `<option value="${k}" ${_repShift === k ? 'selected' : ''}>${v.label || k}</option>`)
   ].join('');
 

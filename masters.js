@@ -427,7 +427,7 @@ function partRow(p) {
         <button class="btn btn-s btn-sm ${isExpanded ? 'tab active' : ''}" onclick="toggleRouting('${p.id}')" title="Operations Routing">
           <i class="ti ti-list-details" aria-hidden="true"></i> Routing
         </button>
-        <button class="btn btn-s btn-sm" onclick="openPartModal('${p.id}')" title="Edit Part">
+        <button class="btn btn-s btn-sm" onclick="openPartModal('${p.id}')" title="Edit Part" aria-label="Edit Part">
           <i class="ti ti-edit" aria-hidden="true"></i>
         </button>
       </div>
@@ -576,20 +576,15 @@ function openRoutingModal(partId, poId) {
   const siblings = S.partOps
     .filter(x => x.partId === partId && x.id !== poId)
     .sort((a, b) => (a.seqNo || 0) - (b.seqNo || 0));
-  const siblingSeqs = siblings.map(x => x.seqNo || 0);
-  const autoSeq = siblingSeqs.length ? Math.max(...siblingSeqs) + 10 : 10;
   const isAdd = !po;
-  const stepNum = isAdd ? siblings.length + 1 : (siblings.filter(s => (s.seqNo || 0) < (po.seqNo || 0)).length + 1);
-  const totalSteps = siblings.length + (isAdd ? 1 : 0);
+  const totalSteps = siblings.length + 1;
+  const stepNum = isAdd ? totalSteps : (siblings.filter(s => (s.seqNo || 0) < (po.seqNo || 0)).length + 1);
   const opOpts = S.operations.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const cycleVal = po?.cycleTimeSecs ?? '';
 
-  // Build reorder options for edit mode (swap positions with siblings)
-  const reorderOpts = isAdd ? '' : siblings.map((s, i) => {
-    const op = S.operations.find(o => o.id === s.opId);
-    const pos = i + 1;
-    return `<option value="${s.seqNo}" ${pos === stepNum - 1 ? 'selected' : ''}>Step ${pos} — before ${op?.name || s.opId}</option>`;
-  }).join('');
+  const stepOpts = Array.from({ length: totalSteps }, (_, i) => i + 1)
+    .map(p => `<option value="${p}" ${p === stepNum ? 'selected' : ''}>Step ${p} of ${totalSteps}</option>`)
+    .join('');
 
   openModal(`
     <div class="modal-title">${isAdd ? 'Add Operation to Routing' : 'Edit Routing Step'}</div>
@@ -603,21 +598,12 @@ function openRoutingModal(partId, poId) {
       </select>
     </div>
 
-    ${isAdd
-      ? `<div class="ibox" style="margin-bottom:4px;font-size:12.5px">
-           <i class="ti ti-sort-ascending-numbers"></i>
-           Step position: <strong>Step ${stepNum} of ${totalSteps}</strong> — assigned automatically
-           <input type="hidden" id="rf-seq" value="${autoSeq}">
-         </div>`
-      : `<div class="f">
-           <label for="rf-seq-reorder">Step Order</label>
-           <select id="rf-seq-reorder" onchange="document.getElementById('rf-seq').value=this.value">
-             <option value="${po.seqNo}">Keep at Step ${stepNum} of ${totalSteps} (current)</option>
-             ${reorderOpts}
-             <option value="${Math.max(...[...siblingSeqs, po.seqNo]) + 10}">Move to last</option>
-           </select>
-           <input type="hidden" id="rf-seq" value="${po.seqNo}">
-         </div>`}
+    <div class="f">
+      <label for="rf-step">Step Position</label>
+      <select id="rf-step">
+        ${stepOpts}
+      </select>
+    </div>
 
     <div class="f">
       <label for="rf-wc" class="f-req">Work Center</label>
@@ -690,27 +676,49 @@ function checkFinalOpWarning(partId, poId, checked) {
 
 async function saveRouting(partId, poId) {
   const opId            = document.getElementById('rf-op').value;
-  const seqNo           = Number(getField('rf-seq'));
+  const stepPos         = Number(document.getElementById('rf-step').value);
   const workCenterType  = document.getElementById('rf-wc').value;
   const cycleTimeSecs   = Number(getField('rf-cycle'));
   const isMandatory     = document.getElementById('rf-mand').checked;
   const finalOperation  = document.getElementById('rf-final').checked;
 
-  if (!opId || !seqNo || !workCenterType || !cycleTimeSecs) {
-    showModalError('Operation, Sequence No., Work Center and Cycle Time are required.');
+  if (!opId || !stepPos || !workCenterType || !cycleTimeSecs) {
+    showModalError('Operation, Step Position, Work Center and Cycle Time are required.');
     return;
   }
 
-  const data = { partId, opId, seqNo, workCenterType, cycleTimeSecs, isMandatory, finalOperation };
+  const data = { partId, opId, workCenterType, cycleTimeSecs, isMandatory, finalOperation };
+
   try {
+    // Renumber every step for this part cleanly (10, 20, 30...) on each save,
+    // instead of inserting a single fractional seqNo between neighbours.
+    // Repeated fractional inserts drift/collide over time and desync the
+    // displayed step number from the stored order — full renumber can't drift.
+    const siblings = S.partOps
+      .filter(x => x.partId === partId && x.id !== poId)
+      .sort((a, b) => (a.seqNo || 0) - (b.seqNo || 0));
+    const ordered = siblings.slice();
+    ordered.splice(stepPos - 1, 0, { _self: true });
+
+    const batch = db.batch();
+    ordered.forEach((entry, idx) => {
+      const seqNo = (idx + 1) * 10;
+      if (entry._self) {
+        data.seqNo = seqNo;
+      } else if ((entry.seqNo || 0) !== seqNo) {
+        batch.update(db.collection('partOps').doc(entry.id), { seqNo });
+      }
+    });
+
     if (poId) {
       const before = S.partOps.find(x => x.id === poId);
-      await db.collection('partOps').doc(poId).update(data);
+      batch.update(db.collection('partOps').doc(poId), data);
+      await batch.commit();
       await logAudit('UPDATE_PART_OP', 'MASTERS', poId, before, data);
     } else {
-      const ref = await db.collection('partOps').add({
-        ...data, createdAt: serverTS(), createdBy: S.sess.userId
-      });
+      const ref = db.collection('partOps').doc();
+      batch.set(ref, { ...data, createdAt: serverTS(), createdBy: S.sess.userId });
+      await batch.commit();
       await logAudit('CREATE_PART_OP', 'MASTERS', ref.id, null, data);
     }
     closeModal();
@@ -989,8 +997,7 @@ function openMergeModal(deleteId) {
     </div>
     <div style="display:flex;gap:8px;margin-top:4px">
       <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
-      <button class="btn" style="flex:1;background:var(--err);color:#fff;border-color:var(--err)"
-        onclick="confirmMergeCustomer('${deleteId}')">Merge &amp; Delete</button>
+      <button class="btn btn-d" style="flex:1" onclick="confirmMergeCustomer('${deleteId}')">Merge &amp; Delete</button>
     </div>
   `);
 }
@@ -1409,8 +1416,10 @@ function openUserAccessModal(id) {
         </select>
       </div>
     </div>
-    <div class="f">
-      <label>Permissions</label>
+    <div class="card" style="margin:14px 0;padding:12px">
+      <div style="font-size:11px;font-weight:800;color:var(--txt-muted);letter-spacing:.06em;border-bottom:1px solid var(--bdr);padding-bottom:8px;margin-bottom:10px">
+        PERMISSIONS
+      </div>
       <div class="row-2">
         <div class="f">
           <label for="uf-perm-plan" style="font-size:11px">Plans</label>
@@ -1421,7 +1430,7 @@ function openUserAccessModal(id) {
           <select id="uf-perm-actual">${buildOpts(PERM_LEVELS, 'v', x => x.l, perms.actual || 'full')}</select>
         </div>
       </div>
-      <div class="f">
+      <div class="f" style="margin-bottom:0">
         <label for="uf-perm-reports" style="font-size:11px">Reports</label>
         <select id="uf-perm-reports">${buildOpts(PERM_LEVELS, 'v', x => x.l, perms.reports || 'full')}</select>
       </div>

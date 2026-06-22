@@ -296,19 +296,19 @@ function renderInspectResult() {
       <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:10px">DISPOSITION</div>
       <div class="row-3" style="margin-bottom:10px">
         <div class="f">
-          <label style="color:var(--err)">Scrap</label>
+          <label style="color:var(--err)"><i class="ti ti-alert-triangle" aria-hidden="true"></i> Scrap</label>
           <input type="number" id="qc-scrap" min="0" max="${total}" value="0"
             oninput="qcUpdateBalance()"
             style="font-size:20px;font-weight:900;text-align:center;color:var(--err);padding:10px 6px">
         </div>
         <div class="f">
-          <label style="color:var(--warn)">Rework</label>
+          <label style="color:var(--warn)"><i class="ti ti-refresh" aria-hidden="true"></i> Rework</label>
           <input type="number" id="qc-rework" min="0" max="${total}" value="0"
             oninput="qcUpdateBalance()"
             style="font-size:20px;font-weight:900;text-align:center;color:var(--warn);padding:10px 6px">
         </div>
         <div class="f">
-          <label style="color:var(--ok)">OK</label>
+          <label style="color:var(--ok)"><i class="ti ti-check" aria-hidden="true"></i> OK</label>
           <div id="qc-ok-display"
             style="padding:10px 6px;background:var(--ok-bg);border:1.5px solid var(--ok-bdr);border-radius:var(--rxs);
                    font-size:20px;font-weight:900;text-align:center;color:var(--ok);line-height:1.2">
@@ -673,7 +673,7 @@ function iqcPendingCard(r) {
   const parts = r.parts || [];
   const totalPcs = parts.reduce((s, p) => s + (+p.qty || 0), 0);
   return `
-    <div class="card" style="margin-bottom:10px;border-left:3px solid var(--warn)">
+    <div class="card" style="margin-bottom:10px;border:1.5px solid var(--warn)">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:10px">
         <div>
           <div style="font-weight:700;font-size:14px">${r.supplierName || '—'}</div>
@@ -775,6 +775,7 @@ function openIQCModal(inwId, preselect) {
 }
 
 async function saveIQC(inwId) {
+  if (!navigator.onLine) { toast('Offline — QC writes require a live connection'); return; }
   const decision = document.querySelector('input[name="iqc-decision"]:checked')?.value;
   if (!decision) { showModalError('Select a decision — Accept, Conditional, or Reject'); return; }
   const notes = getField('iqc-notes');
@@ -810,7 +811,10 @@ function renderSetupApprovals() {
   if (!el) return;
 
   const pending = S_QC.setupApprovals.filter(s => s.status === 'pending');
-  const history = S_QC.setupApprovals.filter(s => s.status !== 'pending');
+  // 'awaiting_deviation' setups are neither pending QC review nor decided yet
+  // — they're held behind a Plant Head deviation decision (see approvals.js)
+  // and must not show up here at all, let alone be mislabeled as rejected.
+  const history = S_QC.setupApprovals.filter(s => s.status === 'approved' || s.status === 'rejected');
 
   el.innerHTML = `
     <!-- Header -->
@@ -858,7 +862,7 @@ function qcSetupCard(s) {
   const stageLbl = s.stage === 'soft' ? 'Soft Machining' : s.stage === 'hard' ? 'Hard Machining' : (s.stage || '—');
 
   return `
-    <div class="card" style="margin-bottom:10px;border-left:3px solid var(--warn)">
+    <div class="card" style="margin-bottom:10px;border:1.5px solid var(--warn)">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div style="flex:1;min-width:0">
           <div style="font-weight:800;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
@@ -915,7 +919,7 @@ function qcSetupHistCard(s) {
   const statusLbl  = isApproved ? 'Approved' : 'Rejected';
 
   return `
-    <div class="card" style="margin-bottom:8px;border-left:3px solid ${statusCol}">
+    <div class="card" style="margin-bottom:8px;border:1.5px solid ${statusCol}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
         <div style="flex:1;min-width:0">
           <div style="font-size:13px;font-weight:800">${s.partName || '—'}
@@ -985,6 +989,7 @@ async function deleteSetupQC(id) {
 }
 
 async function qcApproveSetup(id) {
+  if (!navigator.onLine) { toast('Offline — QC writes require a live connection'); return; }
   const s   = S_QC.setupApprovals.find(x => x.id === id);
   if (!s) return;
   const rmk = (document.getElementById(`qcsa-rmk-${id}`)?.value || '').trim();
@@ -1003,6 +1008,7 @@ async function qcApproveSetup(id) {
 }
 
 async function qcRejectSetup(id) {
+  if (!navigator.onLine) { toast('Offline — QC writes require a live connection'); return; }
   const s   = S_QC.setupApprovals.find(x => x.id === id);
   if (!s) return;
   const rmk = (document.getElementById(`qcsa-rmk-${id}`)?.value || '').trim();
@@ -1072,7 +1078,7 @@ function inspRow(r) {
   const bdrCol = scr > 0 ? 'var(--err)' : rwk > 0 ? 'var(--warn)' : 'var(--ok)';
 
   return `
-    <div class="card" style="margin-bottom:10px;border-left:3px solid ${bdrCol}">
+    <div class="card" style="margin-bottom:10px;border:1.5px solid ${bdrCol}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div style="flex:1;min-width:0">
           <span class="tag-uid" style="font-size:11px;margin-bottom:4px;display:inline-block">${r.tagId}</span>
@@ -1157,7 +1163,7 @@ function clearedRow(c) {
   const market = c.qty_market || 0;
 
   return `
-    <div class="card" style="margin-bottom:10px;border-left:3px solid var(--ok)">
+    <div class="card" style="margin-bottom:10px;border:1.5px solid var(--ok)">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div style="flex:1;min-width:0">
           <span class="tag-uid" style="font-size:11px;display:inline-block;margin-bottom:4px">${c.id}</span>

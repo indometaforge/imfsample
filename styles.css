@@ -779,6 +779,15 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 3px rgba(30,43,107,0.1);
   background: var(--sur);
 }
+
+/* Global keyboard-focus ring — covers buttons, links, and custom
+   role="button" elements that don't get the input focus style above. */
+button:focus-visible, a:focus-visible, [role="button"]:focus-visible,
+.li:focus-visible, .card:focus-visible, .ps-row:focus-visible,
+.act-row:focus-visible, .alert-block:focus-visible {
+  outline: 2px solid var(--imf-steel);
+  outline-offset: 2px;
+}
 input:disabled, select:disabled, textarea:disabled {
   background: var(--sur2);
   color: var(--txt-muted);
@@ -1000,7 +1009,7 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
    PROGRESS BAR
    ══════════════════════════════════════════════════════════════════════ */
 .prog { height: 7px; background: var(--bg); border-radius: var(--rpill); overflow: hidden; }
-.pf   { height: 100%; border-radius: var(--rpill); transition: width 0.4s ease; }
+.pf   { height: 100%; width: 100%; border-radius: var(--rpill); transform-origin: left; transition: transform 0.4s ease; }
 .pg   { background: var(--ok); }
 .pa   { background: var(--warn); }
 .pr   { background: var(--err); }
@@ -1558,10 +1567,13 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 10px 0;
   border-bottom: 1px solid var(--bdr);
 }
 .rrow:last-child { border-bottom: none; }
+.rrow > .flex-1 { min-width: 0; }
+.rrow > .flex { flex-shrink: 0; }
 
 /* ══════════════════════════════════════════════════════════════════════
    LOGIN SCREEN
@@ -1899,8 +1911,10 @@ a.home-panel-title:hover { color: var(--imf-navy); }
 }
 .ps-bar {
   height: 100%;
+  width: 100%;
   border-radius: var(--rpill);
-  transition: width 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: left;
+  transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .ps-bar-ok   { background: var(--ok); }
 .ps-bar-warn { background: var(--warn); }
@@ -2197,4 +2211,85 @@ a.alert-title:hover { color: var(--imf-navy); }
   .home-grid   { display: grid; }
   .home-hdr    { padding: 20px 24px; margin-bottom: 18px; }
   .home-hdr-name { font-size: 22px; }
+}
+
+/* ── STORE: Inward Receipts row — grid on desktop, stacked card on mobile ── */
+.inw-row {
+  display: grid;
+  grid-template-columns: 80px 1fr auto auto;
+  grid-template-areas: "date info qty badge";
+  gap: 0;
+  align-items: center;
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--bdr);
+  cursor: pointer;
+  background: var(--sur);
+  transition: background .12s;
+}
+.inw-row:hover         { background: var(--sur2); }
+.inw-row.iqc-pending   { background: var(--warn-bg); }
+.inw-row.iqc-rejected  { background: var(--err-bg); }
+.inw-date  { grid-area: date; font-size: 12px; color: var(--txt-muted); }
+.inw-info  { grid-area: info; min-width: 0; }
+.inw-qty   { grid-area: qty; font-size: 14px; font-weight: 800; color: var(--txt); padding-right: 12px; text-align: right; }
+.inw-badge { grid-area: badge; text-align: right; }
+@media (max-width: 479px) {
+  .inw-row {
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas:
+      "info info info"
+      "date qty badge";
+    row-gap: 6px;
+    padding: 12px 10px;
+  }
+}
+
+/* ── STORE: Stock Balance row — grid on desktop, stacked card on mobile ── */
+.stk-row {
+  display: grid;
+  grid-template-columns: 1fr 64px 64px 64px;
+  grid-template-areas: "name rcvd issued avail";
+  gap: 0;
+  align-items: center;
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--bdr);
+}
+.stk-name { grid-area: name; min-width: 0; }
+.stk-num  { text-align: right; font-size: 13px; font-weight: 700; }
+.stk-head-row {
+  display: grid;
+  grid-template-columns: 1fr 64px 64px 64px;
+  gap: 4px;
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--txt-muted);
+  letter-spacing: .05em;
+  border-bottom: 2px solid var(--bdr);
+  margin-bottom: 4px;
+}
+.stk-num-lbl { display: none; }
+@media (max-width: 479px) {
+  .stk-head-row { display: none; }
+  .stk-row {
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-areas:
+      "name name name"
+      "rcvd issued avail";
+    row-gap: 8px;
+    padding: 12px 10px;
+  }
+  .stk-row .stk-name { grid-area: name; }
+  .stk-row .stk-num  { text-align: center; }
+  .stk-num-lbl { display: block; font-size: 9px; color: var(--txt-dim); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+}
+
+/* ── DISPATCH: Tracksheet — table on desktop, stacked cards below 768px ── */
+@media (max-width: 767px) {
+  .tracksheet-table { display: none; }
+  .tracksheet-cards { display: block; }
+}
+@media (min-width: 768px) {
+  .tracksheet-table { display: table; }
+  .tracksheet-cards { display: none; }
 }

@@ -22,6 +22,28 @@ const S_APR = {
   sparesRequests:  [],
 };
 
+/* ── Shared two-step confirm for approve/reject actions ─────────────── */
+let _pendingAction = null;
+function confirmApprovalAction(opts) {
+  _pendingAction = opts.onConfirm;
+  openModal(`
+    <div class="modal-handle"></div>
+    <div style="text-align:center;margin-bottom:12px">
+      <div style="width:56px;height:56px;border-radius:28px;background:${opts.bg};border:2px solid ${opts.color};display:inline-flex;align-items:center;justify-content:center;font-size:26px;color:${opts.color}"><i class="ti ${opts.icon}"></i></div>
+    </div>
+    <div class="mtit" style="justify-content:center">${opts.title}</div>
+    <p style="font-size:13px;color:var(--txt-muted);text-align:center;margin-bottom:14px">${opts.message}</p>
+    <div style="display:flex;gap:10px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal();_pendingAction=null">Cancel — Go Back</button>
+      <button class="btn ${opts.confirmClass || 'btn-p'}" style="flex:1" onclick="closeModal();_runPendingAction()">${opts.confirmLabel}</button>
+    </div>
+  `);
+}
+function _runPendingAction() {
+  if (_pendingAction) _pendingAction();
+  _pendingAction = null;
+}
+
 /* ── Boot ──────────────────────────────────────────────────────────── */
 async function init() {
   try { await initShell(); } catch (e) {
@@ -77,12 +99,9 @@ function render() {
   ];
 
   const tabHtml = tabs.map(t => `
-    <button onclick="switchTab('${t.key}')"
-      style="flex:1;padding:8px 4px;border:none;background:${_tab===t.key?'var(--acc)':'var(--sur)'};
-             color:${_tab===t.key?'#fff':'var(--txt)'};border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;
-             display:flex;align-items:center;justify-content:center;gap:5px;transition:background .15s">
+    <button class="tab ${_tab===t.key?'active':''}" onclick="switchTab('${t.key}')">
       ${t.label}
-      ${t.count > 0 ? `<span style="background:${_tab===t.key?'rgba(255,255,255,.25)':'var(--acc)'};color:#fff;border-radius:99px;padding:1px 6px;font-size:10px">${t.count}</span>` : ''}
+      ${t.count > 0 ? `<span class="bdg bdg-n" style="margin-left:4px;padding:1px 6px;font-size:10px">${t.count}</span>` : ''}
     </button>`).join('');
 
   let pendingItems = [];
@@ -161,7 +180,7 @@ function render() {
            </div>`}
 
       <!-- Tabs -->
-      <div style="display:flex;gap:4px;background:var(--sur);border-radius:8px;padding:4px;margin-bottom:14px;flex-wrap:wrap">
+      <div class="tabs">
         ${tabHtml}
       </div>
 
@@ -198,11 +217,12 @@ function switchTab(tab) {
 
 /* ── Status badges ─────────────────────────────────────────────────── */
 const BADGE = {
-  pending:   { bg: 'var(--warn-bg)', border: 'var(--warn-bdr)', color: '#78350F', label: 'Pending' },
-  approved:  { bg: 'var(--ok-bg)',   border: 'var(--ok-bdr)',   color: '#14532D', label: 'Approved' },
-  rejected:  { bg: 'var(--err-bg)',  border: 'var(--err-bdr)',  color: '#7F1D1D', label: 'Rejected' },
-  partial:   { bg: 'var(--info-bg)', border: 'var(--info-bdr)', color: '#1E40AF', label: 'Part Approved' },
-  fulfilled: { bg: 'var(--ok-bg)',   border: 'var(--ok-bdr)',   color: '#14532D', label: 'Fulfilled' },
+  pending:            { bg: 'var(--warn-bg)', border: 'var(--warn-bdr)', color: '#78350F', label: 'Pending' },
+  approved:           { bg: 'var(--ok-bg)',   border: 'var(--ok-bdr)',   color: '#14532D', label: 'Approved' },
+  rejected:           { bg: 'var(--err-bg)',  border: 'var(--err-bdr)',  color: '#7F1D1D', label: 'Rejected' },
+  partial:            { bg: 'var(--info-bg)', border: 'var(--info-bdr)', color: '#1E40AF', label: 'Part Approved' },
+  fulfilled:          { bg: 'var(--ok-bg)',   border: 'var(--ok-bdr)',   color: '#14532D', label: 'Fulfilled' },
+  awaiting_deviation: { bg: 'var(--info-bg)', border: 'var(--info-bdr)', color: '#1E40AF', label: 'Awaiting Deviation' },
 };
 
 function statusBadge(status) {
@@ -218,7 +238,7 @@ function moduleTag(label, icon) {
 function reqCard(r, isPending) {
   const canAct = isPending && (canDo('inward') || S.sess?.role === 'admin' || S.sess?.role === 'hod');
   return `
-    <div class="card" style="margin-bottom:10px;border-left:3px solid ${isPending?'var(--warn)':'var(--bdr)'}">
+    <div class="card" style="margin-bottom:10px;border:1.5px solid ${isPending?'var(--warn)':'var(--bdr)'}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div>
           <div style="font-weight:800;font-size:14px">${r.reqNo || '—'}</div>
@@ -276,7 +296,7 @@ function setupCard(s, isPending) {
   const canAct = isPending && (S.sess?.role === 'admin' || S.sess?.role === 'hod' || S.sess?.role === 'supervisor');
   const stageLabel = s.stage === 'soft' ? 'Soft Stage' : s.stage === 'hard' ? 'Hard Stage' : (s.stage || '—');
   return `
-    <div class="card" style="margin-bottom:10px;border-left:3px solid ${isPending?'var(--acc)':'var(--bdr)'}">
+    <div class="card" style="margin-bottom:10px;border:1.5px solid ${isPending?'var(--acc)':'var(--bdr)'}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div>
           <div style="font-weight:800;font-size:14px">${s.partName || '—'} <span style="font-family:monospace;font-size:11px;font-weight:400;color:var(--txt-muted)">${s.partNo || ''}</span></div>
@@ -377,7 +397,7 @@ async function deleteSetupAPR(id) {
 function deviationCard(s, isPending) {
   const canAct = isPending && (S.sess?.role === 'admin' || S.sess?.role === 'hod');
   return `
-    <div class="card" style="margin-bottom:10px;border-left:3px solid ${isPending?'var(--err)':'var(--bdr)'}">
+    <div class="card" style="margin-bottom:10px;border:1.5px solid ${isPending?'var(--err)':'var(--bdr)'}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div>
           <div style="font-weight:800;font-size:14px">Sequence Deviation</div>
@@ -424,7 +444,7 @@ function deviationCard(s, isPending) {
 }
 
 /* ── Actions: Requisition ──────────────────────────────────────────── */
-async function approveReq(id) {
+function approveReq(id) {
   const r = S_APR.requisitions.find(x => x.id === id);
   if (!r) return;
   const updatedLines = (r.lines || []).map(l => {
@@ -432,6 +452,16 @@ async function approveReq(id) {
     return { ...l, qtyApproved: el ? Math.min(parseInt(el.value) || 0, l.qtyRequested) : l.qtyRequested };
   });
   const rmk = (document.getElementById(`ar-${id}`)?.value || '').trim();
+  confirmApprovalAction({
+    title: 'Approve Requisition?',
+    icon: 'ti-check', color: 'var(--ok)', bg: 'var(--ok-bg)',
+    message: `Approves ${updatedLines.length} line item(s) for "${r.partName || r.lines?.[0]?.partName || 'this requisition'}" and notifies the requester.`,
+    confirmLabel: 'Yes, Approve', confirmClass: 'btn-ok',
+    onConfirm: () => _commitApproveReq(id, r, updatedLines, rmk),
+  });
+}
+
+async function _commitApproveReq(id, r, updatedLines, rmk) {
   try {
     await db.collection('requisitions').doc(id).update({
       status: 'approved', lines: updatedLines,
@@ -446,10 +476,20 @@ async function approveReq(id) {
   } catch (e) { toast('Error: ' + e.message); }
 }
 
-async function rejectReq(id) {
+function rejectReq(id) {
   const rmk = (document.getElementById(`ar-${id}`)?.value || '').trim();
   if (!rmk) { toast('Enter a reason for rejection'); return; }
   const r = S_APR.requisitions.find(x => x.id === id);
+  confirmApprovalAction({
+    title: 'Reject Requisition?',
+    icon: 'ti-x', color: 'var(--err)', bg: 'var(--err-bg)',
+    message: `Rejects this requisition with reason: "${rmk}". The requester will be notified.`,
+    confirmLabel: 'Yes, Reject', confirmClass: 'btn-d',
+    onConfirm: () => _commitRejectReq(id, r, rmk),
+  });
+}
+
+async function _commitRejectReq(id, r, rmk) {
   try {
     await db.collection('requisitions').doc(id).update({
       status: 'rejected', rejectionReason: rmk,
@@ -463,10 +503,20 @@ async function rejectReq(id) {
 }
 
 /* ── Actions: Setup Approval ───────────────────────────────────────── */
-async function approveSetup(id) {
+function approveSetup(id) {
   const s = S_APR.setupApprovals.find(x => x.id === id);
   if (!s) return;
   const rmk = (document.getElementById(`sa-rmk-${id}`)?.value || '').trim();
+  confirmApprovalAction({
+    title: 'Approve Setup?',
+    icon: 'ti-check', color: 'var(--ok)', bg: 'var(--ok-bg)',
+    message: `Approves setup for TAG ${s.tagId || '—'} on ${s.machineName || s.machineId || '—'} (${s.setupMins || 0} min).`,
+    confirmLabel: 'Yes, Approve', confirmClass: 'btn-ok',
+    onConfirm: () => _commitApproveSetup(id, s, rmk),
+  });
+}
+
+async function _commitApproveSetup(id, s, rmk) {
   try {
     await db.collection('setupApprovals').doc(id).update({
       status: 'approved',
@@ -481,11 +531,21 @@ async function approveSetup(id) {
   } catch (e) { toast('Error: ' + e.message); }
 }
 
-async function rejectSetup(id) {
+function rejectSetup(id) {
   const s = S_APR.setupApprovals.find(x => x.id === id);
   if (!s) return;
   const rmk = (document.getElementById(`sa-rmk-${id}`)?.value || '').trim();
   if (!rmk) { toast('Enter a reason for rejection'); return; }
+  confirmApprovalAction({
+    title: 'Reject Setup?',
+    icon: 'ti-x', color: 'var(--err)', bg: 'var(--err-bg)',
+    message: `Rejects setup for TAG ${s.tagId || '—'} with reason: "${rmk}".`,
+    confirmLabel: 'Yes, Reject', confirmClass: 'btn-d',
+    onConfirm: () => _commitRejectSetup(id, s, rmk),
+  });
+}
+
+async function _commitRejectSetup(id, s, rmk) {
   try {
     await db.collection('setupApprovals').doc(id).update({
       status: 'rejected', rejectionReason: rmk,
@@ -499,11 +559,21 @@ async function rejectSetup(id) {
 }
 
 /* ── Actions: Sequence Deviation ───────────────────────────────────── */
-async function approveDeviation(id) {
+function approveDeviation(id) {
   const s = S_APR.setupDeviations.find(x => x.id === id);
   if (!s) return;
   const rmk = (document.getElementById(`dev-rmk-${id}`)?.value || '').trim();
   if (!rmk) { toast('Enter Plant Head remarks before approving'); return; }
+  confirmApprovalAction({
+    title: 'Approve Deviation?',
+    icon: 'ti-check', color: 'var(--ok)', bg: 'var(--ok-bg)',
+    message: `Approves the sequence deviation for TAG ${s.tagId || '—'} and releases the linked setup to QC.`,
+    confirmLabel: 'Yes, Approve', confirmClass: 'btn-ok',
+    onConfirm: () => _commitApproveDeviation(id, s, rmk),
+  });
+}
+
+async function _commitApproveDeviation(id, s, rmk) {
   try {
     await db.collection('setupDeviations').doc(id).update({
       status: 'approved', approverRemarks: rmk,
@@ -511,16 +581,38 @@ async function approveDeviation(id) {
       approvedAt: serverTS(), updatedAt: serverTS(),
     });
     await logAudit('APPROVE_DEVIATION', 'APPROVALS', id, s, { status: 'approved' });
-    toast('Deviation approved ✓');
+
+    // Release the linked setup to QC now that the Plant Head has approved
+    // the deviation — it was held at 'awaiting_deviation' precisely so QC
+    // could never approve a setup whose deviation was still undecided.
+    if (s.setupApprovalId) {
+      const setupBefore = S_APR.setupApprovals.find(x => x.id === s.setupApprovalId);
+      await db.collection('setupApprovals').doc(s.setupApprovalId).update({
+        status: 'pending', updatedAt: serverTS(),
+      });
+      await logAudit('RELEASE_SETUP_TO_QC', 'APPROVALS', s.setupApprovalId, setupBefore, { status: 'pending' });
+    }
+
+    toast('Deviation approved ✓ — setup released to QC');
     await refreshAll();
   } catch (e) { toast('Error: ' + e.message); }
 }
 
-async function rejectDeviation(id) {
+function rejectDeviation(id) {
   const s = S_APR.setupDeviations.find(x => x.id === id);
   if (!s) return;
   const rmk = (document.getElementById(`dev-rmk-${id}`)?.value || '').trim();
   if (!rmk) { toast('Enter Plant Head remarks before rejecting'); return; }
+  confirmApprovalAction({
+    title: 'Reject Deviation?',
+    icon: 'ti-x', color: 'var(--err)', bg: 'var(--err-bg)',
+    message: `Rejects the sequence deviation for TAG ${s.tagId || '—'} — the linked setup will also be rejected and will not reach QC.`,
+    confirmLabel: 'Yes, Reject', confirmClass: 'btn-d',
+    onConfirm: () => _commitRejectDeviation(id, s, rmk),
+  });
+}
+
+async function _commitRejectDeviation(id, s, rmk) {
   try {
     await db.collection('setupDeviations').doc(id).update({
       status: 'rejected', rejectionReason: rmk,
@@ -528,7 +620,21 @@ async function rejectDeviation(id) {
       approvedAt: serverTS(), updatedAt: serverTS(),
     });
     await logAudit('REJECT_DEVIATION', 'APPROVALS', id, s, { status: 'rejected', rejectionReason: rmk });
-    toast('Deviation rejected');
+
+    // The linked setup never reaches QC — it's rejected outright along with
+    // the deviation it depended on.
+    if (s.setupApprovalId) {
+      const setupBefore = S_APR.setupApprovals.find(x => x.id === s.setupApprovalId);
+      await db.collection('setupApprovals').doc(s.setupApprovalId).update({
+        status: 'rejected',
+        rejectionReason: `Sequence deviation rejected by Plant Head: ${rmk}`,
+        approvedBy: S.sess.userId, approvedByName: S.sess.name,
+        approvedAt: serverTS(), updatedAt: serverTS(),
+      });
+      await logAudit('REJECT_SETUP', 'APPROVALS', s.setupApprovalId, setupBefore, { status: 'rejected' });
+    }
+
+    toast('Deviation rejected — linked setup rejected, will not reach QC');
     await refreshAll();
   } catch (e) { toast('Error: ' + e.message); }
 }
@@ -539,7 +645,7 @@ function sparesCard(s, isPending) {
   const total  = fmtINR(s.totalCost || 0);
   const spares = s.spares || [];
   return `
-    <div class="card" style="margin-bottom:10px;border-left:3px solid ${isPending?'var(--warn)':'var(--bdr)'}">
+    <div class="card" style="margin-bottom:10px;border:1.5px solid ${isPending?'var(--warn)':'var(--bdr)'}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div>
           <div style="font-weight:800;font-size:14px">Spares Request</div>
@@ -597,16 +703,26 @@ function sparesCard(s, isPending) {
         </div>` : ''}
       ${s.status === 'approved' ? `
         <button class="btn btn-s" style="margin-top:8px;width:100%" onclick="printSparesMRO('${s.id}')">
-          🖨️ Print Approved Spares
+          <i class="ti ti-printer" aria-hidden="true"></i> Print Approved Spares
         </button>` : ''}
     </div>`;
 }
 
 /* ── Actions: Spares Request ───────────────────────────────────────── */
-async function approveSpares(id) {
+function approveSpares(id) {
   const s = S_APR.sparesRequests.find(x => x.id === id);
   if (!s) return;
   const rmk = (document.getElementById(`sp-rmk-${id}`)?.value || '').trim();
+  confirmApprovalAction({
+    title: 'Approve Spares Request?',
+    icon: 'ti-check', color: 'var(--ok)', bg: 'var(--ok-bg)',
+    message: `Approves the spares request for ${s.machineName || s.machineId || 'this machine'} (${fmtINR(s.totalCost || 0)}).`,
+    confirmLabel: 'Yes, Approve', confirmClass: 'btn-ok',
+    onConfirm: () => _commitApproveSpares(id, s, rmk),
+  });
+}
+
+async function _commitApproveSpares(id, s, rmk) {
   try {
     await db.collection('sparesRequests').doc(id).update({
       status: 'approved',
@@ -621,11 +737,21 @@ async function approveSpares(id) {
   } catch (e) { toast('Error: ' + e.message); }
 }
 
-async function rejectSpares(id) {
+function rejectSpares(id) {
   const s = S_APR.sparesRequests.find(x => x.id === id);
   if (!s) return;
   const rmk = (document.getElementById(`sp-rmk-${id}`)?.value || '').trim();
   if (!rmk) { toast('Enter a reason for rejection'); return; }
+  confirmApprovalAction({
+    title: 'Reject Spares Request?',
+    icon: 'ti-x', color: 'var(--err)', bg: 'var(--err-bg)',
+    message: `Rejects the spares request for ${s.machineName || s.machineId || 'this machine'} with reason: "${rmk}".`,
+    confirmLabel: 'Yes, Reject', confirmClass: 'btn-d',
+    onConfirm: () => _commitRejectSpares(id, s, rmk),
+  });
+}
+
+async function _commitRejectSpares(id, s, rmk) {
   try {
     await db.collection('sparesRequests').doc(id).update({
       status: 'rejected', rejectionReason: rmk,

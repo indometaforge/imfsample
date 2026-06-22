@@ -34,6 +34,7 @@ const PM_INTERVALS = [
 /* ── State ───────────────────────────────────────────────────────────── */
 let _tab       = 'hub';
 let _bdFilter        = 'active'; // 'active' | 'all'
+let _bdMachineFilter = null;     // machineId, set via Health tab drill-down, or null for no filter
 let _diagSpares      = [];       // spares being entered in diagnose modal
 let _diagNeedsSpares = false;    // toggle in diagnose modal
 let _savingBreakdown = false;    // guard against double-submit on Report
@@ -226,7 +227,7 @@ function bdCardCompact(b) {
   const mach = S.machines.find(m => m.id === b.machineId);
   const STEP_COL = { reported: 'var(--err)', acknowledged: 'var(--warn)', diagnosed: 'var(--acc)', released: 'var(--ok)' };
   return `
-    <div class="card" style="margin-bottom:8px;border-left:3px solid ${STEP_COL[b.status] || 'var(--bdr)'};cursor:pointer"
+    <div class="card" style="margin-bottom:8px;border:1.5px solid ${STEP_COL[b.status] || 'var(--bdr)'};cursor:pointer"
       onclick="switchTab('breakdowns')">
       <div style="display:flex;align-items:center;justify-content:space-between">
         <div>
@@ -250,9 +251,11 @@ function renderBreakdowns() {
 
   const canReport = canDo('maintenance') || S.sess?.role === 'admin' || S.sess?.role === 'supervisor';
 
-  const filtered = _bdFilter === 'active'
+  let filtered = _bdFilter === 'active'
     ? S_MNT.breakdowns.filter(b => b.status !== 'released')
     : S_MNT.breakdowns;
+  if (_bdMachineFilter) filtered = filtered.filter(b => b.machineId === _bdMachineFilter);
+  const filterMach = _bdMachineFilter ? (S.machines || []).find(m => m.id === _bdMachineFilter) : null;
 
   el.innerHTML = `
     <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
@@ -270,6 +273,13 @@ function renderBreakdowns() {
       <button class="btn btn-s btn-sm" onclick="refreshMaint()"><i class="ti ti-refresh"></i></button>
     </div>
 
+    ${filterMach ? `
+      <div class="wbox" style="margin-bottom:12px">
+        <i class="ti ti-filter"></i>
+        <span style="flex:1">Filtered to <strong>${filterMach.name}</strong> (from Health tab)</span>
+        <button class="btn btn-s btn-sm" onclick="_bdMachineFilter=null;renderBreakdowns()">Clear</button>
+      </div>` : ''}
+
     ${filtered.length
       ? filtered.map(bdCard).join('')
       : `<div class="empty"><div class="empty-ic"><i class="ti ti-circle-check"></i></div>
@@ -281,6 +291,13 @@ function renderBreakdowns() {
 function bdSetFilter(f) {
   _bdFilter = f;
   renderBreakdowns();
+}
+
+/* Drill-down from Health tab metrics into the underlying breakdown records */
+function viewMachineBreakdowns(machineId) {
+  _bdMachineFilter = machineId;
+  _bdFilter = 'all';
+  switchTab('breakdowns');
 }
 
 function bdCard(b) {
@@ -296,7 +313,7 @@ function bdCard(b) {
   const canRelease = b.status === 'diagnosed'    && (canDo('maintenance') || S.sess?.role === 'admin');
 
   return `
-    <div class="card" style="margin-bottom:12px;border-left:3px solid ${stepCol}">
+    <div class="card" style="margin-bottom:12px;border:1.5px solid ${stepCol}">
       <!-- Header -->
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div>
@@ -310,10 +327,15 @@ function bdCard(b) {
       </div>
 
       <!-- Step progress bar -->
-      <div style="display:flex;gap:3px;margin-bottom:10px">
+      <div style="display:flex;gap:3px;margin-bottom:4px">
         ${steps.map((s, i) => `
           <div style="flex:1;height:4px;border-radius:2px;
                       background:${i <= stepIdx ? stepCol : 'var(--bdr)'}"></div>`).join('')}
+      </div>
+      <div style="display:flex;gap:3px;margin-bottom:10px">
+        ${steps.map((s, i) => `
+          <div style="flex:1;text-align:center;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.02em;
+                      color:${i <= stepIdx ? stepCol : 'var(--txt-dim)'}">${s}</div>`).join('')}
       </div>
 
       <!-- Description -->
@@ -342,7 +364,7 @@ function bdCard(b) {
           <div style="text-align:right;font-size:12px;font-weight:800;margin-top:4px">Total: ${fmtINR(b.sparesTotal || 0)}</div>
           ${spReq && spReq.status === 'approved' ? `
           <button class="btn btn-s" style="margin-top:8px;width:100%" onclick="printSparesMRO_bd('${spReq.id}')">
-            🖨️ Print Approved Spares
+            <i class="ti ti-printer" aria-hidden="true"></i> Print Approved Spares
           </button>` : ''}
         </div>`;
         })() : ''}
@@ -374,27 +396,26 @@ function openReportModal() {
     <div class="modal-title">Report Breakdown</div>
 
     <div class="f">
-      <label>Machine <span style="color:var(--err)">*</span></label>
+      <label for="bd-machine">Machine <span style="color:var(--err)">*</span></label>
       <select id="bd-machine" style="font-size:13px">
         <option value="">— Select machine —</option>
         ${machOpts}
       </select>
     </div>
     <div class="f">
-      <label>Description <span style="color:var(--err)">*</span></label>
+      <label for="bd-desc">Description <span style="color:var(--err)">*</span></label>
       <textarea id="bd-desc" rows="3" placeholder="Describe what happened…" style="resize:vertical;font-size:13px"></textarea>
     </div>
     <div class="row-2">
       <div class="f">
-        <label>Date</label>
+        <label for="bd-date">Date</label>
         <input type="date" id="bd-date" value="${dateStr()}" style="font-size:13px">
       </div>
       <div class="f">
-        <label>Shift</label>
+        <label for="bd-shift">Shift</label>
         <select id="bd-shift" style="font-size:13px">
-          <option value="A">A</option>
-          <option value="B">B</option>
-          <option value="C">C</option>
+          ${Object.entries(S.shifts || {}).map(([k, v]) =>
+            `<option value="${k}" ${getActiveShift().key===k?'selected':''}>${v.label || k}</option>`).join('')}
         </select>
       </div>
     </div>
@@ -414,7 +435,7 @@ async function saveBreakdown() {
   const machineId = document.getElementById('bd-machine')?.value;
   const desc      = (document.getElementById('bd-desc')?.value || '').trim();
   const date      = document.getElementById('bd-date')?.value || dateStr();
-  const shift     = document.getElementById('bd-shift')?.value || 'A';
+  const shift     = document.getElementById('bd-shift')?.value || getActiveShift().key;
   const errEl     = document.getElementById('bd-modal-err');
 
   if (!machineId) { if (errEl) { errEl.textContent = 'Select a machine'; errEl.style.display = ''; } return; }
@@ -481,7 +502,7 @@ function openAcknowledgeModal(id) {
       <strong>${mach?.name || b.machineId}</strong> — ${b.description}
     </div>
     <div class="f">
-      <label>Initial remarks (optional)</label>
+      <label for="ack-rmk">Initial remarks (optional)</label>
       <input type="text" id="ack-rmk" placeholder="e.g. On my way to inspect…" style="font-size:13px">
     </div>
     <div style="display:flex;gap:8px;margin-top:4px">
@@ -529,14 +550,14 @@ function openDiagnoseModal(id) {
     </div>
 
     <div class="f">
-      <label>Fault Category <span style="color:var(--err)">*</span></label>
+      <label for="diag-cat">Fault Category <span style="color:var(--err)">*</span></label>
       <select id="diag-cat" style="font-size:13px">
         <option value="">— Select —</option>
         ${faultOpts}
       </select>
     </div>
     <div class="f">
-      <label>Fault Description <span style="color:var(--err)">*</span></label>
+      <label for="diag-desc">Fault Description <span style="color:var(--err)">*</span></label>
       <textarea id="diag-desc" rows="3" placeholder="Describe the root cause, what failed and why…" style="resize:vertical;font-size:13px"></textarea>
     </div>
 
@@ -634,27 +655,27 @@ function renderDiagSpares() {
     <div style="background:var(--bg);border-radius:6px;padding:8px 10px;margin-bottom:6px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px">
         <div style="font-size:11px;font-weight:700;color:var(--txt-muted)">SPARE ${i + 1}</div>
-        <button onclick="diagReadSpares();diagRemoveSpare(${i})" style="border:none;background:none;color:var(--err);cursor:pointer;font-size:13px;padding:0">
-          <i class="ti ti-trash"></i>
+        <button onclick="diagReadSpares();diagRemoveSpare(${i})" aria-label="Remove spare ${i + 1}" style="border:none;background:none;color:var(--err);cursor:pointer;font-size:13px;padding:0">
+          <i class="ti ti-trash" aria-hidden="true"></i>
         </button>
       </div>
       <div class="row-2" style="margin-bottom:6px">
         <div class="f">
-          <label>Item Name *</label>
+          <label for="sp-name-${i}">Item Name *</label>
           <input type="text" id="sp-name-${i}" value="${sp.name}" placeholder="e.g. Bearing 6305" style="font-size:12px" oninput="diagReadSpares()">
         </div>
         <div class="f">
-          <label>Qty</label>
+          <label for="sp-qty-${i}">Qty</label>
           <input type="number" id="sp-qty-${i}" value="${sp.qty}" min="1" style="font-size:12px" oninput="diagReadSpares();diagUpdateTotal()">
         </div>
       </div>
       <div class="row-2">
         <div class="f">
-          <label>Unit Rate (₹)</label>
+          <label for="sp-rate-${i}">Unit Rate (₹)</label>
           <input type="number" id="sp-rate-${i}" value="${sp.unitRate}" min="0" placeholder="0" style="font-size:12px" oninput="diagReadSpares();diagUpdateTotal()">
         </div>
         <div class="f">
-          <label>Supplier</label>
+          <label for="sp-supp-${i}">Supplier</label>
           <input type="text" id="sp-supp-${i}" value="${sp.supplierName}" placeholder="Supplier name" style="font-size:12px" oninput="diagReadSpares()">
         </div>
       </div>
@@ -750,7 +771,7 @@ function openReleaseModal(id) {
       <span style="font-size:11px;color:var(--txt-muted)">Fault: ${b.faultCategory} — ${b.faultDescription}</span>
     </div>
     <div class="f">
-      <label>Fix Description <span style="color:var(--err)">*</span></label>
+      <label for="rel-fix">Fix Description <span style="color:var(--err)">*</span></label>
       <textarea id="rel-fix" rows="3" placeholder="Describe what was fixed and how…" style="resize:vertical;font-size:13px"></textarea>
     </div>
     ${b.spares && b.spares.length > 0 ? `
@@ -884,11 +905,11 @@ function openLogPMModal(machId, interval) {
       <strong>${mach?.name || machId}</strong> — ${ivDef?.label || interval} PM
     </div>
     <div class="f">
-      <label>Date Done</label>
+      <label for="pm-date">Date Done</label>
       <input type="date" id="pm-date" value="${dateStr()}" style="font-size:13px">
     </div>
     <div class="f">
-      <label>Notes (optional)</label>
+      <label for="pm-notes">Notes (optional)</label>
       <input type="text" id="pm-notes" placeholder="e.g. Lubricated, filter replaced…" style="font-size:13px">
     </div>
     <div style="display:flex;gap:8px;margin-top:4px">
@@ -971,7 +992,9 @@ function renderHealth() {
           ${metrics.map((r, i) => {
             const availCol = r.avail >= 95 ? 'var(--ok)' : r.avail >= 80 ? 'var(--warn)' : 'var(--err)';
             return `
-              <tr style="background:${i % 2 === 0 ? 'var(--sur)' : 'var(--bg)'}">
+              <tr style="background:${i % 2 === 0 ? 'var(--sur)' : 'var(--bg)'};cursor:pointer"
+                  onclick="viewMachineBreakdowns('${r.m.id}')" tabindex="0"
+                  onkeydown="onRowKey(event,()=>viewMachineBreakdowns('${r.m.id}'))">
                 <td style="padding:8px 10px;font-weight:700">${r.m.name || '—'}<div style="font-size:10px;font-weight:400;color:var(--txt-muted)">${r.m.id_code || ''}</div></td>
                 <td style="padding:8px 6px;text-align:center;${r.failures > 0 ? 'color:var(--err);font-weight:700' : ''}">${r.failures}</td>
                 <td style="padding:8px 6px;text-align:center">${r.mtbf !== null ? r.mtbf : '—'}</td>

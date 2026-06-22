@@ -43,7 +43,7 @@ function _emptyNewCharge() {
     furnaceId: '', furnaceName: '',
     heatCode: '',
     date: dateStr(),
-    shift: 'A',
+    shift: (S.shifts && Object.keys(S.shifts).length) ? getActiveShift().key : 's1',
     tags: [],  // [{tagId, partId, partNo, partName, batchCode, qty, customerName}]
   };
 }
@@ -190,7 +190,7 @@ function chargeCardCompact(c) {
   const tagCount = (c.tags || []).length;
   const totalQty = (c.tags || []).reduce((s, t) => s + (t.qty || 0), 0);
   return `
-    <div class="card" style="margin-bottom:8px;border-left:3px solid var(--warn);cursor:pointer"
+    <div class="card" style="margin-bottom:8px;border:1.5px solid var(--warn);cursor:pointer"
       onclick="switchTab('process');_selProcId='${c.id}';render()">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
         <div>
@@ -246,11 +246,11 @@ function chargeCard(c) {
   const canComplete = c.status === 'processing' && (canDo('production') || S.sess?.role === 'admin' || S.sess?.stage === 'ht');
 
   return `
-    <div class="card" style="margin-bottom:10px;border-left:3px solid ${colBdr}">
+    <div class="card" style="margin-bottom:10px;border:1.5px solid ${colBdr}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div>
           <div style="font-weight:800;font-size:15px;font-family:monospace">${c.heatCode || '—'}</div>
-          <div style="font-size:11px;color:var(--txt-muted)">${c.furnaceName || c.furnaceId || '—'} · ${fmtDate(c.date)} · Shift ${c.shift || '—'}</div>
+          <div style="font-size:11px;color:var(--txt-muted)">${c.furnaceName || c.furnaceId || '—'} · ${fmtDate(c.date)} · ${S.shifts?.[c.shift]?.label || (c.shift ? 'Shift ' + c.shift : '—')}</div>
           <div style="font-size:11px;color:var(--txt-muted)">By ${c.createdByName || '—'}</div>
         </div>
         <span style="font-size:10px;font-weight:700;background:${colBdr};color:#fff;border-radius:4px;padding:3px 8px;text-transform:uppercase;flex-shrink:0">
@@ -344,9 +344,8 @@ function renderNewCharge() {
         <div class="f">
           <label>Shift</label>
           <select id="ht-shift" onchange="htReadHeader()" style="font-size:13px">
-            <option value="A" ${_newCharge.shift==='A'?'selected':''}>Shift A</option>
-            <option value="B" ${_newCharge.shift==='B'?'selected':''}>Shift B</option>
-            <option value="C" ${_newCharge.shift==='C'?'selected':''}>Shift C</option>
+            ${Object.entries(S.shifts || {}).map(([k, v]) =>
+              `<option value="${k}" ${_newCharge.shift===k?'selected':''}>${v.label || k}</option>`).join('')}
           </select>
         </div>
       </div>
@@ -417,7 +416,7 @@ function htReadHeader() {
   _newCharge.furnaceId = furnEl?.value || '';
   _newCharge.furnaceName = S.machines.find(m => m.id === _newCharge.furnaceId)?.name || '';
   _newCharge.heatCode = (document.getElementById('ht-heatcode')?.value || '').trim().toUpperCase();
-  _newCharge.shift    = document.getElementById('ht-shift')?.value || 'A';
+  _newCharge.shift    = document.getElementById('ht-shift')?.value || getActiveShift().key;
   _newCharge.date     = document.getElementById('ht-date')?.value  || dateStr();
 }
 
@@ -509,7 +508,7 @@ async function htSubmitCharge() {
     <div class="kv-list" style="margin-bottom:14px">
       <div class="kv-row"><span class="kv-key">Heat Code</span><span class="kv-val" style="font-family:monospace;font-weight:800">${_newCharge.heatCode}</span></div>
       <div class="kv-row"><span class="kv-key">Furnace</span><span class="kv-val">${_newCharge.furnaceName || _newCharge.furnaceId}</span></div>
-      <div class="kv-row"><span class="kv-key">Date / Shift</span><span class="kv-val">${fmtDate(_newCharge.date)} · Shift ${_newCharge.shift}</span></div>
+      <div class="kv-row"><span class="kv-key">Date / Shift</span><span class="kv-val">${fmtDate(_newCharge.date)} · ${S.shifts?.[_newCharge.shift]?.label || _newCharge.shift}</span></div>
       <div class="kv-row"><span class="kv-key">TAGs</span><span class="kv-val">${_newCharge.tags.length}</span></div>
       <div class="kv-row"><span class="kv-key">Total Qty</span><span class="kv-val" style="font-size:18px;font-weight:900">${totalQty} pcs</span></div>
     </div>
@@ -632,8 +631,8 @@ function renderProcess() {
         <div style="font-size:12px;font-weight:800;color:var(--imf-navy);letter-spacing:.04em">
           FM/HT/01 — PROCESS LOG
         </div>
-        <button class="btn btn-s" style="font-size:11px;border-color:var(--warn);color:var(--warn);padding:3px 10px"
-          onclick="htSampleFillLog()"><i class="ti ti-wand"></i> Sample Fill</button>
+        ${TEST_MODE ? `<button class="btn btn-s" style="font-size:11px;border-color:var(--warn);color:var(--warn);padding:3px 10px"
+          onclick="htSampleFillLog()"><i class="ti ti-wand"></i> Sample Fill</button>` : ''}
       </div>
 
       <!-- Prewash -->
@@ -641,19 +640,19 @@ function renderProcess() {
         <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:8px">PREWASH</div>
         <div class="row-2">
           <div class="f">
-            <label>Prewash Done?</label>
+            <label for="pl-prewash-done">Prewash Done?</label>
             <select id="pl-prewash-done" style="font-size:13px">
               <option value="yes" ${pl.prewashDone?'selected':''}>Yes</option>
               <option value="no" ${pl.prewashDone===false?'selected':''}>No / Skipped</option>
             </select>
           </div>
           <div class="f">
-            <label>Prewash Temp (°C)</label>
+            <label for="pl-prewash-temp">Prewash Temp (°C)</label>
             <input type="number" id="pl-prewash-temp" value="${pl.prewashTemp||''}" placeholder="e.g. 75" style="font-size:13px">
           </div>
         </div>
         <div class="f">
-          <label>Notes</label>
+          <label for="pl-prewash-notes">Notes</label>
           <input type="text" id="pl-prewash-notes" value="${pl.prewashNotes||''}" placeholder="Prewash observations…" style="font-size:13px">
         </div>
       </div>
@@ -663,20 +662,20 @@ function renderProcess() {
         <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:8px">WASH</div>
         <div class="row-3">
           <div class="f">
-            <label>Temp (°C)</label>
+            <label for="pl-wash-temp">Temp (°C)</label>
             <input type="number" id="pl-wash-temp" value="${pl.washTemp||''}" placeholder="e.g. 80" style="font-size:13px">
           </div>
           <div class="f">
-            <label>pH</label>
+            <label for="pl-wash-ph">pH</label>
             <input type="number" id="pl-wash-ph" step="0.1" value="${pl.washPH||''}" placeholder="e.g. 7.5" style="font-size:13px">
           </div>
           <div class="f">
-            <label>Duration (min)</label>
+            <label for="pl-wash-dur">Duration (min)</label>
             <input type="number" id="pl-wash-dur" value="${pl.washDuration||''}" placeholder="e.g. 15" style="font-size:13px">
           </div>
         </div>
         <div class="f">
-          <label>Wash Notes</label>
+          <label for="pl-wash-notes">Wash Notes</label>
           <input type="text" id="pl-wash-notes" value="${pl.washNotes||''}" placeholder="Solution type, observations…" style="font-size:13px">
         </div>
       </div>
@@ -693,20 +692,20 @@ function renderProcess() {
               </div>
               <div class="row-3">
                 <div class="f">
-                  <label>Set Temp (°C)</label>
+                  <label for="pl-cp${cp.step}-set">Set Temp (°C)</label>
                   <input type="number" id="pl-cp${cp.step}-set" value="${saved.setTemp||''}" placeholder="—" style="font-size:12px">
                 </div>
                 <div class="f">
-                  <label>Actual (°C)</label>
+                  <label for="pl-cp${cp.step}-act">Actual (°C)</label>
                   <input type="number" id="pl-cp${cp.step}-act" value="${saved.actualTemp||''}" placeholder="—" style="font-size:12px">
                 </div>
                 <div class="f">
-                  <label>Time</label>
+                  <label for="pl-cp${cp.step}-time">Time</label>
                   <input type="time" id="pl-cp${cp.step}-time" value="${saved.time||''}" style="font-size:12px">
                 </div>
               </div>
               <div class="f" style="margin-top:4px">
-                <label>Within tolerance?</label>
+                <label for="pl-cp${cp.step}-ok">Within tolerance?</label>
                 <select id="pl-cp${cp.step}-ok" style="font-size:12px">
                   <option value="yes" ${saved.ok!==false?'selected':''}>✓ Yes</option>
                   <option value="no"  ${saved.ok===false?'selected':''}>✗ No — note below</option>
@@ -721,21 +720,21 @@ function renderProcess() {
         <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:8px">FURNACE PARAMETERS</div>
         <div class="row-2">
           <div class="f">
-            <label>Atmosphere</label>
+            <label for="pl-atm">Atmosphere</label>
             <input type="text" id="pl-atm" value="${pl.atmosphere||''}" placeholder="e.g. Endothermic, N₂+CH₄" style="font-size:13px">
           </div>
           <div class="f">
-            <label>Hardness Target (HRC)</label>
+            <label for="pl-hard">Hardness Target (HRC)</label>
             <input type="number" id="pl-hard" value="${pl.hardnessTarget||''}" placeholder="e.g. 58–62" style="font-size:13px">
           </div>
         </div>
         <div class="row-2">
           <div class="f">
-            <label>Case Depth Target (mm)</label>
+            <label for="pl-case">Case Depth Target (mm)</label>
             <input type="number" id="pl-case" step="0.01" value="${pl.caseDepthTarget||''}" placeholder="e.g. 0.8" style="font-size:13px">
           </div>
           <div class="f">
-            <label>Dot Punch Done?</label>
+            <label for="pl-dotpunch">Dot Punch Done?</label>
             <select id="pl-dotpunch" style="font-size:13px">
               <option value="yes" ${charge.dotPunch?'selected':''}>Yes</option>
               <option value="no"  ${!charge.dotPunch?'selected':''}>No / Not Required</option>
@@ -746,7 +745,7 @@ function renderProcess() {
 
       <!-- General notes -->
       <div class="f" style="margin-bottom:12px">
-        <label>General Observations / Notes</label>
+        <label for="pl-notes">General Observations / Notes</label>
         <textarea id="pl-notes" rows="2" placeholder="Any additional observations…" style="resize:vertical;font-size:13px">${pl.notes||''}</textarea>
       </div>
 
@@ -1050,7 +1049,7 @@ function historyChargeCard(c) {
   const yldCol    = yieldPct >= 95 ? 'var(--ok)' : yieldPct >= 80 ? 'var(--warn)' : 'var(--err)';
 
   return `
-    <div class="card" style="margin-bottom:10px;border-left:3px solid var(--ok)">
+    <div class="card" style="margin-bottom:10px;border:1.5px solid var(--ok)">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div>
           <div style="font-weight:900;font-size:16px;font-family:monospace">${c.heatCode || '—'}</div>
