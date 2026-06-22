@@ -898,7 +898,7 @@ async function runFetchTag() {
 
     // Sequence check
     const partOpsForStage = (S.partOps || [])
-      .filter(po => po.partId === card.partId && po.stage === _actStage)
+      .filter(po => po.partId === card.partId && po.workCenterType === _actStage)
       .sort((a, b) => (a.seqNo || 0) - (b.seqNo || 0));
     const completedOpIds = (card.opHistory || []).filter(h => h.stage === _actStage).map(h => h.opId);
     const nextOp = partOpsForStage.find(po => !completedOpIds.includes(po.opId));
@@ -1172,27 +1172,81 @@ async function finalizeShift() {
       });
     });
 
+    // Per-TAG processed/rejected totals for this shift — drives both the
+    // live currentQty carried forward and the split-card remainder below.
+    // Rejected pcs are removed from the flow entirely, not treated as
+    // "still needs processing" (that was the bug: the old remainder calc
+    // only subtracted processed, so rejected pcs spawned a phantom WIP
+    // split-card instead of just reducing the live quantity).
+    const tagActualQty   = {};
+    const tagRejectedQty = {};
+    const tagTagQty      = {};
+    machineEntries.forEach(me => {
+      (me.runs || []).forEach(r => {
+        if (!r.tagId || !r.tagQty) return;
+        tagActualQty[r.tagId]   = (tagActualQty[r.tagId]   || 0) + (r.processed || 0);
+        tagRejectedQty[r.tagId] = (tagRejectedQty[r.tagId] || 0) + (r.rejected  || 0);
+        if (!tagTagQty[r.tagId]) tagTagQty[r.tagId] = r.tagQty;
+      });
+    });
+
     Object.entries(tagFinalStatus).forEach(([tagId, newStatus]) => {
       const rcRef = db.collection('routeCards').doc(tagId);
       (tagHistEntries[tagId] || []).forEach(h => {
         batch.update(rcRef, { opHistory: firebase.firestore.FieldValue.arrayUnion(h) });
       });
-      batch.update(rcRef, { status: newStatus, updatedAt: serverTS() });
+      const update = { status: newStatus, updatedAt: serverTS() };
+      if (tagActualQty[tagId] !== undefined) update.currentQty = tagActualQty[tagId];
+      batch.update(rcRef, update);
     });
 
-    // Child-card splitting: if actual processed qty < tag's starting qty,
-    // birth a sibling card carrying the unprocessed remainder.
-    const tagActualQty = {};
-    const tagTagQty    = {};
-    machineEntries.forEach(me => {
-      (me.runs || []).forEach(r => {
-        if (!r.tagId || !r.tagQty) return;
-        tagActualQty[r.tagId] = (tagActualQty[r.tagId] || 0) + (r.processed || 0);
-        if (!tagTagQty[r.tagId]) tagTagQty[r.tagId] = r.tagQty;
+    // Scrap ledger — production-stage rejects must be traceable the same
+    // way QC and Heat Treatment rejects are (see qc.js / ht.js scrapLedger
+    // writes). Previously these pieces just vanished from currentQty with
+    // no record of which part/batch/op/machine they were lost at.
+    const rejectTagIds = Object.keys(tagRejectedQty).filter(id => tagRejectedQty[id] > 0);
+    if (rejectTagIds.length) {
+      const rejectCardSnaps = await Promise.all(
+        rejectTagIds.map(id => db.collection('routeCards').doc(id).get())
+      );
+      const rejectCardById = {};
+      rejectTagIds.forEach((id, i) => {
+        if (rejectCardSnaps[i].exists) rejectCardById[id] = rejectCardSnaps[i].data();
       });
-    });
+      machineEntries.forEach(me => {
+        (me.runs || []).forEach(r => {
+          if (!r.tagId || !r.rejected) return;
+          const card = rejectCardById[r.tagId] || {};
+          batch.set(db.collection('scrapLedger').doc(), {
+            tagId:        r.tagId,
+            batchCode:    card.batchCode    || '',
+            heatCode:     card.heatCode     || '',
+            partId:       r.partId          || card.partId || '',
+            partNo:       r.partNo          || card.partNo || '',
+            partName:     r.partName        || card.partName || '',
+            customerId:   card.customerId   || '',
+            customerName: card.customerName || '',
+            qtyRejected:  r.rejected,
+            defectDescription: `Production reject — ${r.opName || r.opId} (${me.machineName || me.machineId})`,
+            stage:        _actStage,
+            opId:         r.opId,
+            opName:       r.opName,
+            machineId:    me.machineId,
+            machineName:  me.machineName,
+            inspectedBy:     S.sess.userId,
+            inspectedByName: S.sess.name,
+            date: _actDate,
+            createdAt: serverTS(),
+          });
+        });
+      });
+    }
+
+    // Child-card splitting: if there's genuine unprocessed remainder (not
+    // yet run through this op at all — distinct from rejected pcs, which
+    // are already excluded above), birth a sibling card carrying it.
     const splitTagIds = Object.keys(tagActualQty).filter(id =>
-      tagActualQty[id] < (tagTagQty[id] || 0)
+      (tagActualQty[id] + (tagRejectedQty[id] || 0)) < (tagTagQty[id] || 0)
     );
     const splitAuditEntries = [];
     if (splitTagIds.length) {
@@ -1204,7 +1258,7 @@ async function finalizeShift() {
         if (!parentSnaps[i].exists) return;
         const parent     = parentSnaps[i].data();
         const childTagId = s1Snaps[i].exists ? tagId + '-S2' : tagId + '-S1';
-        const remQty     = (tagTagQty[tagId] || 0) - (tagActualQty[tagId] || 0);
+        const remQty     = (tagTagQty[tagId] || 0) - (tagActualQty[tagId] || 0) - (tagRejectedQty[tagId] || 0);
         batch.set(db.collection('routeCards').doc(childTagId), {
           ...parent,
           tagId:         childTagId,
@@ -1872,7 +1926,7 @@ async function setupFetchTag() {
     }
 
     const partOpsForStage = (S.partOps || [])
-      .filter(po => po.partId === card.partId && po.stage === _setupStage)
+      .filter(po => po.partId === card.partId && po.workCenterType === _setupStage)
       .sort((a, b) => (a.seqNo || 0) - (b.seqNo || 0));
     const completedOpIds = (card.opHistory || []).filter(h => h.stage === _setupStage).map(h => h.opId);
     const nextOp = partOpsForStage.find(po => !completedOpIds.includes(po.opId));
@@ -2019,7 +2073,7 @@ function _setupSeqContext() {
   if (!opId) return null;
 
   const allOps = (S.partOps || [])
-    .filter(po => po.partId === _setupCard.partId && po.stage === stage)
+    .filter(po => po.partId === _setupCard.partId && po.workCenterType === stage)
     .sort((a, b) => (a.seqNo || 0) - (b.seqNo || 0));
   const completed = (_setupCard.opHistory || [])
     .filter(h => h.stage === stage).map(h => h.opId);
