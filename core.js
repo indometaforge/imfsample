@@ -428,32 +428,69 @@ function initSidebar() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+   NAV ITEMS — single source of truth for sidebar order AND the
+   landingPage() fallback chain below.
+   ══════════════════════════════════════════════════════════════════════ */
+const NAV_ITEMS = [
+  { page: 'home',        icon: 'ti-home',               label: 'Home' },
+  { page: 'store',       icon: 'ti-building-warehouse',  label: 'Store / Inward',   perm: 'inward' },
+  { page: 'production',  icon: 'ti-settings',            label: 'Production',       perm: 'production' },
+  { page: 'ht',          icon: 'ti-flame',               label: 'Heat Treatment',   perm: 'production' },
+  { page: 'qc',          icon: 'ti-clipboard-check',     label: 'Quality Control',  perm: 'qc' },
+  { page: 'maintenance', icon: 'ti-tool',                label: 'Maintenance',      perm: 'maintenance' },
+  { page: 'dispatch',    icon: 'ti-truck',               label: 'Dispatch',         perm: 'dispatch' },
+];
+
+const NAV_MGMT_ITEMS = [
+  { page: 'approvals',   icon: 'ti-checks',              label: 'Approvals',        perm: 'production' },
+  { page: 'reports',     icon: 'ti-chart-bar',           label: 'Reports',          perm: 'reports' },
+  { page: 'masters',     icon: 'ti-database',            label: 'Masters',          perm: 'masters' },
+];
+
+/* Stage → home-area module, used by landingPage() to send a logged-in
+   non-admin straight to their own department instead of the dashboard. */
+const STAGE_LANDING_MODULE = {
+  store:       { page: 'store.html',       perm: 'inward' },
+  soft:        { page: 'production.html',  perm: 'production' },
+  hard:        { page: 'production.html',  perm: 'production' },
+  ht:          { page: 'ht.html',          perm: 'production' },
+  qc:          { page: 'qc.html',          perm: 'qc' },
+  dispatch:    { page: 'dispatch.html',    perm: 'dispatch' },
+  maintenance: { page: 'maintenance.html', perm: 'maintenance' },
+};
+
+/**
+ * Resolve the page a given session should land on post-login.
+ * admin            → home.html (the only role allowed to view it)
+ * stage mapped      → that stage's module, if permitted
+ * stage unmapped/   → first module in nav order the user can view
+ *   not permitted
+ * nothing permitted → home.html (last resort; never dead-ends or loops —
+ *                      home.js only redirects a non-admin away from home.html
+ *                      when landingPage() resolves to something other than it)
+ */
+function landingPage(sess) {
+  if (!sess) return 'index.html';
+  if (sess.role === 'admin') return 'home.html';
+
+  const staged = STAGE_LANDING_MODULE[sess.stage];
+  if (staged && canView(staged.perm)) return staged.page;
+
+  const fallback = [...NAV_ITEMS, ...NAV_MGMT_ITEMS].find(item => item.perm && canView(item.perm));
+  return fallback ? fallback.page + '.html' : 'home.html';
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    SIDEBAR HTML BUILDER
    Generates the consistent sidebar markup for every page.
    ══════════════════════════════════════════════════════════════════════ */
 function buildSidebar() {
   const role = S.sess?.role || '';
 
-  /* Define nav items — show/hide based on permissions */
-  const navItems = [
-    { page: 'home',        icon: 'ti-home',               label: 'Home' },
-    { page: 'store',       icon: 'ti-building-warehouse',  label: 'Store / Inward',   perm: 'inward' },
-    { page: 'production',  icon: 'ti-settings',            label: 'Production',       perm: 'production' },
-    { page: 'ht',          icon: 'ti-flame',               label: 'Heat Treatment',   perm: 'production' },
-    { page: 'qc',          icon: 'ti-clipboard-check',     label: 'Quality Control',  perm: 'qc' },
-    { page: 'maintenance', icon: 'ti-tool',                label: 'Maintenance',      perm: 'maintenance' },
-    { page: 'dispatch',    icon: 'ti-truck',               label: 'Dispatch',         perm: 'dispatch' },
-  ];
-
-  const mgmtItems = [
-    { page: 'approvals',   icon: 'ti-checks',              label: 'Approvals',        perm: 'production' },
-    { page: 'reports',     icon: 'ti-chart-bar',           label: 'Reports',          perm: 'reports' },
-    { page: 'masters',     icon: 'ti-database',            label: 'Masters',          perm: 'masters' },
-  ];
-
   const curPage = location.pathname.split('/').pop().replace('.html', '');
 
   const buildItem = (item) => {
+    if (item.page === 'home' && role !== 'admin') return '';
     if (item.perm && !canView(item.perm)) return '';
     const active = item.page === curPage ? 'active' : '';
     return `
@@ -476,9 +513,9 @@ function buildSidebar() {
     </div>
     <nav class="sb-nav" aria-label="Main navigation">
       <div class="sb-section-label">Modules</div>
-      ${navItems.map(buildItem).join('')}
+      ${NAV_ITEMS.map(buildItem).join('')}
       <div class="sb-section-label">Management</div>
-      ${mgmtItems.map(buildItem).join('')}
+      ${NAV_MGMT_ITEMS.map(buildItem).join('')}
     </nav>
     <div class="sb-foot">
       <button class="sb-user" onclick="logout()">

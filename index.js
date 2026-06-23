@@ -87,8 +87,10 @@ async function handleLogin(e) {
     /* core.js login() authenticates, loads the user profile, checks
        isActive, stores the session via setSess(), and writes the audit log. */
     await login(email, pass);
-    /* Replace so the login page is not left in browser history */
-    window.location.replace('home.html');
+    /* Replace so the login page is not left in browser history.
+       landingPage() (core.js) sends admins to home.html and everyone
+       else straight to their own stage module. */
+    window.location.replace(landingPage(S.sess));
   } catch (err) {
     showLoginError(authErrorMessage(err));
     setLoading(false);
@@ -109,9 +111,11 @@ function updateConnStatus() {
 
 /* ── Boot ── */
 document.addEventListener('DOMContentLoaded', () => {
-  /* Already signed in this session? Skip straight to the dashboard. */
-  if (getSess()) {
-    window.location.replace('home.html');
+  /* Already signed in this session? Skip straight to the right landing page. */
+  const sess = getSess();
+  if (sess) {
+    S.sess = sess; /* landingPage() resolves permissions via canView(), which reads S.sess */
+    window.location.replace(landingPage(sess));
     return;
   }
 

@@ -62,6 +62,19 @@ async function init() {
     window.location.replace('index.html');
     return;
   }
+
+  /* Home is admin-only. Bounce any other role to their own stage module.
+     landingPage() only returns 'home.html' for a non-admin as a genuine
+     last resort (no permitted module found) — in that case let them stay
+     here instead of redirecting, so this can never loop. */
+  if (S.sess?.role !== 'admin') {
+    const dest = landingPage(S.sess);
+    if (dest !== 'home.html') {
+      window.location.replace(dest);
+      return;
+    }
+  }
+
   render();   /* skeleton immediately */
   document.getElementById('loading-screen').style.display = 'none';
   document.getElementById('app').style.display = '';
