@@ -35,6 +35,21 @@ const STAGE_RC_MAP = {
   dispatch: ['qc_cleared'],
 };
 
+/* ── Route-card status → label + badge class (operator queue) ── */
+const RC_STATUS = {
+  store_issued: { l: 'Store Issued', b: 'bdg-b' },
+  soft_wip:     { l: 'Soft WIP',     b: 'bdg-soft' },
+  soft_done:    { l: 'Soft Done',    b: 'bdg-soft' },
+  ht_queue:     { l: 'HT Queue',     b: 'bdg-a' },
+  ht_done:      { l: 'HT Done',      b: 'bdg-a' },
+  hard_wip:     { l: 'Hard WIP',     b: 'bdg-hard' },
+  qc_pending:   { l: 'QC Pending',   b: 'bdg-a' },
+  qc_cleared:   { l: 'QC Cleared',   b: 'bdg-g' },
+};
+
+/* ── Status → owning module (built from PIPELINE) ── */
+const PIPE_HREF = Object.fromEntries(PIPELINE.map(p => [p.key, p.href]));
+
 /* ── Module-local state ── */
 let _data = null;
 
@@ -218,7 +233,34 @@ function renderManagerDashboard() {
       ${renderAlertsPanel(breakdowns, requisitions, spares)}
     </div>`;
 
-  return mobileMetrics + desktopGrid;
+  /* Mobile: condensed pipeline keeps the pipeline alive <768px — hidden on desktop */
+  return mobileMetrics + renderPipelineMobile(pipeline, totalActive) + desktopGrid;
+}
+
+/* ── Condensed pipeline (mobile only) — static rows, no expand ── */
+function renderPipelineMobile(pipeline, totalActive) {
+  const counts   = PIPELINE.map(p => (pipeline[p.key] || []).length);
+  const maxCount = Math.max(1, ...counts);
+
+  const rows = PIPELINE.map(p => {
+    const count = (pipeline[p.key] || []).length;
+    const pct   = Math.round((count / maxCount) * 100);
+    return `
+      <div class="ps-row static">
+        <span class="ps-label">${p.label}</span>
+        <div class="ps-bar-wrap"><div class="ps-bar ps-bar-${p.color}" style="transform:scaleX(${(pct/100).toFixed(4)})"></div></div>
+        <span class="ps-count${count === 0 ? ' zero' : ''}">${count}</span>
+      </div>`;
+  }).join('');
+
+  return `
+    <section class="home-panel home-pipe-mob">
+      <div class="home-panel-hd">
+        <a href="production.html" class="home-panel-title">Production Pipeline</a>
+        <span class="bdg-n">${totalActive} active</span>
+      </div>
+      <div class="pipeline-stages">${rows}</div>
+    </section>`;
 }
 
 /* ── Production Pipeline panel (left column) ── */
@@ -299,38 +341,38 @@ function renderTodayPanel(dispatches, qcCleared, htDone, softDone) {
       <div class="act-expand" id="td-disp" hidden>
         ${dispatches.length
           ? dispRows + dispMore
-          : '<div style="font-size:12px;color:var(--txt-dim);padding:4px 0">No dispatches today</div>'}
+          : '<div style="font-size:12px;color:var(--txt-muted);padding:4px 0">No dispatches today</div>'}
       </div>
 
-      <div class="act-row" onclick="window.location='qc.html'">
+      <a href="qc.html" class="act-row">
         <div class="act-icon ok"><i class="ti ti-clipboard-check" aria-hidden="true"></i></div>
         <div class="act-body">
-          <a href="qc.html" class="act-label" onclick="event.stopPropagation()">QC Cleared</a>
+          <span class="act-label">QC Cleared</span>
           <span class="act-sub">Ready for dispatch</span>
         </div>
         <span class="act-val">${qcCleared}</span>
         <i class="ti ti-arrow-right act-chev" aria-hidden="true"></i>
-      </div>
+      </a>
 
-      <div class="act-row" onclick="window.location='ht.html'">
+      <a href="ht.html" class="act-row">
         <div class="act-icon warn"><i class="ti ti-flame" aria-hidden="true"></i></div>
         <div class="act-body">
-          <a href="ht.html" class="act-label" onclick="event.stopPropagation()">HT Completed</a>
+          <span class="act-label">HT Completed</span>
           <span class="act-sub">Awaiting hard machining</span>
         </div>
         <span class="act-val">${htDone}</span>
         <i class="ti ti-arrow-right act-chev" aria-hidden="true"></i>
-      </div>
+      </a>
 
-      <div class="act-row" onclick="window.location='production.html'">
+      <a href="production.html" class="act-row">
         <div class="act-icon info"><i class="ti ti-settings" aria-hidden="true"></i></div>
         <div class="act-body">
-          <a href="production.html" class="act-label" onclick="event.stopPropagation()">Soft Done</a>
+          <span class="act-label">Soft Done</span>
           <span class="act-sub">Awaiting heat treatment</span>
         </div>
         <span class="act-val">${softDone}</span>
         <i class="ti ti-arrow-right act-chev" aria-hidden="true"></i>
-      </div>
+      </a>
     </section>`;
 }
 
@@ -452,11 +494,34 @@ function renderOperatorDashboard() {
       </div>
     </div>` : '';
 
+  /* Tappable list of the cards on this operator's bench */
+  const queueRows = stageCards.slice(0, 40).map(c => {
+    const m    = RC_STATUS[c.status] || { l: c.status || '—', b: 'bdg-gr' };
+    const href = PIPE_HREF[c.status] || 'production.html';
+    const qty  = c.currentQty ?? c.initialQty ?? '—';
+    return `
+      <a href="${href}" class="op-queue-row">
+        <div class="op-queue-main">
+          <span class="tag-uid"><i class="ti ti-qrcode" aria-hidden="true"></i> ${c.id}</span>
+          <span class="op-queue-part">${c.partName || c.partId || '—'}</span>
+        </div>
+        <span class="op-queue-qty">${qty} pcs</span>
+        <span class="bdg ${m.b}"><span class="bdg-dot"></span>${m.l}</span>
+      </a>`;
+  }).join('');
+
+  const queueList = stageCards.length > 0 ? `
+    <div class="op-queue">
+      <div class="op-queue-hd">On Your Bench (${stageCards.length})</div>
+      ${queueRows}
+    </div>` : '';
+
   return `
     <div class="home-op">
       ${alertBanner}
       ${shiftCard}
       ${stageMetrics}
+      ${queueList}
       <a href="maintenance.html" class="btn-breakdown">
         <i class="ti ti-tool" aria-hidden="true"></i> Report Breakdown
       </a>

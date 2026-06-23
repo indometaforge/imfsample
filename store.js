@@ -531,17 +531,17 @@ function inwRenderParts() {
           <div style="font-weight:700;font-size:13px">${p.partName || '—'}</div>
           <div class="mono text-xs text-muted">${p.partNo || '—'}</div>
         </div>
-        <button onclick="_inwParts.splice(${i},1);inwRenderParts()" class="btn btn-d btn-sm" aria-label="Remove part">
+        <button onclick="_inwParts.splice(${i},1);inwRenderParts()" class="btn btn-d btn-sm btn-tap" aria-label="Remove part">
           <i class="ti ti-x" aria-hidden="true"></i>
         </button>
       </div>
       <div class="row-2 mt-8">
         <div class="f" style="margin:0">
-          <label style="font-size:10px;font-weight:700;color:var(--txt-muted);text-transform:uppercase">Qty (pcs)</label>
+          <label style="font-size:11.5px;font-weight:700;color:var(--txt-muted);text-transform:uppercase">Qty (pcs)</label>
           <input type="number" min="1" value="${p.qty || ''}" onchange="_inwParts[${i}].qty=Math.max(1,+this.value||1);inwRenderParts()">
         </div>
         <div class="f" style="margin:0">
-          <label style="font-size:10px;font-weight:700;color:var(--txt-muted);text-transform:uppercase">Rate (₹/pc)</label>
+          <label style="font-size:11.5px;font-weight:700;color:var(--txt-muted);text-transform:uppercase">Rate (₹/pc)</label>
           <input type="number" min="0" step="0.01" value="${p.rate || ''}" onchange="_inwParts[${i}].rate=parseFloat(this.value)||0;inwRenderParts()">
         </div>
       </div>
@@ -647,8 +647,36 @@ async function saveInward(editId) {
   }
 }
 
-async function deleteInward(id) {
-  if (!confirm('Delete this inward receipt? This cannot be undone.')) return;
+/* Two-step styled confirmation (no native confirm — CLAUDE.md §6.2) */
+function deleteInward(id) {
+  const r = S.inward.find(x => x.id === id);
+  if (!r) return;
+  const parts    = r.parts || [];
+  const totalPcs = parts.reduce((s, p) => s + (+p.qty || 0), 0);
+  const matLabel = parts.length === 1 ? (parts[0].partName || '1 part') : `${parts.length} parts`;
+  openModal(`
+    <div class="modal-title" style="color:var(--err)"><i class="ti ti-alert-triangle"></i> Delete Inward Receipt</div>
+    <div class="ebox mb-12">
+      <i class="ti ti-alert-triangle" aria-hidden="true"></i>
+      <span>This permanently deletes this receipt and removes its <strong>${totalPcs} pcs</strong> from stock. This cannot be undone.</span>
+    </div>
+    <div style="background:var(--sur2);border-radius:var(--rs);padding:10px 12px;margin-bottom:14px">
+      <div class="text-sm"><strong>Supplier:</strong> ${r.supplierName || '—'}</div>
+      <div class="text-sm"><strong>Date:</strong> ${fmtDate(r.date)}</div>
+      ${r.masterLotCode ? `<div class="text-sm"><strong>Lot:</strong> <span class="mono">${r.masterLotCode}</span></div>` : ''}
+      <div class="text-sm"><strong>Material:</strong> ${matLabel} · ${totalPcs} pcs</div>
+    </div>
+    <div id="modal-err"></div>
+    <div class="flex gap-8 mt-16">
+      <button class="btn btn-d flex-1" onclick="deleteInwardDo('${id}')">
+        <i class="ti ti-trash" aria-hidden="true"></i> Confirm Delete
+      </button>
+      <button class="btn btn-s flex-1" onclick="closeModal()">Cancel</button>
+    </div>
+  `);
+}
+
+async function deleteInwardDo(id) {
   try {
     const before = S.inward.find(x => x.id === id);
     await db.collection('inward').doc(id).delete();
@@ -670,10 +698,15 @@ async function deleteInward(id) {
 
 /** Stock calc — only counts accepted/conditional lots, never rejected or pending */
 function reqCalcStock(partId) {
+  // Stock is tracked at the raw-material level: a finished part may be machined
+  // from a different raw blank, so resolve to the raw part before summing.
+  const R = rawMaterialOf(partId);
   const totalIn = S.inward
     .filter(iw => !iw.iqcStatus || iw.iqcStatus === 'accepted' || iw.iqcStatus === 'conditional')
-    .reduce((s, iw) => s + (iw.parts || []).filter(p => p.partId === partId).reduce((a, p) => a + (+p.qty || 0), 0), 0);
-  const totalIssued = S.routeCards.filter(rc => rc.partId === partId).reduce((s, rc) => s + (+rc.issuedQty || 0), 0);
+    .reduce((s, iw) => s + (iw.parts || []).filter(p => p.partId === R).reduce((a, p) => a + (+p.qty || 0), 0), 0);
+  const totalIssued = S.routeCards
+    .filter(rc => rawMaterialOf(rc.partId) === R)
+    .reduce((s, rc) => s + (+rc.issuedQty || 0), 0);
   return Math.max(0, totalIn - totalIssued);
 }
 
@@ -915,7 +948,7 @@ function issRenderTagSection() {
 
       <!-- Range progress bar -->
       <div style="padding:10px 16px 0;background:var(--sur2);border-bottom:1px solid var(--bdr)">
-        <div style="display:flex;justify-content:space-between;font-size:10px;font-weight:700;
+        <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;
                     color:var(--txt-muted);margin-bottom:4px;letter-spacing:.04em">
           <span style="color:${!minMet && sessionTotal > 0 ? 'var(--warn)' : 'var(--txt-muted)'}">MIN ${ISS_BATCH_MIN}</span>
           <span>${sessionTotal} pcs in session</span>
@@ -985,7 +1018,7 @@ function issRenderTagSection() {
                 <i class="ti ti-tag" style="color:var(--imf-navy);opacity:.7;font-size:15px;flex-shrink:0"></i>
                 <span style="font-family:monospace;font-weight:700;font-size:13px;flex:1">${t.tagId}</span>
                 <span style="font-size:12px;color:var(--txt-muted)">${t.qty} pcs</span>
-                <button class="btn btn-d btn-sm" onclick="issRemoveTag(${i})" aria-label="Remove" style="padding:3px 7px">
+                <button class="btn btn-d btn-sm btn-tap" onclick="issRemoveTag(${i})" aria-label="Remove">
                   <i class="ti ti-x"></i>
                 </button>
               </div>`).join('')}
@@ -1180,10 +1213,12 @@ function renderStock() {
 
   S.inward.forEach(r => {
     (r.parts || []).forEach(p => {
-      const key = p.partId || p.partName;
+      // Aggregate at the raw-material level (inward is already recorded under
+      // the raw part's number, so this is a no-op for normal parts).
+      const key = rawMaterialOf(p.partId) || p.partName;
       if (!key) return;
       if (!byPart[key]) {
-        const masterPart = (S.parts || []).find(mp => mp.id === p.partId);
+        const masterPart = (S.parts || []).find(mp => mp.id === key);
         byPart[key] = {
           partId:   p.partId   || '',
           partName: p.partName || '—',
@@ -1211,7 +1246,7 @@ function renderStock() {
   /* ── 2. Issued per part (all time, for available balance) ───── */
   const issuedByPart = {};
   S.routeCards.forEach(rc => {
-    const key = rc.partId || rc.partName;
+    const key = rawMaterialOf(rc.partId) || rc.partName;
     if (!key) return;
     issuedByPart[key] = (issuedByPart[key] || 0) + (+rc.issuedQty || 0);
   });
@@ -1230,7 +1265,7 @@ function renderStock() {
   const issdByPartPeriod = {};
   S.routeCards.forEach(rc => {
     if (!inPeriod(tsToDateStr(rc.issuedAt), _stockPeriod)) return;
-    const key = rc.partId || rc.partName;
+    const key = rawMaterialOf(rc.partId) || rc.partName;
     if (!key) return;
     issdByPartPeriod[key] = (issdByPartPeriod[key] || 0) + (+rc.issuedQty || 0);
   });
@@ -1289,44 +1324,32 @@ function renderStock() {
     `<option value="${id}" ${_stockCustFilt===id?'selected':''}>${name}</option>`).join('');
 
   /* ── 8. Stat cards + unified period filter ────────────────────── */
+  /* Shared stat-card component (matches TAG Registry — see styles.css .stat-card) */
   const statCard = (opts) => `
-    <div style="background:var(--sur);border:1px solid var(--bdr);border-radius:var(--rs);
-                padding:14px 16px;border-top:3px solid ${opts.accent};
-                display:flex;flex-direction:column;min-height:100px;box-sizing:border-box">
-      <div style="font-size:10px;font-weight:800;letter-spacing:.07em;color:${opts.accent};margin-bottom:8px">${opts.label}</div>
-      <div style="display:flex;align-items:flex-end;justify-content:space-between;flex:1">
-        <div>
-          <div style="font-size:26px;font-weight:900;line-height:1;color:var(--txt)">${opts.value}</div>
-          <div style="font-size:11px;color:var(--txt-muted);margin-top:4px">${opts.sub}</div>
-        </div>
-        <i class="ti ${opts.icon}" style="font-size:28px;color:${opts.accent};opacity:.15;flex-shrink:0;margin-left:8px"></i>
-      </div>
-      ${opts.extra ? `<div style="font-size:11px;color:var(--txt-muted);border-top:1px solid var(--bdr);padding-top:6px;margin-top:8px">${opts.extra}</div>` : ''}
+    <div class="stat-card ${opts.cls}">
+      ${opts.icon ? `<i class="ti ${opts.icon} stat-icon" aria-hidden="true"></i>` : ''}
+      <div class="stat-lbl">${opts.label}</div>
+      <div class="stat-val">${opts.value}</div>
+      <div class="stat-sub">${opts.sub}</div>
+      ${opts.extra ? `<div class="stat-extra">${opts.extra}</div>` : ''}
     </div>`;
 
   const periodLabel = STOCK_PERIODS.find(p => p.key === _stockPeriod)?.label || 'All Time';
   const periodSelector = `
-    <div style="display:flex;gap:4px;background:var(--sur2);border:1px solid var(--bdr);
-                border-radius:var(--rpill);padding:3px;margin-bottom:12px;overflow-x:auto;flex-wrap:nowrap">
+    <div class="seg-bar">
       ${STOCK_PERIODS.map(p => `
-        <button onclick="setStockPeriod('${p.key}')"
-          style="flex:1;min-width:60px;padding:6px 10px;border-radius:var(--rpill);border:none;cursor:pointer;
-                 font-size:12px;font-weight:${_stockPeriod===p.key?'700':'500'};white-space:nowrap;
-                 background:${_stockPeriod===p.key?'var(--imf-navy)':'transparent'};
-                 color:${_stockPeriod===p.key?'#fff':'var(--txt-muted)'};transition:all .15s">
-          ${p.label}
-        </button>`).join('')}
+        <button class="seg-btn${_stockPeriod === p.key ? ' active' : ''}" onclick="setStockPeriod('${p.key}')">${p.label}</button>`).join('')}
     </div>`;
 
   const statsHtml = `
     ${periodSelector}
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
+    <div class="stats-3">
       ${statCard({
         label: 'AVAILABLE',
         value: totalAvailable.toLocaleString('en-IN'),
         sub:   'pcs · always current',
         icon:  'ti-package',
-        accent:'var(--ok)',
+        cls:   'ok',
         extra: totalValue > 0 ? `${fmtINR(totalValue)} total stock value` : '',
       })}
       ${statCard({
@@ -1334,14 +1357,14 @@ function renderStock() {
         value: rcvdFiltered.toLocaleString('en-IN'),
         sub:   `pcs · ${periodLabel.toLowerCase()}`,
         icon:  'ti-package-import',
-        accent:'var(--acc)',
+        cls:   'info',
       })}
       ${statCard({
         label: 'ISSUED TO WIP',
         value: issdFiltered.toLocaleString('en-IN'),
         sub:   `pcs · ${periodLabel.toLowerCase()}`,
         icon:  'ti-arrow-bar-right',
-        accent:'#7c3aed',
+        cls:   'violet',
       })}
     </div>`;
 
@@ -1400,13 +1423,12 @@ function renderStock() {
 
     const lotRows = p.lots.map(l => {
       const lotIssued = S.routeCards.filter(rc =>
-        (rc.partId || rc.partName) === p.key && rc.masterLotCode === l.lotCode
+        (rawMaterialOf(rc.partId) || rc.partName) === p.key && rc.masterLotCode === l.lotCode
       ).reduce((s, rc) => s + (+rc.issuedQty || 0), 0);
       const lotAvail = Math.max(0, l.qty - lotIssued);
       const lotPct   = l.qty > 0 ? Math.round((lotAvail / l.qty) * 100) : 0;
       return `
-        <div style="padding:8px 10px 8px 14px;border-left:3px solid var(--bdr-mid);margin-left:10px;
-                    margin-bottom:4px;background:var(--bg);border-radius:0 6px 6px 0">
+        <div class="lot-row">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
             <div>
               <div class="lot-badge" style="font-size:11px;margin-bottom:4px">

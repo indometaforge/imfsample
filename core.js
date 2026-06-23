@@ -770,6 +770,13 @@ const buildOpts = (arr, valKey, labelFn, selectedVal = '') =>
      </option>`
   ).join('');
 
+/** Resolve a part's raw-material part id. Falls back to the part itself when
+   the field is absent (grandfathers legacy parts) or the part isn't found. */
+const rawMaterialOf = (partId) => {
+  const p = (S.parts || []).find(x => x.id === partId);
+  return (p && p.rawMaterialPartId) || partId;
+};
+
 /** Part search — returns filtered parts matching query */
 const searchParts = (query) => {
   const q = query.toLowerCase().trim();

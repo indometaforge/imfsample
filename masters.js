@@ -489,6 +489,8 @@ function openPartModal(id) {
   const p    = id ? S.parts.find(x => x.id === id) : null;
   const cust = p ? partCustomer(p) : null;
   const custOpts = S.customers.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const rawParts = S.parts.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const rawSel   = p?.rawMaterialPartId || p?.id || '';
 
   openModal(`
     <div class="modal-title">${p ? 'Edit Part' : 'Add Part'}</div>
@@ -512,6 +514,14 @@ function openPartModal(id) {
     <div class="f">
       <label for="pf-mat">Material Grade</label>
       <input type="text" id="pf-mat" value="${p?.matGrade || ''}" placeholder="e.g. 20MnCr5">
+    </div>
+    <div class="f">
+      <label for="pf-raw">Raw Material Part</label>
+      <select id="pf-raw">
+        <option value="">Defaults to this part</option>
+        ${buildOpts(rawParts, 'id', x => `${x.name} (${x.no || '—'})`, rawSel)}
+      </select>
+      <div class="text-xs text-muted mt-8">Defaults to this part. Change only if this part is machined from a different raw blank.</div>
     </div>
 
     ${modalActions('Save Part', `savePart(${p ? `'${p.id}'` : 'null'})`)}
@@ -544,6 +554,7 @@ async function savePart(id) {
   const name     = getField('pf-name');
   const custId   = document.getElementById('pf-cust').value;
   const matGrade = getField('pf-mat');
+  const rawPick  = document.getElementById('pf-raw').value;
 
   if (!no || !name || !custId) {
     showModalError('Part Number, Part Name and Customer are required.');
@@ -553,6 +564,8 @@ async function savePart(id) {
   const data = { no, name, custId, matGrade };
   try {
     if (id) {
+      // Blank/self choice defaults to the part's own id (grandfathers legacy parts)
+      data.rawMaterialPartId = rawPick || id;
       const before = S.parts.find(x => x.id === id);
       await db.collection('parts').doc(id).update(data);
       await logAudit('UPDATE_PART', 'MASTERS', id, before, data);
@@ -560,6 +573,9 @@ async function savePart(id) {
       const ref = await db.collection('parts').add({
         ...data, createdAt: serverTS(), createdBy: S.sess.userId
       });
+      // No id existed when the form rendered — default a blank choice to self now
+      data.rawMaterialPartId = rawPick || ref.id;
+      await ref.update({ rawMaterialPartId: data.rawMaterialPartId });
       await logAudit('CREATE_PART', 'MASTERS', ref.id, null, data);
     }
     closeModal();
