@@ -99,7 +99,7 @@ function render() {
   ];
 
   const tabHtml = tabs.map(t => `
-    <button class="tab ${_tab===t.key?'active':''}" onclick="switchTab('${t.key}')">
+    <button class="tab ${_tab===t.key?'active':''}" role="tab" aria-selected="${_tab===t.key}" onclick="switchTab('${t.key}')">
       ${t.label}
       ${t.count > 0 ? `<span class="bdg bdg-n" style="margin-left:4px;padding:1px 6px;font-size:10px">${t.count}</span>` : ''}
     </button>`).join('');
@@ -180,7 +180,7 @@ function render() {
            </div>`}
 
       <!-- Tabs -->
-      <div class="tabs">
+      <div class="tabs" role="tablist">
         ${tabHtml}
       </div>
 
@@ -389,7 +389,7 @@ async function deleteSetupAPR(id) {
     toast('Setup log deleted ✓');
     await refreshAll();
   } catch (e) {
-    toast('Error deleting setup: ' + e.message);
+    toast('Error deleting setup: ' + friendlyError(e));
   }
 }
 
@@ -473,7 +473,7 @@ async function _commitApproveReq(id, r, updatedLines, rmk) {
     await logAudit('APPROVE_REQUISITION', 'APPROVALS', id, r, { status: 'approved', lines: updatedLines });
     toast('Requisition approved ✓');
     await refreshAll();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 function rejectReq(id) {
@@ -499,7 +499,7 @@ async function _commitRejectReq(id, r, rmk) {
     await logAudit('REJECT_REQUISITION', 'APPROVALS', id, r, { status: 'rejected', rejectionReason: rmk });
     toast('Requisition rejected');
     await refreshAll();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* ── Actions: Setup Approval ───────────────────────────────────────── */
@@ -528,7 +528,7 @@ async function _commitApproveSetup(id, s, rmk) {
     await logAudit('APPROVE_SETUP', 'APPROVALS', id, s, { status: 'approved' });
     toast('Setup approved ✓');
     await refreshAll();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 function rejectSetup(id) {
@@ -555,7 +555,7 @@ async function _commitRejectSetup(id, s, rmk) {
     await logAudit('REJECT_SETUP', 'APPROVALS', id, s, { status: 'rejected', rejectionReason: rmk });
     toast('Setup rejected');
     await refreshAll();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* ── Actions: Sequence Deviation ───────────────────────────────────── */
@@ -595,7 +595,7 @@ async function _commitApproveDeviation(id, s, rmk) {
 
     toast('Deviation approved ✓ — setup released to QC');
     await refreshAll();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 function rejectDeviation(id) {
@@ -636,7 +636,7 @@ async function _commitRejectDeviation(id, s, rmk) {
 
     toast('Deviation rejected — linked setup rejected, will not reach QC');
     await refreshAll();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* ── Card: Maintenance Spares Request ──────────────────────────────── */
@@ -734,7 +734,7 @@ async function _commitApproveSpares(id, s, rmk) {
     await logAudit('APPROVE_SPARES', 'APPROVALS', id, s, { status: 'approved' });
     toast('Spares request approved ✓');
     await refreshAll();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 function rejectSpares(id) {
@@ -761,7 +761,7 @@ async function _commitRejectSpares(id, s, rmk) {
     await logAudit('REJECT_SPARES', 'APPROVALS', id, s, { status: 'rejected', rejectionReason: rmk });
     toast('Spares request rejected');
     await refreshAll();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* ── Print: Approved MRO Spares ────────────────────────────────────── */

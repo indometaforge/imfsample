@@ -313,6 +313,27 @@ async function logAudit(actionType, module, recordId, beforeVal = null, afterVal
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+   FRIENDLY ERRORS — map raw Firestore/network errors to plain language
+   so a flaky shop-floor connection never surfaces a raw error code.
+   ══════════════════════════════════════════════════════════════════════ */
+function friendlyError(e) {
+  const code = e?.code || '';
+  if (!navigator.onLine || code === 'unavailable' || /network/i.test(e?.message || '')) {
+    return 'No connection — check your network and try again.';
+  }
+  if (code === 'permission-denied') {
+    return "You don't have permission to do that. Contact your administrator.";
+  }
+  if (code === 'not-found') {
+    return 'That record no longer exists — refresh and try again.';
+  }
+  if (code === 'deadline-exceeded' || code === 'cancelled') {
+    return 'That took too long — check your connection and try again.';
+  }
+  return 'Something went wrong saving this. Try again, and contact your administrator if it keeps happening.';
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    TOAST
    ══════════════════════════════════════════════════════════════════════ */
 let _toastTimer = null;
@@ -404,9 +425,6 @@ function initSidebar() {
   document.querySelectorAll('.sbi[data-page]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.page === page);
   });
-  document.querySelectorAll('.bni[data-page]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.page === page);
-  });
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -475,31 +493,6 @@ function buildSidebar() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   BOTTOM NAV HTML BUILDER
-   ══════════════════════════════════════════════════════════════════════ */
-function buildBottomNav() {
-  const items = [
-    { page: 'home',        icon: 'ti-home',              label: 'Home' },
-    { page: 'production',  icon: 'ti-settings',           label: 'Prod',  perm: 'production' },
-    { page: 'qc',          icon: 'ti-clipboard-check',    label: 'QC',    perm: 'qc' },
-    { page: 'maintenance', icon: 'ti-tool',               label: 'Maint', perm: 'maintenance' },
-    { page: 'dispatch',    icon: 'ti-truck',              label: 'Dispt', perm: 'dispatch' },
-  ];
-
-  const curPage = location.pathname.split('/').pop().replace('.html', '');
-
-  return items.map(item => {
-    if (item.perm && !canView(item.perm)) return '';
-    const active = item.page === curPage ? 'active' : '';
-    return `
-      <a href="${item.page}.html" class="bni ${active}" data-page="${item.page}">
-        <i class="bni-icon ti ${item.icon}" aria-hidden="true"></i>
-        <span class="bni-label">${item.label}</span>
-      </a>`;
-  }).join('');
-}
-
-/* ══════════════════════════════════════════════════════════════════════
    APP SHELL RENDERER
    Call initShell() in every page's DOMContentLoaded.
    ══════════════════════════════════════════════════════════════════════ */
@@ -511,11 +504,9 @@ async function initShell() {
     return;
   }
 
-  /* Render sidebar and bottom nav */
+  /* Render sidebar */
   const sbEl = document.getElementById('sidebar');
-  const bnEl = document.getElementById('bottom-nav');
   if (sbEl) sbEl.innerHTML = buildSidebar();
-  if (bnEl) bnEl.innerHTML = buildBottomNav();
 
   /* TEST MODE banner — visual reminder that transactional writes are
      redirected to TEST_ collections, not live data (mirrors i-v3.html) */

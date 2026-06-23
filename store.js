@@ -20,6 +20,7 @@ let activeTab = 'inward';
 let searchQ   = '';
 
 let _inwFilt  = 'all';  /* supplier / IQC filter for Inward list */
+let _inwExpanded = {};  /* receiptId → bool (part/DC/invoice breakdown expanded) */
 let _rcFilt   = 'all';  /* status filter for Route Cards list */
 
 let _stockSearch   = '';    /* Stock Balance search query */
@@ -78,7 +79,7 @@ async function init() {
     render();
   } catch (e) {
     console.error('Store data load failed:', e);
-    toast('Error loading store data: ' + e.message, 5000);
+    toast('Error loading store data: ' + friendlyError(e), 5000);
     render();
   }
 
@@ -145,6 +146,7 @@ function switchTab(key) {
   activeTab = key;
   searchQ   = '';
   _issReq = null; _issLine = null; _issTags = []; _issBatchCode = '';
+  _inwExpanded = {};
   _stockSearch = ''; _stockCustFilt = 'all'; _stockExpanded = {}; _stockPeriod = 'all';
   _issReq = null; _issLine = null; _issTags = []; _issBatchCode = ''; _issLot = null;
   render();
@@ -327,14 +329,7 @@ function renderInward() {
       </button>` : ''}
 
     ${list.length ? `
-      <div style="display:grid;grid-template-columns:80px 1fr auto auto;gap:0;
-                  font-size:10px;font-weight:700;color:var(--txt-muted);letter-spacing:.05em;
-                  border-bottom:2px solid var(--bdr);padding:5px 10px;margin-bottom:2px">
-        <div>DATE</div>
-        <div>SUPPLIER / LOT CODE</div>
-        <div style="text-align:right">PCS</div>
-        <div style="text-align:right;padding-left:12px">IQC</div>
-      </div>
+      <div style="font-size:11px;color:var(--txt-muted);margin-bottom:4px">${list.length} receipt${list.length!==1?'s':''} · tap a row for the part-by-part breakdown</div>
       ${list.map(inwardRow).join('')}
     ` : emptyState('ti-package-import', 'No inward receipts found',
         _inwFilt === '__inv_pending__' ? 'No receipts with pending invoices.'
@@ -347,31 +342,50 @@ function inwardRow(r) {
   const parts = r.parts || [];
   const totalPcs = parts.reduce((s, p) => s + (+p.qty || 0), 0);
   const totalVal = parts.reduce((s, p) => s + ((+p.qty || 0) * (+p.rate || 0)), 0);
-  const onclick = canDo('inward') ? `onclick="openInwardModal('${r.id}')"` : '';
   const invPending = r.dcNo && !r.invoiceNo && !isInterCompany(r.supplierName);
   const iqcStatus = r.iqcStatus || null; /* legacy records without iqcStatus are grandfathered */
-  const docLine = [r.dcNo ? `DC: ${r.dcNo}` : '', r.invoiceNo ? `INV: ${r.invoiceNo}` : ''].filter(Boolean).join(' · ');
-  const partSummary = parts.slice(0, 2).map(p => p.partName).join(', ') + (parts.length > 2 ? ` +${parts.length - 2}` : '');
   const iqcClass = iqcStatus === 'rejected' ? ' iqc-rejected' : iqcStatus === 'pending' ? ' iqc-pending' : '';
+  const expanded = !!_inwExpanded[r.id];
+  const partLabel = parts.length === 1 ? (parts[0].partName || '1 part') : `${parts.length} parts`;
+
   return `
-    <div class="inw-row${iqcClass}" ${onclick}>
-      <div class="inw-date">${fmtDate(r.date)}</div>
-      <div class="inw-info">
-        <div style="font-weight:700;font-size:13px;display:flex;align-items:center;gap:8px">
-          ${r.supplierName || '—'}
-          ${invPending ? `<span class="bdg bdg-a" style="font-size:10px">Invoice Pending</span>` : ''}
+    <div class="inw-row${iqcClass}">
+      <button type="button" class="inw-row-btn" onclick="_inwExpanded['${r.id}']=!_inwExpanded['${r.id}'];renderSection()" aria-expanded="${expanded}">
+        <div class="inw-row-main">
+          <div class="inw-row-name">${r.supplierName || '—'}</div>
+          <div class="inw-row-meta">
+            <span>${fmtDate(r.date)}</span>
+            ${r.masterLotCode ? `<span class="mono">· ${r.masterLotCode}</span>` : ''}
+            <span>· ${partLabel}</span>
+          </div>
+          <div class="inw-row-badges">
+            ${invPending ? `<span class="bdg bdg-a">Invoice Pending</span>` : ''}
+            ${iqcStatus ? `<span class="bdg ${IQC_BADGE[iqcStatus] || 'bdg-gr'}"><span class="bdg-dot"></span>${IQC_LABEL[iqcStatus]||iqcStatus}</span>` : ''}
+          </div>
         </div>
-        <div style="font-size:11px;color:var(--txt-muted);margin-top:2px;display:flex;align-items:center;gap:8px">
-          ${r.masterLotCode ? `<span class="mono">${r.masterLotCode}</span>` : ''}
-          <span>${partSummary}</span>
-          ${docLine ? `<span style="color:var(--bdr-strong)">· ${docLine}</span>` : ''}
+        <div class="inw-row-qty">
+          <div class="inw-row-qty-num">${totalPcs}</div>
+          <div class="inw-row-qty-lbl">pcs</div>
         </div>
-        ${totalVal > 0 ? `<div style="font-size:11px;color:var(--txt-muted);margin-top:2px">${fmtINR(totalVal)}</div>` : ''}
-      </div>
-      <div class="inw-qty">${totalPcs}</div>
-      <div class="inw-badge">
-        ${iqcStatus ? `<span class="bdg ${IQC_BADGE[iqcStatus] || 'bdg-gr'}" style="font-size:10px"><span class="bdg-dot"></span>${IQC_LABEL[iqcStatus]||iqcStatus}</span>` : ''}
-      </div>
+        <i class="ti ti-chevron-${expanded ? 'up' : 'down'}" aria-hidden="true" style="color:var(--txt-dim);flex-shrink:0"></i>
+      </button>
+      ${expanded ? `
+        <div class="inw-row-detail">
+          ${parts.map(p => `
+            <div class="inw-part-line">
+              <div class="inw-part-line-name">${p.partName || '—'}${p.partNo ? `<span class="mono"> · ${p.partNo}</span>` : ''}</div>
+              <div class="inw-part-line-qty">${p.qty || 0} pcs${p.rate ? ` × ${fmtINR(p.rate)}` : ''}</div>
+            </div>`).join('')}
+          <div class="inw-detail-meta">
+            ${r.dcNo ? `<span><strong>DC:</strong> ${r.dcNo}</span>` : ''}
+            ${r.invoiceNo ? `<span><strong>Invoice:</strong> ${r.invoiceNo}</span>` : ''}
+            ${totalVal > 0 ? `<span><strong>Total:</strong> ${fmtINR(totalVal)}</span>` : ''}
+          </div>
+          ${canDo('inward') ? `
+            <button class="btn btn-s btn-sm" style="width:100%;margin-top:8px" onclick="openInwardModal('${r.id}')">
+              <i class="ti ti-edit" aria-hidden="true"></i> Edit Receipt
+            </button>` : ''}
+        </div>` : ''}
     </div>`;
 }
 
@@ -629,7 +643,7 @@ async function saveInward(editId) {
     renderSection();
     toast(editId ? 'Receipt updated' : 'Inward receipt saved — send to IQC for inspection');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -644,7 +658,7 @@ async function deleteInward(id) {
     renderSection();
     toast('Receipt deleted');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -1018,7 +1032,7 @@ async function issAddTag() {
     const existing = await db.collection('routeCards').doc(tagId).get();
     if (existing.exists) { toast(tagId + ' is already in use (status: ' + existing.data().status + ')'); return; }
   } catch (e) {
-    toast('Error checking TAG: ' + e.message);
+    toast('Error checking TAG: ' + friendlyError(e));
     return;
   }
 
@@ -1119,7 +1133,7 @@ async function issSubmitSession() {
     await Promise.all([refreshStore('routeCards'), refreshStore('requisitions')]);
     renderIssue();
   } catch (e) {
-    toast('Error: ' + e.message);
+    toast(friendlyError(e));
   }
 }
 
@@ -1368,12 +1382,7 @@ function renderStock() {
 
     ${partList.length === 0
       ? emptyState('ti-chart-pie', 'No stock found', q || _stockCustFilt!=='all' ? 'Try clearing the filter.' : 'Add inward receipts to start tracking stock.')
-      : `<div class="stk-head-row">
-           <div>COMPONENT</div>
-           <div style="text-align:right">RCVD</div>
-           <div style="text-align:right">ISSUED</div>
-           <div style="text-align:right">AVAIL</div>
-         </div>
+      : `<div style="font-size:11px;color:var(--txt-muted);margin-bottom:4px">${partList.length} component${partList.length!==1?'s':''} · tap a row for the received/issued breakdown</div>
          <div id="stock-body"></div>`}
   `;
 
@@ -1386,7 +1395,6 @@ function renderStock() {
     const pct    = p.received > 0 ? Math.round((p.available / p.received) * 100) : 0;
     const isOut  = p.available === 0 && !isOver;
     const isLow  = !isOut && !isOver && pct < 20;
-    const barColor  = isOver ? 'var(--err)' : isOut ? 'var(--err)' : isLow ? 'var(--warn)' : 'var(--ok)';
     const availColor = isOver || isOut ? 'var(--err)' : isLow ? 'var(--warn)' : 'var(--ok)';
     const expanded  = _stockExpanded[p.key];
 
@@ -1423,35 +1431,49 @@ function renderStock() {
         </div>`;
     }).join('');
 
+    const statusBdg = isOver ? `<span class="bdg bdg-r"><i class="ti ti-alert-triangle"></i> Over-issued by ${p.issued - p.received}</span>`
+                     : isOut ? `<span class="bdg bdg-r">Out of stock</span>`
+                     : isLow ? `<span class="bdg bdg-a">Low stock</span>` : '';
+
     return `
       <div style="border-bottom:1px solid var(--bdr);${isOver?'background:var(--err-bg);':''}">
         <button type="button" onclick="_stockExpanded['${p.key}']=!_stockExpanded['${p.key}'];renderStock()"
-          class="stk-row" style="appearance:none;-webkit-appearance:none;font:inherit;color:inherit;background:none;border:none;
-                 width:100%;text-align:left;cursor:pointer;user-select:none">
-          <div class="stk-name">
-            <div style="font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.partName}</div>
-            <div style="font-size:11px;color:var(--txt-muted);margin-top:2px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-              ${p.partNo ? `<span style="font-family:monospace">${p.partNo}</span>` : ''}
-              ${p.custName ? `<span>· ${p.custName}</span>` : ''}
-              ${isOver ? `<span style="color:var(--err);font-weight:700">· <i class="ti ti-alert-triangle"></i> OVER-ISSUED by ${p.issued - p.received} pcs</span>`
-                       : isOut ? `<span style="color:var(--err);font-weight:700">· OUT OF STOCK</span>`
-                       : isLow ? `<span style="color:var(--warn);font-weight:700">· LOW STOCK</span>` : ''}
+          class="stk-row-btn" aria-expanded="${!!expanded}">
+          <div class="stk-row-main">
+            <div class="stk-row-name">${p.partName}</div>
+            <div class="stk-row-meta">
+              ${p.partNo ? `<span class="mono">${p.partNo}</span>` : ''}
+              ${p.custName ? `<span>${p.partNo ? '· ' : ''}${p.custName}</span>` : ''}
             </div>
-            <div style="margin-top:5px;height:4px;background:var(--bdr);border-radius:2px;overflow:hidden">
-              <div style="height:100%;width:${isOver?100:pct}%;background:${barColor};border-radius:2px"></div>
-            </div>
+            ${statusBdg}
           </div>
-          <div class="stk-num" style="grid-area:rcvd;color:${p.rcvdPeriod>0?'var(--txt-muted)':'var(--bdr-strong)'}">
-            <span class="stk-num-lbl">Rcvd</span>${p.rcvdPeriod > 0 ? p.rcvdPeriod : '—'}
+          <div class="stk-row-avail">
+            <div class="stk-row-avail-num" style="color:${availColor}">${p.available}</div>
+            <div class="stk-row-avail-lbl">available</div>
           </div>
-          <div class="stk-num" style="grid-area:issued;color:${p.issdPeriod>0?'var(--txt-muted)':'var(--bdr-strong)'}">
-            <span class="stk-num-lbl">Issued</span>${p.issdPeriod > 0 ? p.issdPeriod : '—'}
-          </div>
-          <div class="stk-num" style="grid-area:avail;font-size:14px;font-weight:800;color:${availColor}">
-            <span class="stk-num-lbl">Avail</span>${p.available}
-          </div>
+          <i class="ti ti-chevron-${expanded ? 'up' : 'down'}" aria-hidden="true" style="color:var(--txt-dim);flex-shrink:0"></i>
         </button>
-        ${expanded ? `<div style="padding:0 0 10px">${lotRows}</div>` : ''}
+        ${expanded ? `
+          <div style="padding:0 12px 12px">
+            <div class="stk-detail-stats">
+              <div>
+                <span class="stk-detail-lbl">Received · ${periodLabel}</span>
+                <span class="stk-detail-val">${p.rcvdPeriod}</span>
+              </div>
+              <div>
+                <span class="stk-detail-lbl">Issued · ${periodLabel}</span>
+                <span class="stk-detail-val">${p.issdPeriod}</span>
+              </div>
+              <div>
+                <span class="stk-detail-lbl">Total Received (all time)</span>
+                <span class="stk-detail-val">${p.received}</span>
+              </div>
+            </div>
+            <div class="prog" style="margin-bottom:10px">
+              <div class="pf ${isOver||isOut?'pr':isLow?'pa':'pg'}" style="transform:scaleX(${(Math.min(100,isOver?100:pct)/100).toFixed(4)})"></div>
+            </div>
+            ${lotRows}
+          </div>` : ''}
       </div>`;
   }).join('');
 }
@@ -1596,7 +1618,7 @@ async function deleteRouteCard(tagId) {
     renderSection();
     toast(`${tagId} deleted — qty returned to store stock`);
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -1652,7 +1674,7 @@ async function saveTagConfig() {
     renderSection();
     toast('TAG registry updated');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 

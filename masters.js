@@ -325,7 +325,7 @@ async function deleteMachine(id) {
     renderSection();
     toast('Machine deleted');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -359,7 +359,7 @@ async function saveMachine(id) {
     renderSection();
     toast('Saved successfully');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -535,7 +535,7 @@ async function deletePart(id) {
     renderSection();
     toast('Part deleted');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -567,7 +567,7 @@ async function savePart(id) {
     renderSection();
     toast('Saved successfully');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -726,7 +726,7 @@ async function saveRouting(partId, poId) {
     renderSection();
     toast('Saved successfully');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -740,7 +740,7 @@ async function deleteRouting(poId, partId) {
     renderSection();
     toast('Removed from routing');
   } catch (e) {
-    toast('Error: ' + e.message);
+    toast(friendlyError(e));
   }
 }
 
@@ -821,7 +821,7 @@ async function deleteOperation(id) {
     renderSection();
     toast('Operation deleted');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -852,7 +852,7 @@ async function saveOperation(id) {
     renderSection();
     toast('Saved successfully');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -964,7 +964,7 @@ async function deleteCustomer(id) {
     renderSection();
     toast('Customer deleted');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -1054,7 +1054,7 @@ async function confirmMergeCustomer(deleteId) {
     toast(`Merged "${delCust.name}" → "${keepCust.name}" ✓`);
     renderSection();
   } catch (e) {
-    showModalError('Merge failed: ' + e.message);
+    showModalError('Merge failed: ' + friendlyError(e));
     if (btn) { btn.disabled = false; btn.textContent = 'Merge & Delete'; }
   }
 }
@@ -1091,7 +1091,7 @@ async function saveCustomer(id) {
     renderSection();
     toast('Saved successfully');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -1169,7 +1169,7 @@ async function deleteSupplier(id) {
     renderSection();
     toast('Supplier deleted');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -1201,7 +1201,7 @@ async function saveSupplier(id) {
     renderSection();
     toast('Saved successfully');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -1277,7 +1277,7 @@ async function deletePersonnel(id) {
     renderSection();
     toast('Personnel deleted');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -1307,7 +1307,7 @@ async function savePersonnel(id) {
     renderSection();
     toast('Saved successfully');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -1448,7 +1448,7 @@ async function sendUserPasswordReset(email) {
     await auth.sendPasswordResetEmail(email);
     toast('Password reset email sent to ' + email);
   } catch (e) {
-    toast('Error: ' + e.message);
+    toast(friendlyError(e));
   }
 }
 
@@ -1468,7 +1468,7 @@ async function deleteUserAccess(id) {
     renderSection();
     toast('User record deleted');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -1529,7 +1529,7 @@ async function saveUserAccess(id) {
     renderSection();
     toast('Saved successfully');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -1621,7 +1621,7 @@ async function saveShift(key) {
     renderSection();
     toast('Shift timings updated');
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 

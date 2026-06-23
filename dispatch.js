@@ -76,19 +76,15 @@ function render() {
   const tabHtml = TABS.map(t => {
     const active = _tab === t.key;
     return `
-      <button onclick="switchTab('${t.key}')"
-        style="flex:1;padding:8px 4px;border:none;
-               background:${active ? 'var(--acc)' : 'var(--sur)'};
-               color:${active ? '#fff' : 'var(--txt)'};
-               border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;
-               display:flex;align-items:center;justify-content:center;gap:4px;transition:background .15s">
-        <i class="ti ${t.icon}" style="font-size:13px"></i> ${t.label}
+      <button class="tab${active ? ' active' : ''}" role="tab" aria-selected="${active}"
+        onclick="switchTab('${t.key}')">
+        <i class="ti ${t.icon}" aria-hidden="true"></i> ${t.label}
       </button>`;
   }).join('');
 
   document.getElementById('page-content').innerHTML = `
     <div style="padding-bottom:80px">
-      <div style="display:flex;gap:4px;background:var(--sur);border-radius:8px;padding:4px;margin-bottom:14px">
+      <div class="tabs" role="tablist">
         ${tabHtml}
       </div>
       <div id="tab-body"></div>
@@ -347,14 +343,13 @@ function poRemoveLine(idx) {
 
 function poReadLines() {
   _poLines = _poLines.map((l, i) => {
-    const partEl = document.getElementById(`po-part-${i}`);
-    const partId = partEl?.value || l.partId;
+    const partId = document.getElementById(`po-part-id-${i}`)?.value || l.partId;
     const part   = S.parts.find(p => p.id === partId);
     return {
       ...l,
       partId,
       partNo:   part?.no   || part?.partNo   || l.partNo,
-      partName: part?.name || part?.partName || l.partName,
+      partName: part?.name || document.getElementById(`po-part-name-${i}`)?.value || l.partName,
       scheduledQty:  parseFloat(document.getElementById(`po-qty-${i}`)?.value  || '0') || 0,
       dueDate:       document.getElementById(`po-due-${i}`)?.value  || l.dueDate,
       pieceRateINR:  parseFloat(document.getElementById(`po-rate-${i}`)?.value || '0') || 0,
@@ -369,7 +364,6 @@ function renderPoLines() {
     el.innerHTML = `<div style="font-size:12px;color:var(--txt-muted);padding:6px 0">No lines added yet.</div>`;
     return;
   }
-  const partOpts = (S.parts || []).map(p => `<option value="${p.id}">${p.no || ''} — ${p.name}</option>`).join('');
   el.innerHTML = _poLines.map((l, i) => `
     <div style="background:var(--bg);border-radius:6px;padding:8px 10px;margin-bottom:8px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
@@ -380,10 +374,10 @@ function renderPoLines() {
       </div>
       <div class="f" style="margin-bottom:6px">
         <label>Part</label>
-        <select id="po-part-${i}" style="font-size:12px" onchange="poReadLines()">
-          <option value="">— Select part —</option>
-          ${partOpts.replace(`value="${l.partId}"`, `value="${l.partId}" selected`)}
-        </select>
+        <input id="po-part-name-${i}" type="text" value="${l.partName||''}"
+          placeholder="Type part name or number to search..." autocomplete="off"
+          oninput="poPartSearch(this,${i})" onblur="setTimeout(hidePartDrop,150)" style="font-size:12px">
+        <input type="hidden" id="po-part-id-${i}" value="${l.partId||''}">
       </div>
       <div class="row-3">
         <div class="f">
@@ -400,6 +394,15 @@ function renderPoLines() {
         </div>
       </div>
     </div>`).join('');
+}
+
+function poPartSearch(inputEl, idx) {
+  if (!inputEl.value.trim()) { hidePartDrop(); document.getElementById(`po-part-id-${idx}`).value = ''; return; }
+  showPartDrop(inputEl, (p) => {
+    document.getElementById(`po-part-id-${idx}`).value = p.id;
+    inputEl.value = p.name;
+    poReadLines();
+  });
 }
 
 async function savePo() {
@@ -449,7 +452,7 @@ async function savePo() {
     }
     closeModal();
     await refreshDSP();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -484,8 +487,10 @@ function renderDispatch() {
 function renderDispatchHeaderForm() {
   const openPOs   = S_DSP.pos.filter(p => p.status === 'open');
   const custOpts  = [...new Set(openPOs.map(p => p.customerId))].map(cid => {
-    const po = openPOs.find(p => p.customerId === cid);
-    return `<option value="${cid}" ${_dispHeader.customerId===cid?'selected':''}>${po?.customerName||cid}</option>`;
+    // Always resolve the canonical long name from the customer master —
+    // never trust the customerName snapshot on the PO, which can drift.
+    const custName = S.customers.find(c => c.id === cid)?.name || cid;
+    return `<option value="${cid}" ${_dispHeader.customerId===cid?'selected':''}>${custName}</option>`;
   }).join('');
 
   const filteredPOs = _dispHeader.customerId
@@ -497,7 +502,42 @@ function renderDispatchHeaderForm() {
   const partOpts = selPO
     ? (selPO.lines || []).map(l => `<option value="${l.partId}" data-rate="${l.pieceRateINR||0}" ${_dispHeader.partId===l.partId?'selected':''}>${l.partName}</option>`).join('')
     : '';
-  const streamOpts = STREAMS.map(s => `<option value="${s.key}" ${_dispHeader.stream===s.key?'selected':''}>${s.label}</option>`).join('');
+
+  // Stream is never freely chosen — it's auto-detected from the customer's
+  // allowed streams in Masters. Most customers have exactly one allowed
+  // stream, so it's locked text. If a customer is genuinely set up for more
+  // than one, the picker is restricted to only those (never the full list).
+  const selCust    = S.customers.find(c => c.id === _dispHeader.customerId);
+  const allowed    = (selCust?.allowedStreams || []).map(s => s.toLowerCase());
+  const allowedStreamDefs = STREAMS.filter(s => allowed.includes(s.key));
+  let streamField;
+  if (!selCust) {
+    streamField = `
+      <div class="f">
+        <label>Stream</label>
+        <div style="padding:9px 12px;background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);font-size:13px;color:var(--txt-dim)">
+          Select a customer first
+        </div>
+      </div>`;
+  } else if (allowedStreamDefs.length <= 1) {
+    const lbl = allowedStreamDefs[0]?.label || '—';
+    streamField = `
+      <div class="f">
+        <label>Stream <span style="color:var(--err)">*</span></label>
+        <div style="padding:9px 12px;background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);font-size:13px;font-weight:700">
+          ${lbl} <span style="font-weight:400;color:var(--txt-muted);font-size:11px">— auto-set from customer</span>
+        </div>
+        <input type="hidden" id="dh-stream" value="${allowedStreamDefs[0]?.key || ''}">
+      </div>`;
+  } else {
+    const streamOpts = allowedStreamDefs.map(s => `<option value="${s.key}" ${_dispHeader.stream===s.key?'selected':''}>${s.label}</option>`).join('');
+    streamField = `
+      <div class="f">
+        <label>Stream <span style="color:var(--err)">*</span></label>
+        <select id="dh-stream" style="font-size:13px">${streamOpts}</select>
+        <div style="font-size:11px;color:var(--txt-muted);margin-top:4px">This customer is set up for more than one stream — restricted to its allowed streams only.</div>
+      </div>`;
+  }
 
   return `
     <div class="f">
@@ -524,10 +564,7 @@ function renderDispatchHeaderForm() {
       </div>
     </div>
     <div class="row-2">
-      <div class="f">
-        <label>Stream <span style="color:var(--err)">*</span></label>
-        <select id="dh-stream" style="font-size:13px">${streamOpts}</select>
-      </div>
+      ${streamField}
       <div class="f">
         <label>Date <span style="color:var(--err)">*</span></label>
         <input type="date" id="dh-date" value="${_dispHeader.date || dateStr()}" style="font-size:13px">
@@ -541,9 +578,14 @@ function renderDispatchHeaderForm() {
 
 function dspOnCustChange() {
   _dispHeader.customerId = document.getElementById('dh-cust')?.value || '';
-  _dispHeader.customerName = S.customers.find(c => c.id === _dispHeader.customerId)?.name || '';
+  const cust = S.customers.find(c => c.id === _dispHeader.customerId);
+  _dispHeader.customerName = cust?.name || '';
   _dispHeader.poId = '';
   _dispHeader.partId = '';
+  // Auto-detect stream from the customer's allowed streams (never user-chosen).
+  const allowed = (cust?.allowedStreams || []).map(s => s.toLowerCase());
+  const allowedStreamDefs = STREAMS.filter(s => allowed.includes(s.key));
+  _dispHeader.stream = allowedStreamDefs.length === 1 ? allowedStreamDefs[0].key : (allowedStreamDefs[0]?.key || '');
   renderDispatch();
 }
 
@@ -587,6 +629,7 @@ function lockDispatchHeader() {
   if (!_dispHeader.customerId) { if (errEl) { errEl.textContent = 'Select a customer'; errEl.style.display = ''; } return; }
   if (!_dispHeader.poId)       { if (errEl) { errEl.textContent = 'Select a PO';       errEl.style.display = ''; } return; }
   if (!_dispHeader.partId)     { if (errEl) { errEl.textContent = 'Select a part';     errEl.style.display = ''; } return; }
+  if (!_dispHeader.stream)     { if (errEl) { errEl.textContent = `${cust?.name || 'This customer'} has no allowed stream set in Masters — add one before dispatching.`; errEl.style.display = ''; } return; }
 
   _dispHeaderLocked = true;
   _dispRows = [];
@@ -720,7 +763,7 @@ async function dspScanTag() {
     if (el) el.value = '';
     renderDispatch();
   } catch (e) {
-    if (errEl) { errEl.textContent = 'Error: ' + e.message; errEl.style.display = ''; }
+    if (errEl) { errEl.textContent = 'Error: ' + friendlyError(e); errEl.style.display = ''; }
   }
 }
 
@@ -911,7 +954,7 @@ async function finalizeDispatch() {
     await refreshDSP();
   } catch (e) {
     console.error('finalizeDispatch:', e);
-    toast('Dispatch failed: ' + e.message);
+    toast('Dispatch failed: ' + friendlyError(e));
   }
 }
 

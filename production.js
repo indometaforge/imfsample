@@ -80,7 +80,7 @@ async function init() {
     render();
   } catch (e) {
     console.error('Production data load failed:', e);
-    toast('Error loading data: ' + e.message, 5000);
+    toast('Error loading data: ' + friendlyError(e), 5000);
     render();
   }
   document.getElementById('loading-screen').style.display = 'none';
@@ -972,7 +972,7 @@ async function runFetchTag() {
     if (runForm) runForm.style.display = 'block';
 
   } catch (e) {
-    if (infoDiv) infoDiv.innerHTML = `<div class="ebox">Error: ${e.message}</div>`;
+    if (infoDiv) infoDiv.innerHTML = `<div class="ebox">Error: ${friendlyError(e)}</div>`;
   }
 }
 
@@ -1125,7 +1125,7 @@ async function _doFinalizeShift() {
         if (!res.ok) { toast(`Can't save: ${res.error}`, 5500); return; }
         await logAudit('edit_report', 'production', _editingReportId, oldRec, null);
       }
-    } catch (e) { toast('Error saving edit: ' + e.message); return; }
+    } catch (e) { toast('Error saving edit: ' + friendlyError(e)); return; }
   }
 
   const machines = (S.machines || []).filter(m => m.stage === _actStage && m.active !== false);
@@ -1348,7 +1348,7 @@ async function _doFinalizeShift() {
     _activeView = 'tabs';
     _activeTab  = 'reports';
     render();
-  } catch (e) { toast('Error finalizing: ' + e.message); }
+  } catch (e) { toast('Error finalizing: ' + friendlyError(e)); }
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -1465,7 +1465,7 @@ async function editReportFromList(recId) {
     _activeView = 'actual';
     render();
     toast(`Editing report — ${runCount} run(s) loaded. Change anything, then Save Changes.`, 4500);
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* Cancel an in-progress edit — original report is untouched. */
@@ -1515,7 +1515,7 @@ async function deleteReportFromList(recId) {
     await logAudit('delete_report', 'production', recId, rec, null);
     toast('Report deleted ✓');
     loadAndRenderReports();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* Jump from Log Actuals' "already finalized" notice to the Reports tab. */
@@ -1748,7 +1748,7 @@ async function submitPlanEntry() {
     _activeView = 'tabs';
     _activeTab  = 'plans';
     render();
-  } catch (e) { toast('Error submitting plan: ' + e.message); }
+  } catch (e) { toast('Error submitting plan: ' + friendlyError(e)); }
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -1891,7 +1891,7 @@ async function deleteSetup(id) {
     toast('Setup log deleted ✓');
     switchTab('setup');
   } catch (e) {
-    toast('Error deleting setup: ' + e.message);
+    toast('Error deleting setup: ' + friendlyError(e));
   }
 }
 
@@ -2065,7 +2065,7 @@ async function setupFetchTag() {
         </div>`;
     }
   } catch (e) {
-    if (infoDiv) infoDiv.innerHTML = `<div class="ebox">Error: ${e.message}</div>`;
+    if (infoDiv) infoDiv.innerHTML = `<div class="ebox">Error: ${friendlyError(e)}</div>`;
   }
 }
 
@@ -2117,7 +2117,7 @@ async function confirmRequestDeviation(tagId, missingOpName, missingSeqNo) {
     _setupDeviationCleared = true;
     _setupDeviationId = ref.id;
     await submitSetupLog();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* ── Sequence verification ("was the prior op done THIS shift?") ──────────
@@ -2304,7 +2304,7 @@ async function _finishSeqResolve() {
                   ...st.attested];
   try {
     await _recordSeqClears(st.ctx, clears);
-  } catch (e) { toast('Error recording: ' + e.message); return; }
+  } catch (e) { toast('Error recording: ' + friendlyError(e)); return; }
   closeModal();
   _seqResolveState = null;
   toast('Prior operation(s) recorded ✓');
@@ -2451,7 +2451,7 @@ async function submitSetupLog() {
     _setupCard = null; _setupTagId = ''; _setupStage = ''; _setupDeviationCleared = false; _setupDeviationId = null;
     switchTab('hub');
   } catch (e) {
-    toast('Error: ' + e.message);
+    toast(friendlyError(e));
     if (btn) { btn.disabled = false; btn.textContent = 'Submit Setup → QC Approval'; }
   }
 }
@@ -2491,7 +2491,7 @@ function breakdownCard(b) {
   const mach = (S.machines || []).find(m => m.id === b.machineId);
   const statusColor = b.status === 'open' ? 'var(--err)' : b.status === 'acknowledged' ? 'var(--warn)' : 'var(--ok)';
   return `
-    <div class="card" style="margin-bottom:10px;border-left:4px solid ${statusColor}">
+    <div class="card" style="margin-bottom:10px;border:1.5px solid ${statusColor}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
         <div>
           <div style="font-weight:700">${b.machineName || mach?.name || '—'}</div>
@@ -2593,7 +2593,7 @@ async function submitBreakdown() {
     toast('Breakdown logged ✓');
     switchTab('breakdown');
   } catch (e) {
-    toast('Error: ' + e.message);
+    toast(friendlyError(e));
     if (btn) { btn.disabled = false; btn.textContent = 'Submit'; }
   }
 }
@@ -2785,7 +2785,7 @@ async function saveReq() {
     closeModal();
     toast(_reqEditId ? 'Requisition updated ✓' : 'Requisition submitted ✓');
     switchTab('reqs');
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 function viewReqModal(id) {
@@ -2833,7 +2833,7 @@ async function _doCancelReq(id) {
     if (idx >= 0) S.requisitions[idx].status = 'rejected';
     toast('Requisition cancelled');
     switchTab('reqs');
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* ══════════════════════════════════════════════════════════════════════

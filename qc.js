@@ -99,26 +99,20 @@ function render() {
   const tabHtml = TABS.map(t => {
     const active  = _tab === t.key;
     const badge   = t.key === 'setup' ? pendingSA : t.key === 'cleared' ? pendingCleared : t.key === 'iqc' ? pendingIQC : 0;
-    const badgeBg = active ? 'rgba(255,255,255,.28)' : 'var(--warn)';
     return `
-      <button onclick="switchTab('${t.key}')"
-        style="flex:1;padding:8px 4px;border:none;
-               background:${active ? 'var(--acc)' : 'var(--sur)'};
-               color:${active ? '#fff' : 'var(--txt-mid)'};
-               border-radius:var(--rxs);font-size:11px;font-weight:700;cursor:pointer;
-               display:flex;align-items:center;justify-content:center;gap:4px;
-               transition:background .15s;white-space:nowrap">
-        <i class="ti ${t.icon}" style="font-size:13px"></i>
+      <button class="tab${active ? ' active' : ''}" role="tab" aria-selected="${active}"
+        onclick="switchTab('${t.key}')">
+        <i class="ti ${t.icon}" aria-hidden="true"></i>
         <span>${t.label}</span>
         ${badge > 0
-          ? `<span style="background:${badgeBg};color:#fff;border-radius:99px;padding:1px 6px;font-size:9px;font-weight:800;flex-shrink:0">${badge}</span>`
+          ? `<span class="bdg bdg-a" style="padding:1px 6px;font-size:9px;margin-left:4px">${badge}</span>`
           : ''}
       </button>`;
   }).join('');
 
   document.getElementById('page-content').innerHTML = `
     <div style="padding-bottom:80px">
-      <div style="display:flex;gap:3px;background:var(--sur);border-radius:var(--rs);padding:4px;margin-bottom:16px;box-shadow:var(--shadow-sm)">
+      <div class="tabs" role="tablist">
         ${tabHtml}
       </div>
       <div id="tab-body"></div>
@@ -204,7 +198,7 @@ async function qcFetchTag() {
     _inspCard = card;
     renderInspectResult();
   } catch (e) {
-    showInspectError('Failed to load TAG: ' + e.message);
+    showInspectError('Failed to load TAG: ' + friendlyError(e));
   }
 }
 
@@ -623,7 +617,7 @@ async function qcSubmitDisposition() {
     await refreshQC();
   } catch (e) {
     console.error('qcSubmitDisposition:', e);
-    toast('Error: ' + e.message);
+    toast(friendlyError(e));
   }
 }
 
@@ -799,7 +793,7 @@ async function saveIQC(inwId) {
               :                              'Lot rejected — material quarantined from stock';
     toast(msg);
   } catch (e) {
-    showModalError(e.message);
+    showModalError(friendlyError(e));
   }
 }
 
@@ -984,7 +978,7 @@ async function deleteSetupQC(id) {
     toast('Setup log deleted ✓');
     renderSetupApprovals();
   } catch (e) {
-    toast('Error deleting setup: ' + e.message);
+    toast('Error deleting setup: ' + friendlyError(e));
   }
 }
 
@@ -1004,7 +998,7 @@ async function qcApproveSetup(id) {
     await logAudit('APPROVE_SETUP', 'QC', id, s, { status: 'approved' });
     toast('Setup approved ✓');
     await refreshQC();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 async function qcRejectSetup(id) {
@@ -1022,7 +1016,7 @@ async function qcRejectSetup(id) {
     await logAudit('REJECT_SETUP', 'QC', id, s, { status: 'rejected', rejectionReason: rmk });
     toast('Setup rejected');
     await refreshQC();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* ═══════════════════════════════════════════════════════════════════

@@ -36,6 +36,8 @@ let _tab         = 'hub';
 let _chargeMode  = 'list';  // 'list' | 'new'
 let _selProcId   = '';      // charge selected in Process tab
 let _procLogDirty = false;  // unsaved process log changes
+let _htCpOpen    = null;    // explicit open checkpoint step (-1 = none), null = default to first incomplete
+let _htCpOpenChargeId = ''; // which charge _htCpOpen currently applies to
 
 let _newCharge = _emptyNewCharge();
 function _emptyNewCharge() {
@@ -83,22 +85,18 @@ function render() {
     const active = _tab === t.key;
     const badge  = t.key === 'hub' && processing > 0 ? processing : 0;
     return `
-      <button onclick="switchTab('${t.key}')"
-        style="flex:1;padding:8px 4px;border:none;
-               background:${active ? 'var(--acc)' : 'var(--sur)'};
-               color:${active ? '#fff' : 'var(--txt)'};
-               border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;
-               display:flex;align-items:center;justify-content:center;gap:4px;transition:background .15s">
-        <i class="ti ${t.icon}" style="font-size:13px"></i> ${t.label}
+      <button class="tab${active ? ' active' : ''}" role="tab" aria-selected="${active}"
+        onclick="switchTab('${t.key}')">
+        <i class="ti ${t.icon}" aria-hidden="true"></i> ${t.label}
         ${badge > 0
-          ? `<span style="background:var(--warn);color:#fff;border-radius:99px;padding:1px 6px;font-size:10px">${badge}</span>`
+          ? `<span class="bdg" style="background:var(--warn);color:#fff;padding:1px 6px;font-size:10px;margin-left:4px">${badge}</span>`
           : ''}
       </button>`;
   }).join('');
 
   document.getElementById('page-content').innerHTML = `
     <div style="padding-bottom:80px">
-      <div style="display:flex;gap:4px;background:var(--sur);border-radius:8px;padding:4px;margin-bottom:14px">
+      <div class="tabs" role="tablist">
         ${tabHtml}
       </div>
       <div id="tab-body"></div>
@@ -467,7 +465,7 @@ async function htScanTag() {
     if (el) el.value = '';
     renderNewCharge();
   } catch (e) {
-    if (errEl) { errEl.textContent = 'Error: ' + e.message; errEl.style.display = ''; }
+    if (errEl) { errEl.textContent = 'Error: ' + friendlyError(e); errEl.style.display = ''; }
   }
 }
 
@@ -496,7 +494,7 @@ async function htSubmitCharge() {
       return;
     }
   } catch (e) {
-    if (errEl) { errEl.textContent = 'Error checking heat code: ' + e.message; errEl.style.display = ''; }
+    if (errEl) { errEl.textContent = 'Error checking heat code: ' + friendlyError(e); errEl.style.display = ''; }
     return;
   }
 
@@ -570,7 +568,7 @@ async function saveCharge() {
     switchTab('process');
   } catch (e) {
     console.error('saveCharge:', e);
-    toast('Error creating charge: ' + e.message);
+    toast('Error creating charge: ' + friendlyError(e));
   }
 }
 
@@ -680,39 +678,61 @@ function renderProcess() {
         </div>
       </div>
 
-      <!-- Temperature checkpoints -->
+      <!-- Temperature checkpoints (accordion — one step at a time) -->
       <div style="border-top:1px solid var(--bdr);padding-top:12px;margin-bottom:14px">
         <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:8px">TEMPERATURE CHECKPOINTS</div>
-        ${CHECKPOINTS.map(cp => {
-          const saved = (pl.checkpoints || [])[cp.step - 1] || {};
-          return `
-            <div style="background:var(--bg);border-radius:6px;padding:8px 10px;margin-bottom:6px">
-              <div style="font-size:11px;font-weight:700;color:var(--txt-mid);margin-bottom:6px">
-                Step ${cp.step}: ${cp.label}
-              </div>
-              <div class="row-3">
-                <div class="f">
-                  <label for="pl-cp${cp.step}-set">Set Temp (°C)</label>
-                  <input type="number" id="pl-cp${cp.step}-set" value="${saved.setTemp||''}" placeholder="—" style="font-size:12px">
+        ${(() => {
+          if (_htCpOpenChargeId !== charge.id) { _htCpOpen = null; _htCpOpenChargeId = charge.id; }
+          const isComplete = cp => {
+            const s = (pl.checkpoints || [])[cp.step - 1] || {};
+            return !!(s.setTemp && s.actualTemp);
+          };
+          const firstIncomplete = (CHECKPOINTS.find(cp => !isComplete(cp)) || {}).step ?? null;
+          const openStep = _htCpOpen !== null ? _htCpOpen : firstIncomplete;
+          return CHECKPOINTS.map(cp => {
+            const saved   = (pl.checkpoints || [])[cp.step - 1] || {};
+            const done    = isComplete(cp);
+            const isOpen  = cp.step === openStep;
+            const bodyId  = `pl-cp${cp.step}-body`;
+            const chevId  = `pl-cp${cp.step}-chev`;
+            return `
+              <div style="background:var(--bg);border-radius:6px;margin-bottom:6px;overflow:hidden">
+                <button type="button" role="button" aria-expanded="${isOpen}" aria-controls="${bodyId}"
+                  onclick="htToggleCheckpoint(${cp.step})"
+                  style="width:100%;min-height:48px;padding:8px 10px;border:none;background:none;cursor:pointer;
+                         display:flex;align-items:center;gap:8px;text-align:left;font:inherit">
+                  <i class="ti ${done ? 'ti-circle-check' : 'ti-circle-dashed'}" aria-hidden="true"
+                     style="font-size:16px;color:${done ? 'var(--ok)' : 'var(--txt-dim)'};flex-shrink:0"></i>
+                  <span style="flex:1;font-size:12px;font-weight:700;color:var(--txt-mid)">Step ${cp.step}: ${cp.label}</span>
+                  ${!isOpen && (saved.setTemp || saved.actualTemp) ? `<span style="font-size:11px;color:var(--txt-muted)">${saved.setTemp||'—'}°C set · ${saved.actualTemp||'—'}°C actual</span>` : ''}
+                  <i class="ti ti-chevron-${isOpen ? 'up' : 'down'}" id="${chevId}" aria-hidden="true" style="color:var(--txt-dim)"></i>
+                </button>
+                <div id="${bodyId}" ${isOpen ? '' : 'hidden'} style="padding:0 10px 10px">
+                  <div class="row-3">
+                    <div class="f">
+                      <label for="pl-cp${cp.step}-set">Set Temp (°C)</label>
+                      <input type="number" id="pl-cp${cp.step}-set" value="${saved.setTemp||''}" placeholder="—" style="font-size:12px">
+                    </div>
+                    <div class="f">
+                      <label for="pl-cp${cp.step}-act">Actual (°C)</label>
+                      <input type="number" id="pl-cp${cp.step}-act" value="${saved.actualTemp||''}" placeholder="—" style="font-size:12px">
+                    </div>
+                    <div class="f">
+                      <label for="pl-cp${cp.step}-time">Time</label>
+                      <input type="time" id="pl-cp${cp.step}-time" value="${saved.time||''}" style="font-size:12px">
+                    </div>
+                  </div>
+                  <div class="f" style="margin-top:4px">
+                    <label for="pl-cp${cp.step}-ok">Within tolerance?</label>
+                    <select id="pl-cp${cp.step}-ok" style="font-size:12px">
+                      <option value="yes" ${saved.ok!==false?'selected':''}>✓ Yes</option>
+                      <option value="no"  ${saved.ok===false?'selected':''}>✗ No — note below</option>
+                    </select>
+                  </div>
                 </div>
-                <div class="f">
-                  <label for="pl-cp${cp.step}-act">Actual (°C)</label>
-                  <input type="number" id="pl-cp${cp.step}-act" value="${saved.actualTemp||''}" placeholder="—" style="font-size:12px">
-                </div>
-                <div class="f">
-                  <label for="pl-cp${cp.step}-time">Time</label>
-                  <input type="time" id="pl-cp${cp.step}-time" value="${saved.time||''}" style="font-size:12px">
-                </div>
-              </div>
-              <div class="f" style="margin-top:4px">
-                <label for="pl-cp${cp.step}-ok">Within tolerance?</label>
-                <select id="pl-cp${cp.step}-ok" style="font-size:12px">
-                  <option value="yes" ${saved.ok!==false?'selected':''}>✓ Yes</option>
-                  <option value="no"  ${saved.ok===false?'selected':''}>✗ No — note below</option>
-                </select>
-              </div>
-            </div>`;
-        }).join('')}
+              </div>`;
+          }).join('');
+        })()}
       </div>
 
       <!-- Furnace parameters -->
@@ -758,6 +778,19 @@ function renderProcess() {
         </button>
       </div>
     </div>`;
+}
+
+function htToggleCheckpoint(step) {
+  // Preserve any unsaved typing across the whole form before re-rendering —
+  // readProcessLog() reads every field including hidden (collapsed) ones,
+  // since `hidden` only affects display, not the input's live value.
+  const active = S_HT.charges.filter(c => c.status === 'processing');
+  const charge = active.find(c => c.id === _selProcId);
+  if (charge && document.getElementById('pl-prewash-done')) {
+    charge.processLog = readProcessLog();
+  }
+  _htCpOpen = (_htCpOpen === step) ? -1 : step;
+  renderProcess();
 }
 
 function readProcessLog() {
@@ -836,7 +869,7 @@ async function saveProcessLog(chargeId) {
     await logAudit('HT_PROCESS_LOG', 'HT', chargeId, null, { heatCode: S_HT.charges.find(c=>c.id===chargeId)?.heatCode });
     toast('Process log saved ✓');
     await refreshHT();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1010,7 +1043,7 @@ async function finalizeCharge(chargeId) {
     switchTab('history');
   } catch (e) {
     console.error('finalizeCharge:', e);
-    toast('Error: ' + e.message);
+    toast(friendlyError(e));
   }
 }
 

@@ -82,22 +82,18 @@ function render() {
     const active = _tab === t.key;
     const badge  = t.key === 'hub' && activeBDs > 0 ? activeBDs : 0;
     return `
-      <button onclick="switchTab('${t.key}')"
-        style="flex:1;padding:8px 4px;border:none;
-               background:${active ? 'var(--acc)' : 'var(--sur)'};
-               color:${active ? '#fff' : 'var(--txt)'};
-               border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;
-               display:flex;align-items:center;justify-content:center;gap:5px;transition:background .15s">
-        <i class="ti ${t.icon}" style="font-size:13px"></i> ${t.label}
+      <button class="tab${active ? ' active' : ''}" role="tab" aria-selected="${active}"
+        onclick="switchTab('${t.key}')">
+        <i class="ti ${t.icon}" aria-hidden="true"></i> ${t.label}
         ${badge > 0
-          ? `<span style="background:var(--err);color:#fff;border-radius:99px;padding:1px 6px;font-size:10px">${badge}</span>`
+          ? `<span class="bdg" style="background:var(--err);color:#fff;padding:1px 6px;font-size:10px;margin-left:4px">${badge}</span>`
           : ''}
       </button>`;
   }).join('');
 
   document.getElementById('page-content').innerHTML = `
     <div style="padding-bottom:80px">
-      <div style="display:flex;gap:4px;background:var(--sur);border-radius:8px;padding:4px;margin-bottom:14px;flex-wrap:wrap">
+      <div class="tabs" role="tablist">
         ${tabHtml}
       </div>
       <div id="tab-body"></div>
@@ -486,7 +482,7 @@ async function saveBreakdown() {
   } catch (e) {
     _savingBreakdown = false;
     if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = '<i class="ti ti-alert-triangle"></i> Submit Report'; }
-    toast('Error: ' + e.message);
+    toast(friendlyError(e));
   }
 }
 
@@ -530,7 +526,7 @@ async function saveAcknowledge(id) {
     toast('Breakdown acknowledged ✓');
     closeModal();
     await refreshMaint();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* ── DIAGNOSE ────────────────────────────────────────────────────────── */
@@ -755,7 +751,7 @@ async function saveDiagnose(id) {
     toast('Diagnosis saved ✓' + (validSpares.length > 0 ? ' · Spares request sent for approval' : ''));
     closeModal();
     await refreshMaint();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* ── RELEASE ─────────────────────────────────────────────────────────── */
@@ -825,7 +821,7 @@ async function saveRelease(id) {
     toast(`Machine released ✓ · Downtime: ${totalDowntimeMins} min`);
     closeModal();
     await refreshMaint();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -941,7 +937,7 @@ async function saveLogPM(machId, interval) {
     toast('PM logged ✓');
     closeModal();
     await refreshMaint();
-  } catch (e) { toast('Error: ' + e.message); }
+  } catch (e) { toast(friendlyError(e)); }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
