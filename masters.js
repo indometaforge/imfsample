@@ -22,6 +22,8 @@ const TABS = [
   { key: 'operations', label: 'Operations',    icon: 'ti-adjustments' },
   { key: 'customers',  label: 'Customers',     icon: 'ti-building' },
   { key: 'suppliers',  label: 'Suppliers',     icon: 'ti-truck-delivery' },
+  { key: 'fpnCpnMap',  label: 'FPN ↔ CPN Map', icon: 'ti-replace' },
+  { key: 'supplierWip', label: 'Supplier WIP Opening', icon: 'ti-stack-2' },
   { key: 'personnel',  label: 'Personnel',     icon: 'ti-users' },
   { key: 'userAccess', label: 'User Access',   icon: 'ti-user-shield' },
   { key: 'shifts',     label: 'Shifts',        icon: 'ti-clock' },
@@ -31,7 +33,7 @@ const TABS = [
 const COLL_TO_STATE = {
   machines: 'machines', parts: 'parts', operations: 'operations',
   partOps: 'partOps', customers: 'customers', suppliers: 'suppliers',
-  users: 'users'
+  users: 'users', fpnCpnMap: 'fpnCpnMap', supplierWipOpening: 'supplierWipOpening'
 };
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -51,9 +53,6 @@ async function init() {
     window.location.replace('home.html');
     return;
   }
-
-  const pill = document.getElementById('role-pill');
-  if (pill) pill.textContent = rlbl(S.sess.role);
 
   render();
 
@@ -95,6 +94,8 @@ function renderSection() {
     operations:  renderOperations,
     customers:   renderCustomers,
     suppliers:   renderSuppliers,
+    fpnCpnMap:    renderFpnCpnMap,
+    supplierWip:  renderSupplierWipOpening,
     personnel:   renderPersonnel,
     userAccess:  renderUserAccess,
     shifts:      renderShifts,
@@ -213,11 +214,13 @@ const STAGE_BADGE = {
   hard:    ['bdg-hard', 'Hard'],
   ht:      ['bdg-ht',   'HT'],
   general: ['bdg-gr',   'General'],
+  forging: ['bdg-n',    'Forging'],
 };
 
 const PROD_STAGES = [
   { v: 'soft', l: 'Soft' }, { v: 'hard', l: 'Hard' },
   { v: 'ht', l: 'Heat Treatment' }, { v: 'general', l: 'General' },
+  { v: 'forging', l: 'Forging (Hammer)' },
 ];
 
 const DEPT_STAGES = [
@@ -225,6 +228,13 @@ const DEPT_STAGES = [
   { v: 'ht', l: 'Heat Treatment' }, { v: 'hard', l: 'Hard Machining' },
   { v: 'store', l: 'Store' }, { v: 'qc', l: 'Quality Control' },
   { v: 'dispatch', l: 'Dispatch' }, { v: 'maintenance', l: 'Maintenance' },
+  { v: 'forging', l: 'Indometa Forging (SCM)' },
+];
+
+const SCM_FUNCTIONS = [
+  { v: 'both',       l: 'Production + Dispatch' },
+  { v: 'production', l: 'Production only' },
+  { v: 'dispatch',   l: 'Dispatch only' },
 ];
 
 const deptStageLabel = (v) => (DEPT_STAGES.find(s => s.v === v) || {}).l || slbl(v);
@@ -290,10 +300,7 @@ function openMachineModal(id) {
     <div class="f">
       <label for="mf-stage" class="f-req">Stage</label>
       <select id="mf-stage">
-        ${buildOpts([
-          { v: 'soft', l: 'Soft' }, { v: 'hard', l: 'Hard' },
-          { v: 'ht', l: 'Heat Treatment' }, { v: 'general', l: 'General' },
-        ], 'v', x => x.l, m?.stage || 'soft')}
+        ${buildOpts(PROD_STAGES, 'v', x => x.l, m?.stage || 'soft')}
       </select>
     </div>
     <div class="f">
@@ -1222,6 +1229,476 @@ async function saveSupplier(id) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+   SECTION 5B — FPN ↔ CPN MAP
+   Collection: fpnCpnMap (master, never TEST_-prefixed)
+   Maps an Indometa Forging Part Number to a Customer Part Number.
+   1 FPN -> many CPN. The CPN is picked directly from the existing Parts
+   & Routing master (S.parts) — every customer/blank lookup is derived
+   from that part record, never re-entered here:
+     - Customer        <- selected part's custId
+     - Raw material/blank part (used to match `inward` receipts)
+                        <- selected part's rawMaterialPartId (or itself
+                           if that part IS the blank)
+   Flow: FPN (forging) -> Gear Blank (rawMaterialPartId, machined by the
+   CNC supplier) -> Gear (the CPN itself, finished at Indometa Gear).
+   ══════════════════════════════════════════════════════════════════════ */
+function renderFpnCpnMap() {
+  const q = searchQ.trim().toLowerCase();
+  let list = S.fpnCpnMap.filter(m =>
+    !q || (m.fpn || '').toLowerCase().includes(q) || (m.cpn || '').toLowerCase().includes(q));
+  list = list.slice().sort((a, b) => (a.fpn || '').localeCompare(b.fpn || '') || (a.cpn || '').localeCompare(b.cpn || ''));
+
+  document.getElementById('section-content').innerHTML = `
+    ${sectionHeader('FPN ↔ CPN Map', 'Add Mapping', 'openFpnCpnModal()')}
+    ${searchBox('Search FPN or CPN...')}
+    ${recordCount(list.length)}
+    ${list.length
+      ? list.map(fpnCpnRow).join('')
+      : emptyState('ti-replace', 'No FPN ↔ CPN mappings found', 'Add a mapping to get started, or adjust your search.')}
+  `;
+}
+
+function fpnCpnRow(m) {
+  const cust = S.customers.find(c => c.id === m.customerId);
+  const blank = S.parts.find(p => p.id === m.blankPartId);
+  return `
+    <div class="li" onclick="openFpnCpnModal('${m.id}')">
+      <div class="li-ic"><i class="ti ti-replace" aria-hidden="true"></i></div>
+      <div class="li-body">
+        <div class="li-name">${m.fpn || '—'}${m.fpnName ? ` <span class="text-muted" style="font-weight:500">— ${m.fpnName}</span>` : ''} <i class="ti ti-arrow-right" aria-hidden="true" style="font-size:12px;color:var(--txt-muted)"></i> ${m.cpn || '—'}</div>
+        <div class="li-sub">${cust?.name || '—'} · Blank: ${blank?.name || '—'}${m.active === false ? ' · Inactive' : ''}</div>
+      </div>
+    </div>`;
+}
+
+/** Look up the Forging Name already on file for an FPN, if any mapping exists for it. */
+function lookupFpnName(fpn) {
+  const hit = S.fpnCpnMap.find(m => (m.fpn || '').trim().toLowerCase() === (fpn || '').trim().toLowerCase() && m.fpnName);
+  return hit?.fpnName || '';
+}
+
+/** Add-mode: auto-fill the Forging Name field from an existing mapping for this FPN, if any — only if the user hasn't already typed one in. */
+function fcAutofillName() {
+  const fpnEl = document.getElementById('fc-fpn');
+  const nameEl = document.getElementById('fc-fpn-name');
+  if (!fpnEl || !nameEl || nameEl.value.trim()) return;
+  const found = lookupFpnName(fpnEl.value);
+  if (found) nameEl.value = found;
+}
+
+let _fcSelectedParts = [];   /* Add-mode only: parts picked for the current FPN, before save */
+
+function openFpnCpnModal(id) {
+  const m = id ? S.fpnCpnMap.find(x => x.id === id) : null;
+
+  if (m) {
+    // Edit mode — unchanged: one FPN, one CPN, single autocomplete field.
+    openModal(`
+      <div class="modal-title">Edit FPN ↔ CPN Mapping</div>
+      <div id="modal-err"></div>
+
+      <div class="row-2">
+        <div class="f">
+          <label for="fc-fpn" class="f-req">Forging Part No. (FPN)</label>
+          <input type="text" id="fc-fpn" value="${m.fpn || ''}" placeholder="e.g. FPN-1042">
+        </div>
+        <div class="f">
+          <label for="fc-fpn-name" class="f-req">Forging Name</label>
+          <input type="text" id="fc-fpn-name" value="${m.fpnName || ''}" placeholder="e.g. Drive Gear Forging">
+        </div>
+      </div>
+      <div class="text-xs text-muted mt-8" style="margin-top:-8px;margin-bottom:14px">Saving updates the name on every other CPN mapped to this same FPN, so it never drifts out of sync.</div>
+      <div class="f">
+        <label for="fc-cpn-name" class="f-req">Customer Part (CPN)</label>
+        <input type="text" id="fc-cpn-name" value="${m.cpn || ''} — ${m.cpnPartName || ''}"
+          placeholder="Type part name or number to search..." autocomplete="off"
+          oninput="fpnCpnPartSearch(this, '${m.id}')" onblur="setTimeout(hidePartDrop, 150)">
+        <input type="hidden" id="fc-cpn" value="${m.cpnPartId || ''}">
+        <div class="text-xs text-muted mt-8">Customer and raw-material blank are fetched automatically from this part's Parts & Routing record.</div>
+      </div>
+      <div class="utog">
+        <div>
+          <div class="utog-label">Active</div>
+          <div class="text-xs text-muted mt-8">Turn off to retire a mapping without deleting history</div>
+        </div>
+        <label class="tsw">
+          <input type="checkbox" id="fc-active" ${m.active !== false ? 'checked' : ''}>
+          <span class="tsl"></span>
+        </label>
+      </div>
+
+      ${modalActions('Save Mapping', `saveFpnCpn('${m.id}')`)}
+      ${modalDeleteButton(`deleteFpnCpn('${m.id}')`, 'Delete Mapping')}
+    `);
+    return;
+  }
+
+  // Add mode — one FPN, MANY CPNs in one go: search-and-pick builds a list
+  // of chips below; Save writes one fpnCpnMap doc per chip.
+  _fcSelectedParts = [];
+  openModal(`
+    <div class="modal-title">Add FPN ↔ CPN Mapping</div>
+    <div id="modal-err"></div>
+
+    <div class="row-2">
+      <div class="f">
+        <label for="fc-fpn" class="f-req">Forging Part No. (FPN)</label>
+        <input type="text" id="fc-fpn" placeholder="e.g. FPN-1042" onblur="fcAutofillName()">
+      </div>
+      <div class="f">
+        <label for="fc-fpn-name" class="f-req">Forging Name</label>
+        <input type="text" id="fc-fpn-name" placeholder="e.g. Drive Gear Forging">
+      </div>
+    </div>
+    <div class="text-xs text-muted mt-8" style="margin-top:-8px;margin-bottom:14px">If this FPN already has mappings on file, its name fills in automatically.</div>
+    <div class="f">
+      <label for="fc-cpn-search" class="f-req">Customer Parts (CPN) — add one or more</label>
+      <input type="text" id="fc-cpn-search" placeholder="Type part name or number, pick, repeat..." autocomplete="off"
+        oninput="fpnCpnPartSearchMulti(this)" onblur="setTimeout(hidePartDrop, 150)">
+      <div class="text-xs text-muted mt-8">Pick every gear this forging number is machined into — each one gets its own mapping, customer and blank fetched automatically.</div>
+    </div>
+    <div id="fc-cpn-chips" class="f"></div>
+    <div class="utog">
+      <div>
+        <div class="utog-label">Active</div>
+        <div class="text-xs text-muted mt-8">Applies to all mappings created below</div>
+      </div>
+      <label class="tsw">
+        <input type="checkbox" id="fc-active" checked>
+        <span class="tsl"></span>
+      </label>
+    </div>
+
+    ${modalActions('Save Mapping(s)', 'saveFpnCpn(null)')}
+  `);
+  renderFcChips();
+}
+
+/** A CPN (gear) maps to exactly one FPN — find whichever mapping already
+    claims this part, if any, excluding the doc currently being edited. */
+function findExistingCpnMapping(partId, excludeId = null) {
+  return S.fpnCpnMap.find(m => m.id !== excludeId && m.cpnPartId === partId) || null;
+}
+
+function fpnCpnPartSearch(inputEl, excludeId) {
+  const val = inputEl.value.trim();
+  if (!val) {
+    hidePartDrop();
+    document.getElementById('fc-cpn').value = '';
+    return;
+  }
+  showPartDrop(inputEl, (p) => {
+    const conflict = findExistingCpnMapping(p.id, excludeId);
+    if (conflict) {
+      showModalError(`${p.no || p.name} is already mapped to FPN ${conflict.fpn} — a CPN can only belong to one FPN.`);
+      inputEl.value = '';
+      return;
+    }
+    document.getElementById('fc-cpn').value = p.id;
+    inputEl.value = `${p.no || ''} — ${p.name || ''}`;
+  });
+}
+
+function fpnCpnPartSearchMulti(inputEl) {
+  const val = inputEl.value.trim();
+  if (!val) { hidePartDrop(); return; }
+  showPartDrop(inputEl, (p) => {
+    const fpn = (getField('fc-fpn') || '').trim();
+    const conflict = findExistingCpnMapping(p.id);
+    if (conflict && conflict.fpn !== fpn) {
+      showModalError(`${p.no || p.name} is already mapped to FPN ${conflict.fpn} — a CPN can only belong to one FPN.`);
+      inputEl.value = '';
+      return;
+    }
+    if (!_fcSelectedParts.some(x => x.id === p.id)) _fcSelectedParts.push(p);
+    inputEl.value = '';
+    inputEl.focus();
+    renderFcChips();
+  });
+}
+
+function fcRemovePart(partId) {
+  _fcSelectedParts = _fcSelectedParts.filter(p => p.id !== partId);
+  renderFcChips();
+}
+
+function renderFcChips() {
+  const wrap = document.getElementById('fc-cpn-chips');
+  if (!wrap) return;
+  if (!_fcSelectedParts.length) {
+    wrap.innerHTML = `<div class="text-xs text-muted">No parts added yet — search above and pick as many gears as this FPN is machined into.</div>`;
+    return;
+  }
+  wrap.innerHTML = `
+    <div class="text-xs text-muted mb-8">${_fcSelectedParts.length} part${_fcSelectedParts.length !== 1 ? 's' : ''} added</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">
+      ${_fcSelectedParts.map(p => `
+        <span class="bdg bdg-n" style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px">
+          ${p.no || ''} — ${p.name || ''}
+          <i class="ti ti-x" style="cursor:pointer" onclick="fcRemovePart('${p.id}')" aria-label="Remove"></i>
+        </span>`).join('')}
+    </div>`;
+}
+
+async function deleteFpnCpn(id) {
+  if (!confirm('Delete this FPN ↔ CPN mapping? This cannot be undone.')) return;
+  try {
+    const before = S.fpnCpnMap.find(x => x.id === id);
+    await db.collection('fpnCpnMap').doc(id).delete();
+    await logAudit('DELETE_FPN_CPN_MAP', 'MASTERS', id, before, null);
+    closeModal();
+    await refreshCollection('fpnCpnMap');
+    renderSection();
+    toast('Mapping deleted');
+  } catch (e) {
+    showModalError(friendlyError(e));
+  }
+}
+
+/** Build the fpnCpnMap doc shape for one FPN+part pair — shared by both save paths. */
+function buildFpnCpnData(fpn, fpnName, part, active) {
+  const cust = partCustomer(part);
+  return {
+    fpn, fpnName, cpnPartId: part.id, cpn: part.no || '', cpnPartName: part.name || '',
+    customerId: cust?.id || '', customerName: cust?.name || '',
+    blankPartId: part.rawMaterialPartId || part.id, active,
+  };
+}
+
+/** Keeps fpnName consistent across every mapping that shares an FPN, since
+    it's really an attribute of the FPN itself, not of any one CPN pairing. */
+function syncFpnNameToSiblings(batch, fpn, fpnName, excludeId = null) {
+  S.fpnCpnMap
+    .filter(m => m.id !== excludeId && m.fpn === fpn && m.fpnName !== fpnName)
+    .forEach(m => batch.update(db.collection('fpnCpnMap').doc(m.id), { fpnName }));
+}
+
+async function saveFpnCpn(id) {
+  const fpn = (getField('fc-fpn') || '').trim();
+  const fpnName = (getField('fc-fpn-name') || '').trim();
+  const active = document.getElementById('fc-active').checked;
+  if (!fpn || !fpnName) { showModalError('FPN and Forging Name are required.'); return; }
+
+  // Edit mode — exactly one mapping, unchanged behaviour.
+  if (id) {
+    const cpnPartId = document.getElementById('fc-cpn').value;
+    if (!cpnPartId) { showModalError('Customer Part (CPN) is required.'); return; }
+    const part = S.parts.find(p => p.id === cpnPartId);
+    if (!part) { showModalError('Selected part could not be found.'); return; }
+
+    const conflict = findExistingCpnMapping(cpnPartId, id);
+    if (conflict) {
+      showModalError(`${part.no || part.name} is already mapped to FPN ${conflict.fpn} — a CPN can only belong to one FPN.`);
+      return;
+    }
+
+    const data = buildFpnCpnData(fpn, fpnName, part, active);
+    try {
+      const before = S.fpnCpnMap.find(x => x.id === id);
+      const batch = db.batch();
+      batch.update(db.collection('fpnCpnMap').doc(id), data);
+      syncFpnNameToSiblings(batch, fpn, fpnName, id);
+      await batch.commit();
+      await logAudit('UPDATE_FPN_CPN_MAP', 'MASTERS', id, before, data);
+      closeModal();
+      await refreshCollection('fpnCpnMap');
+      renderSection();
+      toast('Saved successfully');
+    } catch (e) {
+      showModalError(friendlyError(e));
+    }
+    return;
+  }
+
+  // Add mode — one FPN, every chip in _fcSelectedParts becomes its own mapping.
+  if (!_fcSelectedParts.length) {
+    showModalError('Add at least one Customer Part (CPN) before saving.');
+    return;
+  }
+
+  const sameFpnMapped = new Set(
+    S.fpnCpnMap.filter(m => m.fpn === fpn).map(m => m.cpnPartId)
+  );
+  const crossFpnConflicts = _fcSelectedParts
+    .filter(p => !sameFpnMapped.has(p.id))
+    .map(p => ({ part: p, existing: findExistingCpnMapping(p.id) }))
+    .filter(x => x.existing);
+
+  if (crossFpnConflicts.length) {
+    const list = crossFpnConflicts.map(x => `${x.part.no || x.part.name} (→ FPN ${x.existing.fpn})`).join(', ');
+    showModalError(`These parts are already mapped to a different FPN — a CPN can only belong to one FPN: ${list}`);
+    return;
+  }
+
+  const toCreate = _fcSelectedParts.filter(p => !sameFpnMapped.has(p.id));
+  const skipped = _fcSelectedParts.length - toCreate.length;
+
+  if (!toCreate.length) {
+    showModalError('All selected parts are already mapped to this FPN.');
+    return;
+  }
+
+  try {
+    const batch = db.batch();
+    toCreate.forEach(part => {
+      const ref = db.collection('fpnCpnMap').doc();
+      batch.set(ref, { ...buildFpnCpnData(fpn, fpnName, part, active), createdAt: serverTS(), createdBy: S.sess.userId });
+    });
+    syncFpnNameToSiblings(batch, fpn, fpnName);
+    await batch.commit();
+    await logAudit('CREATE_FPN_CPN_MAP_BATCH', 'MASTERS', fpn, null, {
+      fpn, fpnName, count: toCreate.length, cpns: toCreate.map(p => p.no),
+    });
+    closeModal();
+    await refreshCollection('fpnCpnMap');
+    renderSection();
+    toast(`Created ${toCreate.length} mapping${toCreate.length !== 1 ? 's' : ''} for ${fpn}${skipped ? ` — skipped ${skipped} already mapped` : ''}`);
+  } catch (e) {
+    showModalError(friendlyError(e));
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   SECTION 5C — SUPPLIER WIP OPENING BALANCE
+   Collection: supplierWipOpening (master, never TEST_-prefixed)
+   One-time admin-entered opening balance per supplier+CPN, needed
+   because suppliers already hold material the day SCM goes live.
+   Current Supplier WIP = opening + dispatched - received - approved scrap.
+   ══════════════════════════════════════════════════════════════════════ */
+function renderSupplierWipOpening() {
+  const q = searchQ.trim().toLowerCase();
+  let list = S.supplierWipOpening.filter(o => {
+    const sup = S.suppliers.find(s => s.id === o.supplierId);
+    return !q || (o.cpn || '').toLowerCase().includes(q) || (sup?.name || '').toLowerCase().includes(q);
+  });
+  list = list.slice().sort((a, b) => {
+    const sa = S.suppliers.find(s => s.id === a.supplierId)?.name || '';
+    const sb = S.suppliers.find(s => s.id === b.supplierId)?.name || '';
+    return sa.localeCompare(sb) || (a.cpn || '').localeCompare(b.cpn || '');
+  });
+
+  document.getElementById('section-content').innerHTML = `
+    ${sectionHeader('Supplier WIP Opening Balance', 'Add Opening Balance', 'openSupplierWipModal()')}
+    ${searchBox('Search supplier or CPN...')}
+    ${recordCount(list.length)}
+    ${list.length
+      ? list.map(supplierWipRow).join('')
+      : emptyState('ti-stack-2', 'No opening balances set', 'Add an opening balance to seed Supplier WIP before go-live.')}
+  `;
+}
+
+function supplierWipRow(o) {
+  const sup = S.suppliers.find(s => s.id === o.supplierId);
+  return `
+    <div class="li" onclick="openSupplierWipModal('${o.id}')">
+      <div class="li-ic"><i class="ti ti-stack-2" aria-hidden="true"></i></div>
+      <div class="li-body">
+        <div class="li-name">${sup?.name || '—'} · ${o.cpn || '—'}</div>
+        <div class="li-sub">Opening qty: ${o.openingQty ?? 0} pcs</div>
+      </div>
+    </div>`;
+}
+
+/** Distinct active CPNs from the FPN<->CPN map, for dropdowns elsewhere */
+function distinctCpnEntries() {
+  const seen = new Set();
+  const out = [];
+  S.fpnCpnMap.filter(m => m.active !== false)
+    .sort((a, b) => (a.cpn || '').localeCompare(b.cpn || ''))
+    .forEach(m => { if (!seen.has(m.cpn)) { seen.add(m.cpn); out.push(m); } });
+  return out;
+}
+
+function openSupplierWipModal(id) {
+  const o = id ? S.supplierWipOpening.find(x => x.id === id) : null;
+
+  const supOpts = buildOpts(
+    S.suppliers.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '')),
+    'id', x => x.name, o?.supplierId || ''
+  );
+  const cpnEntries = distinctCpnEntries();
+  const cpnOpts = buildOpts(cpnEntries, 'cpn', x => `${x.cpn} (FPN: ${x.fpn})`, o?.cpn || '');
+
+  openModal(`
+    <div class="modal-title">${o ? 'Edit Opening Balance' : 'Add Opening Balance'}</div>
+    <div id="modal-err"></div>
+
+    ${cpnEntries.length === 0 ? `<div class="ebox"><i class="ti ti-alert-triangle" aria-hidden="true"></i><span>No FPN ↔ CPN mappings exist yet. Add one in the FPN ↔ CPN Map tab first.</span></div>` : ''}
+
+    <div class="f">
+      <label for="wo-supplier" class="f-req">Supplier</label>
+      <select id="wo-supplier">
+        <option value="">Select supplier...</option>
+        ${supOpts}
+      </select>
+    </div>
+    <div class="row-2">
+      <div class="f">
+        <label for="wo-cpn" class="f-req">Customer Part (CPN)</label>
+        <select id="wo-cpn">
+          <option value="">Select CPN...</option>
+          ${cpnOpts}
+        </select>
+      </div>
+      <div class="f">
+        <label for="wo-qty" class="f-req">Opening Qty (pcs)</label>
+        <input type="number" id="wo-qty" min="0" value="${o?.openingQty ?? ''}" placeholder="e.g. 1200">
+      </div>
+    </div>
+
+    ${modalActions('Save Opening Balance', `saveSupplierWip(${o ? `'${o.id}'` : 'null'})`)}
+    ${o ? modalDeleteButton(`deleteSupplierWip('${o.id}')`, 'Delete Opening Balance') : ''}
+  `);
+}
+
+async function deleteSupplierWip(id) {
+  if (!confirm('Delete this opening balance? This cannot be undone.')) return;
+  try {
+    const before = S.supplierWipOpening.find(x => x.id === id);
+    await db.collection('supplierWipOpening').doc(id).delete();
+    await logAudit('DELETE_SUPPLIER_WIP_OPENING', 'MASTERS', id, before, null);
+    closeModal();
+    await refreshCollection('supplierWipOpening');
+    renderSection();
+    toast('Opening balance deleted');
+  } catch (e) {
+    showModalError(friendlyError(e));
+  }
+}
+
+async function saveSupplierWip(id) {
+  const supplierId = document.getElementById('wo-supplier').value;
+  const cpn = document.getElementById('wo-cpn').value;
+  const openingQty = Number(getField('wo-qty'));
+
+  if (!supplierId || !cpn || !Number.isFinite(openingQty) || openingQty < 0) {
+    showModalError('Supplier, CPN and a valid Opening Qty are required.');
+    return;
+  }
+
+  const sup = S.suppliers.find(s => s.id === supplierId);
+  const data = { supplierId, supplierName: sup?.name || '', cpn, openingQty, setBy: S.sess.userId, setAt: serverTS() };
+  try {
+    if (id) {
+      const before = S.supplierWipOpening.find(x => x.id === id);
+      await db.collection('supplierWipOpening').doc(id).update(data);
+      await logAudit('UPDATE_SUPPLIER_WIP_OPENING', 'MASTERS', id, before, data);
+    } else {
+      const ref = await db.collection('supplierWipOpening').add({
+        ...data, createdAt: serverTS(), createdBy: S.sess.userId
+      });
+      await logAudit('CREATE_SUPPLIER_WIP_OPENING', 'MASTERS', ref.id, null, data);
+    }
+    closeModal();
+    await refreshCollection('supplierWipOpening');
+    renderSection();
+    toast('Saved successfully');
+  } catch (e) {
+    showModalError(friendlyError(e));
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    SECTION 6 — PERSONNEL
    Collection: users — docs where appUser === false
    Shop-floor operators tracked for production logs. No app login,
@@ -1427,10 +1904,16 @@ function openUserAccessModal(id) {
       </div>
       <div class="f">
         <label for="uf-stage">Department / Stage</label>
-        <select id="uf-stage">
+        <select id="uf-stage" onchange="document.getElementById('uf-scmfn-row').style.display = this.value === 'forging' ? '' : 'none'">
           ${buildOpts(DEPT_STAGES, 'v', x => x.l, u?.stage || 'general')}
         </select>
       </div>
+    </div>
+    <div class="f" id="uf-scmfn-row" style="display:${u?.stage === 'forging' ? '' : 'none'}">
+      <label for="uf-scmfn">SCM Function</label>
+      <select id="uf-scmfn">
+        ${buildOpts(SCM_FUNCTIONS, 'v', x => x.l, u?.scmFunction || 'both')}
+      </select>
     </div>
     <div class="card" style="margin:14px 0;padding:12px">
       <div style="font-size:11px;font-weight:800;color:var(--txt-muted);letter-spacing:.06em;border-bottom:1px solid var(--bdr);padding-bottom:8px;margin-bottom:10px">
@@ -1493,6 +1976,7 @@ async function saveUserAccess(id) {
   const email = getField('uf-email');
   const role  = document.getElementById('uf-role').value;
   const stage = document.getElementById('uf-stage').value;
+  const scmFunction = stage === 'forging' ? document.getElementById('uf-scmfn').value : null;
   const permissions = {
     plan:    document.getElementById('uf-perm-plan').value,
     actual:  document.getElementById('uf-perm-actual').value,
@@ -1509,7 +1993,7 @@ async function saveUserAccess(id) {
       /* Edit: name, email, role, stage, permissions — Firestore record only.
          Does NOT change the Firebase Auth login email/password; see passNote above. */
       const before = S.users.find(x => x.id === id);
-      const data = { name, email, role, stage, permissions };
+      const data = { name, email, role, stage, scmFunction, permissions };
       await db.collection('users').doc(id).update(data);
       await logAudit('UPDATE_USER', 'MASTERS', id, before, data);
     } else {
@@ -1534,7 +2018,7 @@ async function saveUserAccess(id) {
         await secondaryApp.delete();
       }
 
-      const data = { name, email, role, stage, permissions, appUser: true };
+      const data = { name, email, role, stage, scmFunction, permissions, appUser: true };
       await db.collection('users').doc(newUid).set({
         ...data, createdAt: serverTS(), createdBy: S.sess.userId
       });

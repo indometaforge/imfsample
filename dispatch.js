@@ -31,7 +31,7 @@ const STREAMS = [
 /* ── State ───────────────────────────────────────────────────────────── */
 let _tab              = 'hub';
 let _dispHeaderLocked = false;
-let _dispHeader       = { customerId:'', customerName:'', poId:'', poNo:'', partId:'', partNo:'', partName:'', stream:'oem', date:'', pieceRateINR:0 };
+let _dispHeader       = { customerId:'', customerName:'', poId:'', poNo:'', partId:'', partNo:'', partName:'', lineNo:0, stream:'oem', date:'', pieceRateINR:0 };
 let _dispRows         = [];  // [{tagId, qty, invoiceNo, vehicle, batchCode, heatCode, verified, tagData}]
 let _poEditId         = null;
 let _poLines          = [];  // temp PO lines being edited
@@ -42,8 +42,60 @@ const S_DSP = {
   clearedCards: [],
 };
 
+function fmtMonth(val) {
+  if (!val) return '';
+  const parts = val.split('-');
+  if (parts.length !== 2) return val;
+  const y = parseInt(parts[0]);
+  const m = parseInt(parts[1]) - 1;
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  if (m >= 0 && m < 12) {
+    return `${monthNames[m]} ${y}`;
+  }
+  return val;
+}
+
+function getMonthDropdownOptions(selectedValue) {
+  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const current = new Date();
+  let options = '<option value="">— Select Month —</option>';
+  
+  const generatedValues = new Set();
+  const makeOpt = (val, label) => {
+    generatedValues.add(val);
+    const isSelected = selectedValue === val ? 'selected' : '';
+    return `<option value="${val}" ${isSelected}>${label}</option>`;
+  };
+
+  if (selectedValue) {
+    const parts = selectedValue.split('-');
+    if (parts.length === 2) {
+      const y = parseInt(parts[0]);
+      const m = parseInt(parts[1]) - 1;
+      if (m >= 0 && m < 12) {
+        const diffMonths = (y - current.getFullYear()) * 12 + (m - current.getMonth());
+        if (diffMonths < -6 || diffMonths > 24) {
+          options += makeOpt(selectedValue, `${monthNames[m]} ${y}`);
+        }
+      }
+    }
+  }
+
+  for (let i = -6; i <= 24; i++) {
+    const d = new Date(current.getFullYear(), current.getMonth() + i, 1);
+    const val = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const label = `${monthNames[d.getMonth()]} ${d.getFullYear()}`;
+    if (!generatedValues.has(val)) {
+      options += makeOpt(val, label);
+    }
+  }
+  return options;
+}
+
+
 /* ── Boot ────────────────────────────────────────────────────────────── */
 async function init() {
+  window.onGlobalScan = dspScanTag;
   try { await initShell(); } catch (e) {
     clearSess(); window.location.replace('index.html'); return;
   }
@@ -116,7 +168,6 @@ function renderHub() {
 
   const today    = dateStr();
   const cleared  = S_DSP.clearedCards.length;
-  const openPOs  = S_DSP.pos.filter(p => p.status === 'open').length;
   const todayDsp = S_DSP.dispatches.filter(d => d.date === today).length;
 
   // Due-date compliance from PO lines
@@ -133,66 +184,76 @@ function renderHub() {
 
   el.innerHTML = `
     ${overdue > 0 ? `
-      <div style="background:var(--err);color:#fff;border-radius:var(--rs);padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;gap:10px">
-        <i class="ti ti-alert-circle" style="font-size:22px;flex-shrink:0"></i>
+      <div style="background:var(--err);color:#fff;border-radius:var(--rs);padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px;box-shadow:var(--sh-sm)">
+        <i class="ti ti-alert-circle" style="font-size:24px;flex-shrink:0"></i>
         <div>
-          <div style="font-weight:800">${overdue} Overdue PO Line${overdue !== 1 ? 's' : ''}</div>
-          <div style="font-size:12px;opacity:.85">Delivery dates have passed — check Tracksheet</div>
+          <div style="font-weight:800;font-size:14px">${overdue} Overdue PO Line${overdue !== 1 ? 's' : ''}</div>
+          <div style="font-size:12px;opacity:.9">Delivery dates have passed — check Tracksheet</div>
         </div>
-        <button onclick="switchTab('tracksheet')"
-          style="margin-left:auto;border:none;background:rgba(255,255,255,.2);color:#fff;border-radius:6px;padding:7px 12px;cursor:pointer;font-size:12px;font-weight:700">
+        <button class="btn btn-sm" onclick="switchTab('tracksheet')"
+          style="margin-left:auto;border:none;background:rgba(255,255,255,.25);color:#fff;border-radius:var(--rxs);padding:7px 12px;cursor:pointer;font-size:12px;font-weight:700">
           Tracksheet
         </button>
       </div>` : ''}
 
-    <div class="stats-3" style="margin-bottom:14px">
+    <div class="stats-3" style="margin-bottom:16px">
       <div class="stat-card ${cleared > 0 ? 'ok' : ''}">
+        <i class="ti ti-rosette-discount-check stat-icon" aria-hidden="true"></i>
         <div class="stat-lbl">Cleared TAGs</div>
-        <div class="stat-val">${cleared}</div>
+        <div class="stat-val imf-mono">${cleared}</div>
         <div class="stat-sub">Ready to dispatch</div>
       </div>
       <div class="stat-card ${todayDsp > 0 ? 'ok' : ''}">
+        <i class="ti ti-truck-delivery stat-icon" aria-hidden="true"></i>
         <div class="stat-lbl">Dispatched Today</div>
-        <div class="stat-val">${todayDsp}</div>
+        <div class="stat-val imf-mono">${todayDsp}</div>
         <div class="stat-sub">${fmtDate(today)}</div>
       </div>
       <div class="stat-card ${overdue > 0 ? 'err' : dueSoon > 0 ? 'warn' : 'ok'}">
+        <i class="ti ti-calendar-time stat-icon" aria-hidden="true"></i>
         <div class="stat-lbl">Due This Week</div>
-        <div class="stat-val">${dueSoon + overdue}</div>
+        <div class="stat-val imf-mono">${dueSoon + overdue}</div>
         <div class="stat-sub">${overdue > 0 ? `${overdue} overdue!` : 'On track'}</div>
       </div>
     </div>
 
-    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
-      <button class="btn btn-p" style="flex:1" onclick="switchTab('dispatch')">
-        <i class="ti ti-truck"></i> New Dispatch
+    <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+      <button class="btn btn-p" style="flex:1;padding:12px;font-size:14px" onclick="switchTab('dispatch')">
+        <i class="ti ti-truck"></i> New Dispatch Session
       </button>
-      <button class="btn btn-s" style="flex:1" onclick="switchTab('tracksheet')">
-        <i class="ti ti-table"></i> Tracksheet
+      <button class="btn btn-s" style="flex:1;padding:12px;font-size:14px" onclick="switchTab('tracksheet')">
+        <i class="ti ti-table"></i> View Tracksheet
       </button>
     </div>
 
     ${S_DSP.dispatches.slice(0, 5).length > 0 ? `
-      <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:8px">RECENT DISPATCHES</div>
-      ${S_DSP.dispatches.slice(0, 5).map(dspRowCompact).join('')}` : ''}
+      <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:10px;text-transform:uppercase">Recent Dispatches</div>
+      <div class="imf-cards-list" style="display:flex;flex-direction:column;gap:8px">
+        ${S_DSP.dispatches.slice(0, 5).map(dspRowCompact).join('')}
+      </div>` : ''}
 
-    <div style="display:flex;justify-content:flex-end;margin-top:6px">
-      <button class="btn btn-s btn-sm" onclick="refreshDSP()"><i class="ti ti-refresh"></i> Refresh</button>
+    <div style="display:flex;justify-content:flex-end;margin-top:12px">
+      <button class="btn btn-s btn-sm" onclick="refreshDSP()"><i class="ti ti-refresh"></i> Refresh Data</button>
     </div>`;
 }
 
 function dspRowCompact(d) {
+  const streamLbl = (d.stream || '').toUpperCase();
   return `
-    <div class="card" style="margin-bottom:8px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-        <div>
-          <div style="font-weight:700;font-size:13px">${d.partName || '—'}</div>
-          <div style="font-size:11px;color:var(--txt-muted)">${d.customerName || '—'} · ${fmtDate(d.date)} · ${(d.rows||[]).length} TAG${(d.rows||[]).length!==1?'s':''}</div>
-        </div>
-        <div style="text-align:right;flex-shrink:0">
-          <div style="font-weight:800;font-size:16px;color:var(--txt)">${d.totalQty || 0} pcs</div>
-          <div style="font-size:10px;color:var(--txt-muted)">${(d.stream||'').toUpperCase()}</div>
-        </div>
+    <div class="imf-card">
+      <div class="imf-card-top">
+        <span class="imf-mono" style="font-size:12px;color:var(--txt-muted)">${d.poNo || '—'}</span>
+        <span class="imf-badge st-dispatched" style="margin-left:auto"><i class="ti ti-truck-delivery"></i> Dispatched</span>
+      </div>
+      <div class="imf-card-lead">
+        <span class="nm" style="font-weight:700">${d.partName || '—'}</span>
+        <span class="qty imf-mono">${d.totalQty || 0} <small>pcs</small></span>
+      </div>
+      <div class="imf-card-meta">
+        Customer: <strong>${d.customerName || '—'}</strong> · Date: <strong>${fmtDate(d.date)}</strong> · Stream: <strong>${streamLbl}</strong>
+      </div>
+      <div class="imf-card-foot" style="margin-top:8px;font-size:11px;color:var(--txt-muted)">
+        <span>${(d.rows||[]).length} TAG${(d.rows||[]).length!==1?'s':''} verified</span>
       </div>
     </div>`;
 }
@@ -209,65 +270,73 @@ function renderPOs() {
   const closedPOs = S_DSP.pos.filter(p => p.status !== 'open');
 
   el.innerHTML = `
-    <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
-      ${canEdit ? `<button class="btn btn-p" onclick="openPoModal(null)"><i class="ti ti-plus"></i> New PO</button>` : ''}
-      <button class="btn btn-s btn-sm" style="margin-left:auto" onclick="refreshDSP()"><i class="ti ti-refresh"></i></button>
+    <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center">
+      ${canEdit ? `<button class="btn btn-p" onclick="openPoModal(null)"><i class="ti ti-plus"></i> Create New PO</button>` : ''}
+      <button class="btn btn-s btn-sm" style="margin-left:auto;padding:8px 12px" onclick="refreshDSP()"><i class="ti ti-refresh"></i> Refresh</button>
     </div>
 
     ${openPOs.length
-      ? `<div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:8px">OPEN POs (${openPOs.length})</div>
-         ${openPOs.map(p => poCard(p, canEdit)).join('')}`
-      : `<div class="empty" style="padding:20px 0"><div class="empty-ic"><i class="ti ti-file-text"></i></div><h3>No open POs</h3><p>Create a purchase order to track deliveries.</p></div>`}
+      ? `<div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:10px;text-transform:uppercase">Open Purchase Orders (${openPOs.length})</div>
+         <div style="display:flex;flex-direction:column;gap:12px">${openPOs.map(p => poCard(p, canEdit)).join('')}</div>`
+      : `<div class="imf-empty" style="padding:40px 20px"><div class="empty-ic" style="font-size:32px;color:var(--txt-dim);margin-bottom:8px"><i class="ti ti-file-text"></i></div><h3 style="font-size:15px;font-weight:700;margin-bottom:4px">No open POs</h3><p style="font-size:12px;color:var(--txt-muted)">Create a purchase order to track customer delivery compliance.</p></div>`}
 
     ${closedPOs.length ? `
-      <div style="border-top:1px solid var(--bdr);margin:16px 0 10px;padding-top:12px">
-        <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:8px">CLOSED POs (${closedPOs.length})</div>
-        ${closedPOs.slice(0, 10).map(p => poCard(p, false)).join('')}
+      <div style="border-top:1px solid var(--line);margin:24px 0 12px;padding-top:16px">
+        <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:10px;text-transform:uppercase">Closed Purchase Orders (${closedPOs.length})</div>
+        <div style="display:flex;flex-direction:column;gap:12px">${closedPOs.slice(0, 10).map(p => poCard(p, false)).join('')}</div>
       </div>` : ''}`;
 }
 
 function poCard(p, canEdit) {
   const lines = p.lines || [];
   return `
-    <div class="card" style="margin-bottom:10px;opacity:${p.status==='open'?1:0.7}">
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
+    <div class="imf-card" style="opacity:${p.status==='open'?1:0.75}">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px">
         <div>
-          <div style="font-weight:800;font-size:14px">${p.poNo || '—'}</div>
-          <div style="font-size:11px;color:var(--txt-muted)">${p.customerName || '—'} · ${fmtDate(p.poDate)}</div>
-          ${p.deliveryMonth ? `<div style="font-size:11px;color:var(--txt-muted)">Delivery: ${p.deliveryMonth}</div>` : ''}
+          <div class="imf-mono" style="font-weight:800;font-size:15px;color:var(--imf-navy)">${p.poNo || '—'}</div>
+          <div style="font-size:12px;color:var(--txt-muted);margin-top:2px">
+            Customer: <strong>${p.customerName || '—'}</strong> · Date: <strong>${fmtDate(p.poDate)}</strong>
+          </div>
+          ${p.deliveryMonth ? `<div style="font-size:11px;color:var(--txt-dim);margin-top:2px"><i class="ti ti-calendar"></i> Delivery Month: <span class="imf-mono">${fmtMonth(p.deliveryMonth)}</span></div>` : ''}
         </div>
-        <div style="display:flex;gap:6px;align-items:flex-start;flex-shrink:0">
-          <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;
-                       background:${p.status==='open'?'var(--ok-bg)':'var(--bg)'};
-                       border:1px solid ${p.status==='open'?'var(--ok-bdr)':'var(--bdr)'};
-                       color:${p.status==='open'?'var(--ok)':'var(--txt-muted)'}">
-            ${p.status === 'open' ? 'Open' : 'Closed'}
-          </span>
-          ${canEdit ? `<button class="btn btn-s btn-sm" onclick="openPoModal('${p.id}')"><i class="ti ti-edit"></i></button>` : ''}
+        <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">
+          ${p.status === 'open'
+            ? `<span class="imf-badge st-store_issued" style="padding:4px 10px"><i class="ti ti-circle-check"></i> Open</span>`
+            : `<span class="imf-badge st-dispatched" style="padding:4px 10px"><i class="ti ti-lock"></i> Closed</span>`
+          }
+          ${canEdit ? `<button class="btn btn-s btn-sm" style="padding:4px 8px" onclick="openPoModal('${p.id}')"><i class="ti ti-edit"></i></button>` : ''}
         </div>
       </div>
-      ${lines.map(l => {
-        const pct    = l.scheduledQty > 0 ? Math.round(((l.dispatchedQty || 0) / l.scheduledQty) * 100) : 0;
-        const pctCol = pct >= 100 ? 'var(--ok)' : l.dueDate < dateStr() ? 'var(--err)' : 'var(--acc)';
-        return `
-          <div style="background:var(--bg);border-radius:6px;padding:8px 10px;margin-bottom:6px">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-              <div>
-                <div style="font-weight:700;font-size:13px">${l.partName || '—'}</div>
-                <div style="font-size:11px;color:var(--txt-muted)">Due: ${fmtDate(l.dueDate)} · ${fmtINR(l.pieceRateINR || 0)}/pc</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${lines.map(l => {
+          const pct    = l.scheduledQty > 0 ? Math.round(((l.dispatchedQty || 0) / l.scheduledQty) * 100) : 0;
+          const isOverdue = l.dueDate && l.dueDate < dateStr() && (l.dispatchedQty || 0) < l.scheduledQty;
+          const statusCls = pct >= 100 ? 'rag-g' : isOverdue ? 'rag-r' : 'rag-b';
+          const indicatorColor = pct >= 100 ? 'var(--ok)' : isOverdue ? 'var(--err)' : 'var(--acc)';
+          return `
+            <div style="background:var(--fill);border-radius:var(--rs);padding:10px 12px">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+                <div>
+                  <div style="font-weight:700;font-size:13px">${l.partName || '—'}</div>
+                  <div style="font-size:11px;color:var(--txt-muted);margin-top:2px">
+                    Due: <strong>${fmtDate(l.dueDate)}</strong> · Rate: <strong class="imf-mono">${fmtINR(l.pieceRateINR || 0)}</strong>
+                  </div>
+                </div>
+                <div style="text-align:right;flex-shrink:0">
+                  <div class="imf-mono" style="font-weight:800;font-size:13.5px;color:${indicatorColor}">
+                    ${l.dispatchedQty||0} / ${l.scheduledQty}
+                  </div>
+                  <span class="imf-badge ${statusCls}" style="font-size:9.5px;padding:2px 6px;margin-top:3px">${pct}%</span>
+                </div>
               </div>
-              <div style="text-align:right;flex-shrink:0">
-                <div style="font-weight:800;font-size:13px;color:${pctCol}">${l.dispatchedQty||0} / ${l.scheduledQty}</div>
-                <div style="font-size:10px;color:${pctCol}">${pct}%</div>
+              <div style="background:var(--line);border-radius:99px;height:4px;margin-top:8px;overflow:hidden">
+                <div style="height:100%;border-radius:99px;background:${indicatorColor};width:100%;
+                            transform:scaleX(${(Math.min(pct,100) / 100).toFixed(4)});transform-origin:left;
+                            transition:transform .3s"></div>
               </div>
-            </div>
-            <div style="background:var(--bdr);border-radius:99px;height:4px;margin-top:6px;overflow:hidden">
-              <div style="height:100%;border-radius:99px;background:${pctCol};width:100%;
-                          transform:scaleX(${(Math.min(pct,100) / 100).toFixed(4)});transform-origin:left;
-                          transition:transform .3s"></div>
-            </div>
-          </div>`;
-      }).join('')}
+            </div>`;
+        }).join('')}
+      </div>
     </div>`;
 }
 
@@ -276,49 +345,55 @@ function openPoModal(id) {
   _poEditId = id;
   const p = id ? S_DSP.pos.find(x => x.id === id) : null;
   _poLines = p ? JSON.parse(JSON.stringify(p.lines || [])) : [];
+  _poLines = _poLines.map(l => ({
+    ...l,
+    totalScheduleQty: l.totalScheduleQty || l.scheduledQty || 0
+  }));
 
   const custOpts = (S.customers || []).map(c => `<option value="${c.id}" ${p?.customerId===c.id?'selected':''}>${c.name}</option>`).join('');
 
   openModal(`
     <div class="modal-handle"></div>
-    <div class="modal-title">${id ? 'Edit PO' : 'New Purchase Order'}</div>
+    <div class="modal-title">${id ? 'Edit Purchase Order' : 'New Purchase Order'}</div>
 
-    <div class="f">
+    <div class="f" style="margin-bottom:12px">
       <label>Customer <span style="color:var(--err)">*</span></label>
-      <select id="po-cust" style="font-size:13px">
+      <select id="po-cust" style="font-size:13.5px;font-weight:600">
         <option value="">— Select customer —</option>
         ${custOpts}
       </select>
     </div>
-    <div class="row-2">
+    <div class="row-2" style="margin-bottom:12px">
       <div class="f">
         <label>PO Number <span style="color:var(--err)">*</span></label>
-        <input type="text" id="po-no" value="${p?.poNo||''}" placeholder="e.g. PO-2024-001" style="font-size:13px">
+        <input type="text" id="po-no" value="${p?.poNo||''}" placeholder="e.g. PO-2024-001" style="font-size:13.5px;font-weight:700;font-family:var(--mono-v2)">
       </div>
       <div class="f">
         <label>PO Date</label>
-        <input type="date" id="po-date" value="${p?.poDate||dateStr()}" style="font-size:13px">
+        <input type="date" id="po-date" value="${p?.poDate||dateStr()}" style="font-size:13.5px;font-weight:600">
       </div>
     </div>
-    <div class="f">
+    <div class="f" style="margin-bottom:12px">
       <label>Delivery Month</label>
-      <input type="month" id="po-month" value="${p?.deliveryMonth||''}" style="font-size:13px">
+      <select id="po-month" style="font-size:13.5px;font-weight:600">
+        ${getMonthDropdownOptions(p?.deliveryMonth || '')}
+      </select>
     </div>
-    <div class="f">
+    <div class="f" style="margin-bottom:16px">
       <label>Remarks</label>
-      <input type="text" id="po-remarks" value="${p?.remarks||''}" placeholder="Optional remarks" style="font-size:13px">
+      <input type="text" id="po-remarks" value="${p?.remarks||''}" placeholder="Optional remarks" style="font-size:13.5px">
     </div>
 
-    <div style="border-top:1px solid var(--bdr);margin:12px 0 10px;padding-top:12px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-        <div style="font-size:12px;font-weight:700">PO Lines</div>
-        <button class="btn btn-s btn-sm" onclick="poAddLine()"><i class="ti ti-plus"></i> Add Part</button>
+    <div style="border-top:1px solid var(--line);margin:16px 0 12px;padding-top:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="font-size:13px;font-weight:800;color:var(--imf-navy)">PO Lines / Parts</div>
+        <button class="btn btn-s btn-sm" onclick="poAddLine()"><i class="ti ti-plus"></i> Add Line</button>
       </div>
-      <div id="po-lines-list"></div>
+      <div id="po-lines-list" style="display:flex;flex-direction:column;gap:10px;max-height:260px;overflow-y:auto;padding-right:4px;margin-bottom:16px"></div>
     </div>
 
-    <div id="po-modal-err" style="display:none;color:var(--err);font-size:12px;font-weight:700;margin-bottom:8px"></div>
-    <div style="display:flex;gap:8px">
+    <div id="po-modal-err" style="display:none;color:var(--err);font-size:12px;font-weight:700;margin-bottom:12px"></div>
+    <div style="display:flex;gap:10px">
       <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
       <button class="btn btn-p" style="flex:1" onclick="savePo()">
         <i class="ti ti-check"></i> ${id ? 'Save Changes' : 'Create PO'}
@@ -330,7 +405,7 @@ function openPoModal(id) {
 
 function poAddLine() {
   poReadLines();
-  _poLines.push({ lineNo: _poLines.length + 1, partId: '', partNo: '', partName: '', scheduledQty: 0, dueDate: tomStr(), pieceRateINR: 0, dispatchedQty: 0 });
+  _poLines.push({ lineNo: _poLines.length + 1, partId: '', partNo: '', partName: '', totalScheduleQty: 0, scheduledQty: 0, dueDate: tomStr(), pieceRateINR: 0, dispatchedQty: 0 });
   renderPoLines();
 }
 
@@ -350,6 +425,7 @@ function poReadLines() {
       partId,
       partNo:   part?.no   || part?.partNo   || l.partNo,
       partName: part?.name || document.getElementById(`po-part-name-${i}`)?.value || l.partName,
+      totalScheduleQty: parseFloat(document.getElementById(`po-total-qty-${i}`)?.value || '0') || 0,
       scheduledQty:  parseFloat(document.getElementById(`po-qty-${i}`)?.value  || '0') || 0,
       dueDate:       document.getElementById(`po-due-${i}`)?.value  || l.dueDate,
       pieceRateINR:  parseFloat(document.getElementById(`po-rate-${i}`)?.value || '0') || 0,
@@ -361,36 +437,42 @@ function renderPoLines() {
   const el = document.getElementById('po-lines-list');
   if (!el) return;
   if (!_poLines.length) {
-    el.innerHTML = `<div style="font-size:12px;color:var(--txt-muted);padding:6px 0">No lines added yet.</div>`;
+    el.innerHTML = `<div style="font-size:12px;color:var(--txt-muted);padding:8px 0;text-align:center;background:var(--fill);border-radius:var(--rs)">No lines added yet. Click 'Add Line' to add a part.</div>`;
     return;
   }
   el.innerHTML = _poLines.map((l, i) => `
-    <div style="background:var(--bg);border-radius:6px;padding:8px 10px;margin-bottom:8px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-        <div style="font-size:11px;font-weight:700;color:var(--txt-muted)">LINE ${i + 1}</div>
-        <button onclick="poReadLines();poRemoveLine(${i})" style="border:none;background:none;color:var(--err);cursor:pointer;font-size:13px">
+    <div style="background:var(--fill);border-radius:var(--rs);padding:12px 14px;border:1px solid var(--line)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-size:11px;font-weight:800;color:var(--txt-muted);letter-spacing:0.04em">LINE ${i + 1}</div>
+        <button onclick="poReadLines();poRemoveLine(${i})" style="border:none;background:none;color:var(--err);cursor:pointer;font-size:14px;padding:2px">
           <i class="ti ti-trash"></i>
         </button>
       </div>
-      <div class="f" style="margin-bottom:6px">
-        <label>Part</label>
-        <input id="po-part-name-${i}" type="text" value="${l.partName||''}"
-          placeholder="Type part name or number to search..." autocomplete="off"
-          oninput="poPartSearch(this,${i})" onblur="setTimeout(hidePartDrop,150)" style="font-size:12px">
-        <input type="hidden" id="po-part-id-${i}" value="${l.partId||''}">
+      <div style="display:grid;grid-template-columns: 2fr 1fr;gap:12px;margin-bottom:8px">
+        <div class="f">
+          <label>Part Name / Number</label>
+          <input id="po-part-name-${i}" type="text" value="${l.partName||''}"
+            placeholder="Type part name or number to search..." autocomplete="off"
+            oninput="poPartSearch(this,${i})" onblur="setTimeout(hidePartDrop,150)" style="font-size:12.5px;font-weight:600">
+          <input type="hidden" id="po-part-id-${i}" value="${l.partId||''}">
+        </div>
+        <div class="f">
+          <label>Total Schedule Qty</label>
+          <input type="number" id="po-total-qty-${i}" value="${l.totalScheduleQty || 0}" min="0" onchange="balancePoLines(${i}, 'totalScheduleQty')" style="font-size:12.5px;font-weight:700;font-family:var(--mono-v2);text-align:center">
+        </div>
       </div>
       <div class="row-3">
         <div class="f">
-          <label>Qty</label>
-          <input type="number" id="po-qty-${i}" value="${l.scheduledQty}" min="0" style="font-size:12px">
+          <label>Quantity</label>
+          <input type="number" id="po-qty-${i}" value="${l.scheduledQty}" min="0" onchange="balancePoLines(${i}, 'scheduledQty')" style="font-size:12.5px;font-weight:700;font-family:var(--mono-v2);text-align:center">
         </div>
         <div class="f">
           <label>Due Date</label>
-          <input type="date" id="po-due-${i}" value="${l.dueDate||''}" style="font-size:12px">
+          <input type="date" id="po-due-${i}" value="${l.dueDate||''}" style="font-size:12.5px;font-weight:600">
         </div>
         <div class="f">
           <label>Rate (₹/pc)</label>
-          <input type="number" id="po-rate-${i}" value="${l.pieceRateINR||0}" min="0" style="font-size:12px">
+          <input type="number" id="po-rate-${i}" value="${l.pieceRateINR||0}" min="0" style="font-size:12.5px;font-weight:700;font-family:var(--mono-v2);text-align:center">
         </div>
       </div>
     </div>`).join('');
@@ -402,7 +484,97 @@ function poPartSearch(inputEl, idx) {
     document.getElementById(`po-part-id-${idx}`).value = p.id;
     inputEl.value = p.name;
     poReadLines();
+    
+    const existing = _poLines.find((l, i) => l.partId === p.id && i !== idx);
+    if (existing) {
+      _poLines[idx].totalScheduleQty = existing.totalScheduleQty;
+      _poLines[idx].pieceRateINR = existing.pieceRateINR;
+    } else {
+      _poLines[idx].pieceRateINR = p.rate || p.pieceRateINR || 0;
+      if (!_poLines[idx].totalScheduleQty && _poLines[idx].scheduledQty) {
+        _poLines[idx].totalScheduleQty = _poLines[idx].scheduledQty;
+      }
+    }
+    
+    balancePoLines();
   });
+}
+
+function balancePoLines(editedIdx, editedField) {
+  poReadLines();
+  if (!_poLines.length) return;
+
+  if (editedIdx !== undefined && editedIdx >= 0 && editedIdx < _poLines.length) {
+    const editedLine = _poLines[editedIdx];
+    const partId = editedLine.partId;
+    if (partId) {
+      if (editedField === 'totalScheduleQty') {
+        _poLines.forEach(l => {
+          if (l.partId === partId) {
+            l.totalScheduleQty = editedLine.totalScheduleQty;
+          }
+        });
+        const groupLines = _poLines.filter(l => l.partId === partId);
+        if (groupLines.length === 1 && groupLines[0].scheduledQty === 0) {
+          groupLines[0].scheduledQty = editedLine.totalScheduleQty;
+        }
+      }
+    }
+  }
+
+  const partIds = [...new Set(_poLines.map(l => l.partId).filter(Boolean))];
+
+  partIds.forEach(partId => {
+    const indices = [];
+    _poLines.forEach((l, idx) => {
+      if (l.partId === partId) indices.push(idx);
+    });
+
+    if (!indices.length) return;
+
+    const T = _poLines[indices[0]].totalScheduleQty || 0;
+    let runningSum = 0;
+    let cutoffIdx = -1;
+
+    for (let i = 0; i < indices.length; i++) {
+      const idx = indices[i];
+      runningSum += _poLines[idx].scheduledQty;
+      if (runningSum >= T) {
+        cutoffIdx = idx;
+        break;
+      }
+    }
+
+    if (cutoffIdx !== -1) {
+      _poLines = _poLines.filter((l, idx) => {
+        if (l.partId === partId && idx > cutoffIdx) {
+          return false;
+        }
+        return true;
+      });
+    } else {
+      const lastIdx = indices[indices.length - 1];
+      const lastLine = _poLines[lastIdx];
+      
+      const newLine = {
+        lineNo: 0,
+        partId: lastLine.partId,
+        partNo: lastLine.partNo,
+        partName: lastLine.partName,
+        totalScheduleQty: T,
+        scheduledQty: T - runningSum,
+        dueDate: lastLine.dueDate || tomStr(),
+        pieceRateINR: lastLine.pieceRateINR || 0,
+        dispatchedQty: 0
+      };
+      
+      _poLines.splice(lastIdx + 1, 0, newLine);
+    }
+  });
+
+  _poLines = _poLines.map((l, i) => ({ ...l, lineNo: i + 1 }));
+
+  renderPoLines();
 }
 
 async function savePo() {
@@ -438,8 +610,10 @@ async function savePo() {
       // Preserve dispatchedQty when editing
       const orig = S_DSP.pos.find(p => p.id === _poEditId);
       if (orig) {
-        data.lines = _poLines.map(l => {
-          const origLine = (orig.lines || []).find(ol => ol.partId === l.partId);
+        data.lines = _poLines.map((l, i) => {
+          const newIndexInPart = _poLines.slice(0, i + 1).filter(nl => nl.partId === l.partId).length - 1;
+          const origLinesForPart = (orig.lines || []).filter(ol => ol.partId === l.partId);
+          const origLine = origLinesForPart[newIndexInPart];
           return { ...l, dispatchedQty: origLine?.dispatchedQty || 0 };
         });
       }
@@ -464,17 +638,22 @@ function renderDispatch() {
 
   const canDispatch = canDo('dispatch') || S.sess?.role === 'admin';
   if (!canDispatch) {
-    el.innerHTML = `<div class="empty"><div class="empty-ic"><i class="ti ti-lock"></i></div><h3>Access Restricted</h3><p>Dispatch role required.</p></div>`;
+    el.innerHTML = `
+      <div class="imf-empty" style="padding:40px 24px">
+        <div class="ic"><i class="ti ti-lock"></i></div>
+        <h3>Access Restricted</h3>
+        <p>Dispatch role required.</p>
+      </div>`;
     return;
   }
 
   el.innerHTML = `
     <!-- Header card -->
-    <div class="card" style="margin-bottom:12px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-        <div style="font-size:13px;font-weight:700">Dispatch Header</div>
+    <div class="imf-card" style="margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div style="font-size:14px;font-weight:800;color:var(--imf-navy)">Dispatch Session Header</div>
         ${_dispHeaderLocked
-          ? `<button class="btn btn-s btn-sm" onclick="clearDispatchHeader()"><i class="ti ti-lock-open"></i> Unlock</button>`
+          ? `<button class="btn btn-s btn-sm" style="padding:4px 8px;font-size:12px" onclick="clearDispatchHeader()"><i class="ti ti-lock-open"></i> Unlock</button>`
           : ''}
       </div>
 
@@ -500,7 +679,7 @@ function renderDispatchHeaderForm() {
 
   const selPO    = S_DSP.pos.find(p => p.id === _dispHeader.poId);
   const partOpts = selPO
-    ? (selPO.lines || []).map(l => `<option value="${l.partId}" data-rate="${l.pieceRateINR||0}" ${_dispHeader.partId===l.partId?'selected':''}>${l.partName}</option>`).join('')
+    ? (selPO.lines || []).map(l => `<option value="${l.partId}" data-line="${l.lineNo}" data-rate="${l.pieceRateINR||0}" ${_dispHeader.partId===l.partId && _dispHeader.lineNo===l.lineNo?'selected':''}>${l.partName} (Due: ${fmtDate(l.dueDate)}, Qty: ${l.scheduledQty})</option>`).join('')
     : '';
 
   // Stream is never freely chosen — it's auto-detected from the customer's
@@ -515,7 +694,7 @@ function renderDispatchHeaderForm() {
     streamField = `
       <div class="f">
         <label>Stream</label>
-        <div style="padding:9px 12px;background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);font-size:13px;color:var(--txt-dim)">
+        <div style="padding:10px 13px;background:var(--fill);border:1.5px solid var(--bdr-mid);border-radius:var(--rs);font-size:13.5px;color:var(--txt-muted)">
           Select a customer first
         </div>
       </div>`;
@@ -524,7 +703,7 @@ function renderDispatchHeaderForm() {
     streamField = `
       <div class="f">
         <label>Stream <span style="color:var(--err)">*</span></label>
-        <div style="padding:9px 12px;background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rs);font-size:13px;font-weight:700">
+        <div style="padding:10px 13px;background:var(--fill);border:1.5px solid var(--bdr-mid);border-radius:var(--rs);font-size:13.5px;font-weight:700">
           ${lbl} <span style="font-weight:400;color:var(--txt-muted);font-size:11px">— auto-set from customer</span>
         </div>
         <input type="hidden" id="dh-stream" value="${allowedStreamDefs[0]?.key || ''}">
@@ -534,7 +713,7 @@ function renderDispatchHeaderForm() {
     streamField = `
       <div class="f">
         <label>Stream <span style="color:var(--err)">*</span></label>
-        <select id="dh-stream" style="font-size:13px">${streamOpts}</select>
+        <select id="dh-stream" style="font-size:13.5px">${streamOpts}</select>
         <div style="font-size:11px;color:var(--txt-muted);margin-top:4px">This customer is set up for more than one stream — restricted to its allowed streams only.</div>
       </div>`;
   }
@@ -542,7 +721,7 @@ function renderDispatchHeaderForm() {
   return `
     <div class="f">
       <label>Customer <span style="color:var(--err)">*</span></label>
-      <select id="dh-cust" onchange="dspOnCustChange()" style="font-size:13px">
+      <select id="dh-cust" onchange="dspOnCustChange()" style="font-size:13.5px;font-weight:600">
         <option value="">— Select customer —</option>
         ${custOpts}
       </select>
@@ -550,14 +729,14 @@ function renderDispatchHeaderForm() {
     <div class="row-2">
       <div class="f">
         <label>PO <span style="color:var(--err)">*</span></label>
-        <select id="dh-po" onchange="dspOnPoChange()" style="font-size:13px">
+        <select id="dh-po" onchange="dspOnPoChange()" style="font-size:13.5px;font-weight:600">
           <option value="">— Select PO —</option>
           ${poOpts}
         </select>
       </div>
       <div class="f">
         <label>Part <span style="color:var(--err)">*</span></label>
-        <select id="dh-part" onchange="dspOnPartChange()" style="font-size:13px">
+        <select id="dh-part" onchange="dspOnPartChange()" style="font-size:13.5px;font-weight:600">
           <option value="">— Select part —</option>
           ${partOpts}
         </select>
@@ -567,11 +746,11 @@ function renderDispatchHeaderForm() {
       ${streamField}
       <div class="f">
         <label>Date <span style="color:var(--err)">*</span></label>
-        <input type="date" id="dh-date" value="${_dispHeader.date || dateStr()}" style="font-size:13px">
+        <input type="date" id="dh-date" value="${_dispHeader.date || dateStr()}" style="font-size:13.5px;font-weight:600">
       </div>
     </div>
     <div id="dh-err" style="display:none;color:var(--err);font-size:12px;font-weight:700;margin-bottom:8px"></div>
-    <button class="btn btn-p" style="width:100%" onclick="lockDispatchHeader()">
+    <button class="btn btn-p" style="width:100%;padding:12px;font-size:14.5px" onclick="lockDispatchHeader()">
       <i class="ti ti-lock"></i> Lock Header &amp; Start Scanning
     </button>`;
 }
@@ -601,8 +780,10 @@ function dspOnPartChange() {
   const partEl  = document.getElementById('dh-part');
   _dispHeader.partId = partEl?.value || '';
   const selOpt  = partEl?.options[partEl.selectedIndex];
+  const lineNo  = parseInt(selOpt?.dataset.line || '0') || 0;
+  _dispHeader.lineNo = lineNo;
   const po      = S_DSP.pos.find(p => p.id === _dispHeader.poId);
-  const line    = (po?.lines || []).find(l => l.partId === _dispHeader.partId);
+  const line    = (po?.lines || []).find(l => l.partId === _dispHeader.partId && l.lineNo === lineNo);
   _dispHeader.partName      = line?.partName || S.parts.find(p => p.id === _dispHeader.partId)?.name || '';
   _dispHeader.partNo        = line?.partNo   || S.parts.find(p => p.id === _dispHeader.partId)?.no   || '';
   _dispHeader.pieceRateINR  = parseFloat(selOpt?.dataset.rate || '0') || 0;
@@ -612,7 +793,10 @@ function lockDispatchHeader() {
   // Read current form values
   _dispHeader.customerId    = document.getElementById('dh-cust')?.value   || _dispHeader.customerId;
   _dispHeader.poId          = document.getElementById('dh-po')?.value     || _dispHeader.poId;
-  _dispHeader.partId        = document.getElementById('dh-part')?.value   || _dispHeader.partId;
+  const partEl              = document.getElementById('dh-part');
+  _dispHeader.partId        = partEl?.value   || _dispHeader.partId;
+  const selOpt              = partEl?.options[partEl?.selectedIndex || 0];
+  _dispHeader.lineNo        = parseInt(selOpt?.dataset.line || '0') || 0;
   _dispHeader.stream        = document.getElementById('dh-stream')?.value || _dispHeader.stream;
   _dispHeader.date          = document.getElementById('dh-date')?.value   || dateStr();
 
@@ -620,7 +804,7 @@ function lockDispatchHeader() {
   _dispHeader.customerName  = cust?.name || '';
   const po = S_DSP.pos.find(p => p.id === _dispHeader.poId);
   _dispHeader.poNo = po?.poNo || '';
-  const line = (po?.lines || []).find(l => l.partId === _dispHeader.partId);
+  const line = (po?.lines || []).find(l => l.partId === _dispHeader.partId && l.lineNo === _dispHeader.lineNo);
   _dispHeader.partName = line?.partName || '';
   _dispHeader.partNo   = line?.partNo   || '';
   _dispHeader.pieceRateINR = line?.pieceRateINR || 0;
@@ -652,7 +836,7 @@ function clearDispatchHeader() {
 function doClearDispatchHeader() {
   _dispHeaderLocked = false;
   _dispRows = [];
-  _dispHeader = { customerId:'', customerName:'', poId:'', poNo:'', partId:'', partNo:'', partName:'', stream:'oem', date:'', pieceRateINR:0 };
+  _dispHeader = { customerId:'', customerName:'', poId:'', poNo:'', partId:'', partNo:'', partName:'', lineNo:0, stream:'oem', date:'', pieceRateINR:0 };
   renderDispatch();
 }
 
@@ -660,12 +844,12 @@ function renderDispatchHeaderLocked() {
   const streamLbl = STREAMS.find(s => s.key === _dispHeader.stream)?.label || _dispHeader.stream;
   return `
     <div class="kv-list">
-      <div class="kv-row"><span class="kv-key">Customer</span><span class="kv-val">${_dispHeader.customerName}</span></div>
-      <div class="kv-row"><span class="kv-key">PO</span><span class="kv-val">${_dispHeader.poNo}</span></div>
-      <div class="kv-row"><span class="kv-key">Part</span><span class="kv-val">${_dispHeader.partName}</span></div>
-      <div class="kv-row"><span class="kv-key">Stream</span><span class="kv-val">${streamLbl}</span></div>
-      <div class="kv-row"><span class="kv-key">Date</span><span class="kv-val">${fmtDate(_dispHeader.date)}</span></div>
-      <div class="kv-row"><span class="kv-key">Rate</span><span class="kv-val">${fmtINR(_dispHeader.pieceRateINR)}/pc</span></div>
+      <div class="kv-row"><span class="kv-key">Customer</span><span class="kv-val" style="font-weight:700">${_dispHeader.customerName}</span></div>
+      <div class="kv-row"><span class="kv-key">PO</span><span class="kv-val imf-mono" style="font-family:var(--mono-v2);font-weight:700;color:var(--imf-navy)">${_dispHeader.poNo}</span></div>
+      <div class="kv-row"><span class="kv-key">Part</span><span class="kv-val" style="font-weight:700">${_dispHeader.partName}</span></div>
+      <div class="kv-row"><span class="kv-key">Stream</span><span class="kv-val" style="font-weight:700">${streamLbl}</span></div>
+      <div class="kv-row"><span class="kv-key">Date</span><span class="kv-val imf-mono" style="font-family:var(--mono-v2);font-weight:700">${fmtDate(_dispHeader.date)}</span></div>
+      <div class="kv-row"><span class="kv-key">Rate</span><span class="kv-val imf-mono" style="font-family:var(--mono-v2);font-weight:700;color:var(--ok)">${fmtINR(_dispHeader.pieceRateINR)}/pc</span></div>
     </div>`;
 }
 
@@ -675,50 +859,41 @@ function renderDispatchRows() {
 
   return `
     <!-- Scan area -->
-    <div class="card" style="margin-bottom:12px">
-      <div style="font-size:13px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:6px">
-        <i class="ti ti-scan" style="color:var(--acc)"></i> Scan TAG to Add Row
+    <div class="imf-card" style="margin-bottom:12px">
+      <div style="font-size:13.5px;font-weight:800;margin-bottom:12px;display:flex;align-items:center;gap:8px;color:var(--imf-navy)">
+        <i class="ti ti-scan" style="color:var(--acc);font-size:16px"></i> Scan TAG to Add Row
       </div>
-      <div style="display:flex;gap:8px">
-        <input type="text" id="dsp-scan-input" placeholder="Enter TAG UID…"
-          style="flex:1;font-family:monospace;font-size:15px;text-transform:uppercase;letter-spacing:.05em"
-          onkeydown="if(event.key==='Enter')dspScanTag()">
-        <button class="btn btn-s" onclick="openQrScanner(dspOnScan,'Scan TAG')" style="padding:10px 14px">
-          <i class="ti ti-qrcode"></i>
-        </button>
-      </div>
-      <button class="btn btn-s" style="width:100%;margin-top:8px" onclick="dspScanTag()">
-        <i class="ti ti-search"></i> Verify TAG
-      </button>
-      <div id="dsp-scan-err" style="display:none;margin-top:8px;background:var(--err-bg);border:1px solid var(--err-bdr);
-                                    border-radius:var(--rxs);padding:8px 12px;font-size:12px;font-weight:700;color:var(--err)"></div>
+      <button class="qr-scan-btn" onclick="openQrScanner(dspOnScan, 'Scan TAG')" style="width:100%;padding:14px;font-size:14.5px;font-weight:700;border-radius:var(--rs);display:flex;align-items:center;justify-content:center;gap:8px"><i class="ti ti-qrcode"></i> Scan TAG</button>
+      <div id="dsp-scan-err" style="display:none;margin-top:10px;background:var(--err-bg);border:1px solid var(--err-bdr);
+                                    border-radius:var(--rxs);padding:10px 14px;font-size:12px;font-weight:700;color:var(--err)"></div>
     </div>
 
     <!-- Rows list -->
     ${_dispRows.length ? `
-      <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:8px">
-        ROWS (${_dispRows.length}) · ${totalQty} pcs · ${fmtINR(totalVal)}
+      <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:8px;text-transform:uppercase">
+        ROWS (${_dispRows.length}) · <span style="font-family:var(--mono-v2)">${totalQty}</span> pcs · <span style="font-family:var(--mono-v2)">${fmtINR(totalVal)}</span>
       </div>
-      ${_dispRows.map((row, i) => dspRow(row, i)).join('')}
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">
+        ${_dispRows.map((row, i) => dspRow(row, i)).join('')}
+      </div>
 
-      <button class="btn btn-p" style="width:100%;margin-top:8px;font-size:15px;padding:14px" onclick="dspConfirmFinalize()">
+      <button class="btn btn-p" style="width:100%;margin-top:8px;font-size:15px;padding:14px;font-weight:700" onclick="dspConfirmFinalize()">
         <i class="ti ti-truck"></i> Finalise Dispatch (${totalQty} pcs)
       </button>` : `
-      <div class="empty" style="padding:20px 0">
-        <div class="empty-ic"><i class="ti ti-scan"></i></div>
-        <h3>No rows yet</h3><p>Scan a QC-cleared TAG to add it.</p>
+      <div class="imf-empty" style="padding:32px 24px">
+        <div class="ic"><i class="ti ti-scan"></i></div>
+        <h3>No rows scanned yet</h3>
+        <p>Scan a QC-cleared TAG to add it to this dispatch session.</p>
       </div>`}`;
 }
 
 function dspOnScan(tagId) {
-  const el = document.getElementById('dsp-scan-input');
-  if (el) el.value = tagId.toUpperCase();
-  dspScanTag();
+  dspScanTag(tagId);
 }
 
-async function dspScanTag() {
+async function dspScanTag(tagId) {
   const el    = document.getElementById('dsp-scan-input');
-  const tagId = (el?.value || '').trim().toUpperCase();
+  tagId = (tagId || el?.value || '').trim().toUpperCase();
   if (!tagId) { toast('Enter or scan a TAG UID'); return; }
 
   const errEl = document.getElementById('dsp-scan-err');
@@ -770,31 +945,33 @@ async function dspScanTag() {
 function dspRow(row, idx) {
   const maxQty = row.tagData ? (row.tagData[`qty_${_dispHeader.stream}`] || 0) : row.qty;
   return `
-    <div class="card" style="margin-bottom:8px;border:1.5px solid var(--ok)">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-        <span class="tag-uid">${row.tagId}</span>
-        <button onclick="dspRemoveRow(${idx})" style="border:none;background:none;color:var(--err);cursor:pointer;font-size:14px;padding:2px 4px">
+    <div class="imf-card" style="border: 1px solid var(--ok-bdr); background: var(--ok-bg)">
+      <div class="imf-card-top" style="margin-bottom:8px">
+        <span class="imf-mono" style="font-family:var(--mono-v2);font-weight:800;font-size:14.5px;color:var(--imf-navy)">${row.tagId}</span>
+        <span class="imf-badge st-qc_cleared" style="margin-left:8px"><i class="ti ti-circle-check"></i> Scanned</span>
+        <div class="grow"></div>
+        <button onclick="dspRemoveRow(${idx})" class="btn btn-s btn-sm" style="border:none;background:none;color:var(--err);cursor:pointer;padding:4px">
           <i class="ti ti-trash"></i>
         </button>
       </div>
-      <div style="font-size:11px;color:var(--txt-muted);margin-bottom:8px">
-        Batch: ${row.batchCode || '—'} · Heat: ${row.heatCode || '—'} · Available: ${maxQty}
+      <div class="imf-card-meta" style="margin-bottom:12px">
+        Batch: <strong class="imf-mono" style="font-family:var(--mono-v2);color:var(--txt)">${row.batchCode || '—'}</strong> · Heat: <strong class="imf-mono" style="font-family:var(--mono-v2);color:var(--txt)">${row.heatCode || '—'}</strong> · Available: <strong class="imf-mono" style="font-family:var(--mono-v2);color:var(--txt)">${maxQty}</strong>
       </div>
       <div class="row-3">
-        <div class="f">
-          <label>Qty <span style="color:var(--err)">*</span></label>
+        <div class="f" style="margin-bottom:0">
+          <label style="font-size:11px;color:var(--txt-muted)">Qty <span style="color:var(--err)">*</span></label>
           <input type="number" id="dr-qty-${idx}" value="${row.qty}" min="1" max="${maxQty}"
-            oninput="dspReadRow(${idx})" style="font-size:14px;font-weight:700;text-align:center">
+            oninput="dspReadRow(${idx})" style="font-family:var(--mono-v2);font-weight:700;text-align:center">
         </div>
-        <div class="f">
-          <label>Invoice No</label>
+        <div class="f" style="margin-bottom:0">
+          <label style="font-size:11px;color:var(--txt-muted)">Invoice No</label>
           <input type="text" id="dr-inv-${idx}" value="${row.invoiceNo}"
-            oninput="dspReadRow(${idx})" placeholder="INV-001" style="font-size:13px">
+            oninput="dspReadRow(${idx})" placeholder="INV-001" style="font-family:var(--mono-v2);font-weight:600">
         </div>
-        <div class="f">
-          <label>Vehicle No</label>
+        <div class="f" style="margin-bottom:0">
+          <label style="font-size:11px;color:var(--txt-muted)">Vehicle No</label>
           <input type="text" id="dr-veh-${idx}" value="${row.vehicle}"
-            oninput="dspReadRow(${idx})" placeholder="MH-12-AB-1234" style="font-size:12px">
+            oninput="dspReadRow(${idx})" placeholder="MH-12-AB-1234" style="font-family:var(--mono-v2);font-weight:600">
         </div>
       </div>
     </div>`;
@@ -928,7 +1105,7 @@ async function finalizeDispatch() {
       if (poDoc.exists) {
         const po = poDoc.data();
         const updLines = (po.lines || []).map(l => {
-          if (l.partId === _dispHeader.partId) {
+          if (l.partId === _dispHeader.partId && l.lineNo === _dispHeader.lineNo) {
             return { ...l, dispatchedQty: (l.dispatchedQty || 0) + totalQty };
           }
           return l;
@@ -950,7 +1127,7 @@ async function finalizeDispatch() {
     toast('Dispatch finalised ✓');
     _dispHeaderLocked = false;
     _dispRows = [];
-    _dispHeader = { customerId:'', customerName:'', poId:'', poNo:'', partId:'', partNo:'', partName:'', stream:'oem', date:'', pieceRateINR:0 };
+    _dispHeader = { customerId:'', customerName:'', poId:'', poNo:'', partId:'', partNo:'', partName:'', lineNo:0, stream:'oem', date:'', pieceRateINR:0 };
     await refreshDSP();
   } catch (e) {
     console.error('finalizeDispatch:', e);
@@ -969,7 +1146,12 @@ function renderTracksheet() {
   const openPOs  = S_DSP.pos.filter(p => p.status === 'open');
 
   if (!openPOs.length) {
-    el.innerHTML = `<div class="empty"><div class="empty-ic"><i class="ti ti-table"></i></div><h3>No open POs</h3><p>Create POs in the POs tab to track delivery compliance.</p></div>`;
+    el.innerHTML = `
+      <div class="imf-empty" style="padding:40px 24px">
+        <div class="ic"><i class="ti ti-table"></i></div>
+        <h3>No open POs</h3>
+        <p>Create POs in the POs tab to track delivery compliance.</p>
+      </div>`;
     return;
   }
 
@@ -985,82 +1167,91 @@ function renderTracksheet() {
   });
 
   el.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-      <div style="font-size:11px;color:var(--txt-muted)">${allRows.length} active PO line${allRows.length !== 1 ? 's' : ''}</div>
-      <button class="btn btn-s btn-sm" onclick="refreshDSP()"><i class="ti ti-refresh"></i></button>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div style="font-size:12px;font-weight:700;color:var(--txt-muted);text-transform:uppercase;letter-spacing:.04em">${allRows.length} active PO line${allRows.length !== 1 ? 's' : ''}</div>
+      <button class="btn btn-s btn-sm" onclick="refreshDSP()"><i class="ti ti-refresh"></i> Refresh</button>
     </div>
-    <div class="tracksheet-table" style="overflow-x:auto">
-      <table style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead>
-          <tr style="background:var(--imf-navy);color:#fff">
-            <th style="padding:8px 10px;text-align:left;font-weight:700;white-space:nowrap">Customer / PO</th>
-            <th style="padding:8px 6px;text-align:left;font-weight:700">Part</th>
-            <th style="padding:8px 6px;text-align:center;font-weight:700;white-space:nowrap">Dispatched / Sched.</th>
-            <th style="padding:8px 6px;text-align:center;font-weight:700">Due</th>
-            <th style="padding:8px 6px;text-align:center;font-weight:700">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${allRows.map(({ po, line: l, rag }, i) => {
-            const pct    = l.scheduledQty > 0 ? Math.round(((l.dispatchedQty || 0) / l.scheduledQty) * 100) : 0;
-            const ragBg  = rag.code === 'r' ? 'var(--err-bg)' : rag.code === 'a' ? 'var(--warn-bg)' : 'var(--ok-bg)';
-            const ragBdr = rag.code === 'r' ? 'var(--err-bdr)' : rag.code === 'a' ? 'var(--warn-bdr)' : 'var(--ok-bdr)';
-            const ragCol = rag.code === 'r' ? 'var(--err)' : rag.code === 'a' ? 'var(--warn)' : 'var(--ok)';
-            const ragIcon = rag.code === 'r' ? 'ti-alert-circle' : rag.code === 'a' ? 'ti-clock' : 'ti-check';
-            return `
-              <tr style="background:${i % 2 === 0 ? 'var(--sur)' : 'var(--bg)'}">
-                <td style="padding:8px 10px">
-                  <div style="font-weight:700">${po.customerName}</div>
-                  <div style="font-size:10px;color:var(--txt-muted)">${po.poNo}</div>
-                </td>
-                <td style="padding:8px 6px">
-                  <div style="font-weight:600">${l.partName || '—'}</div>
-                </td>
-                <td style="padding:8px 6px;text-align:center">
-                  <div style="font-weight:800">${l.dispatchedQty||0} / ${l.scheduledQty}</div>
-                  <div style="background:var(--bdr);border-radius:99px;height:4px;margin-top:4px;overflow:hidden">
-                    <div style="height:100%;border-radius:99px;background:${ragCol};width:${Math.min(pct,100)}%"></div>
-                  </div>
-                </td>
-                <td style="padding:8px 6px;text-align:center;font-size:11px;color:var(--txt-muted);white-space:nowrap">${fmtDate(l.dueDate)}</td>
-                <td style="padding:8px 6px;text-align:center">
-                  <span style="font-size:11px;font-weight:700;background:${ragBg};border:1px solid ${ragBdr};color:${ragCol};border-radius:4px;padding:2px 8px;white-space:nowrap">
-                    <i class="ti ${ragIcon}" aria-hidden="true"></i> ${rag.label}
-                  </span>
-                </td>
-              </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-    </div>
-    <div class="tracksheet-cards">
-      ${allRows.map(({ po, line: l, rag }) => {
-        const pct    = l.scheduledQty > 0 ? Math.round(((l.dispatchedQty || 0) / l.scheduledQty) * 100) : 0;
-        const ragBg  = rag.code === 'r' ? 'var(--err-bg)' : rag.code === 'a' ? 'var(--warn-bg)' : 'var(--ok-bg)';
-        const ragBdr = rag.code === 'r' ? 'var(--err-bdr)' : rag.code === 'a' ? 'var(--warn-bdr)' : 'var(--ok-bdr)';
-        const ragCol = rag.code === 'r' ? 'var(--err)' : rag.code === 'a' ? 'var(--warn)' : 'var(--ok)';
-        const ragIcon = rag.code === 'r' ? 'ti-alert-circle' : rag.code === 'a' ? 'ti-clock' : 'ti-check';
-        return `
-          <div class="card" style="margin-bottom:8px">
-            <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
-              <div style="min-width:0">
-                <div style="font-weight:700;font-size:13px">${po.customerName}</div>
-                <div style="font-size:10px;color:var(--txt-muted)">${po.poNo}</div>
+    
+    <div class="imf-tablewrap">
+      <div class="imf-table-scroll">
+        <table class="imf-table">
+          <thead>
+            <tr>
+              <th class="pin" style="min-width:200px">Customer / PO</th>
+              <th style="min-width:180px">Part</th>
+              <th class="num" style="min-width:120px">Dispatched / Sched.</th>
+              <th style="min-width:140px">Progress</th>
+              <th style="min-width:110px">Due Date</th>
+              <th style="min-width:120px;text-align:center">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${allRows.map(({ po, line: l, rag }, i) => {
+              const pct    = l.scheduledQty > 0 ? Math.round(((l.dispatchedQty || 0) / l.scheduledQty) * 100) : 0;
+              const statusCls = pct >= 100 ? 'rag-g' : rag.code === 'r' ? 'rag-r' : rag.code === 'a' ? 'rag-a' : 'rag-b';
+              const ragCol = pct >= 100 ? 'var(--ok)' : rag.code === 'r' ? 'var(--err)' : rag.code === 'a' ? 'var(--warn)' : 'var(--acc)';
+              const ragIcon = pct >= 100 ? 'ti-circle-check' : rag.code === 'r' ? 'ti-alert-circle' : rag.code === 'a' ? 'ti-clock' : 'ti-circle-dot';
+              return `
+                <tr>
+                  <td class="pin">
+                    <div style="font-family:var(--sans);font-weight:700;color:var(--txt)">${po.customerName}</div>
+                    <div class="cell-sub" style="font-family:var(--mono-v2);font-size:10.5px">${po.poNo}</div>
+                  </td>
+                  <td>
+                    <div style="font-weight:600">${l.partName || '—'}</div>
+                  </td>
+                  <td class="num" style="font-family:var(--mono-v2);font-feature-settings:'tnum'">
+                    <strong>${l.dispatchedQty||0}</strong> / ${l.scheduledQty}
+                  </td>
+                  <td>
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <span class="imf-mono" style="font-family:var(--mono-v2);font-size:11px;min-width:32px;text-align:right">${pct}%</span>
+                      <div style="background:var(--line);border-radius:99px;height:5px;width:70px;overflow:hidden;flex-shrink:0">
+                        <div style="height:100%;border-radius:99px;background:${ragCol};width:${Math.min(pct,100)}%"></div>
+                      </div>
+                    </div>
+                  </td>
+                  <td style="font-family:var(--mono-v2);color:var(--txt-muted);white-space:nowrap">${fmtDate(l.dueDate)}</td>
+                  <td style="text-align:center">
+                    <span class="imf-badge ${statusCls}">
+                      <i class="ti ${ragIcon}" aria-hidden="true"></i> ${rag.label}
+                    </span>
+                  </td>
+                </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      
+      <!-- Mobile Fallback card list -->
+      <div class="imf-cards">
+        ${allRows.map(({ po, line: l, rag }) => {
+          const pct    = l.scheduledQty > 0 ? Math.round(((l.dispatchedQty || 0) / l.scheduledQty) * 100) : 0;
+          const statusCls = pct >= 100 ? 'rag-g' : rag.code === 'r' ? 'rag-r' : rag.code === 'a' ? 'rag-a' : 'rag-b';
+          const ragCol = pct >= 100 ? 'var(--ok)' : rag.code === 'r' ? 'var(--err)' : rag.code === 'a' ? 'var(--warn)' : 'var(--acc)';
+          const ragIcon = pct >= 100 ? 'ti-circle-check' : rag.code === 'r' ? 'ti-alert-circle' : rag.code === 'a' ? 'ti-clock' : 'ti-circle-dot';
+          return `
+            <div class="imf-card">
+              <div class="imf-card-top">
+                <span class="imf-mono" style="font-family:var(--mono-v2)">${po.poNo}</span>
+                <div class="grow"></div>
+                <span class="imf-badge ${statusCls}"><i class="ti ${ragIcon}"></i> ${rag.label}</span>
               </div>
-              <span style="flex-shrink:0;font-size:11px;font-weight:700;background:${ragBg};border:1px solid ${ragBdr};color:${ragCol};border-radius:4px;padding:2px 8px;white-space:nowrap">
-                <i class="ti ${ragIcon}" aria-hidden="true"></i> ${rag.label}
-              </span>
-            </div>
-            <div style="font-size:12px;font-weight:600;margin-top:8px">${l.partName || '—'}</div>
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:11px;color:var(--txt-muted)">
-              <span><strong style="color:var(--txt)">${l.dispatchedQty||0} / ${l.scheduledQty}</strong> dispatched</span>
-              <span>Due ${fmtDate(l.dueDate)}</span>
-            </div>
-            <div style="background:var(--bdr);border-radius:99px;height:4px;margin-top:6px;overflow:hidden">
-              <div style="height:100%;border-radius:99px;background:${ragCol};width:${Math.min(pct,100)}%"></div>
-            </div>
-          </div>`;
-      }).join('')}
+              <div class="imf-card-lead">
+                <span class="nm">${l.partName || '—'}</span>
+                <span class="qty" style="font-family:var(--mono-v2)">${l.dispatchedQty||0} <small>/ ${l.scheduledQty} pcs</small></span>
+              </div>
+              <div class="imf-card-meta">
+                Customer: <strong>${po.customerName}</strong>
+              </div>
+              <div style="background:var(--line);border-radius:99px;height:4px;margin-top:6px;margin-bottom:8px;overflow:hidden">
+                <div style="height:100%;border-radius:99px;background:${ragCol};width:${Math.min(pct,100)}%"></div>
+              </div>
+              <div class="imf-card-foot" style="margin-top:8px">
+                <span>Due: <strong style="font-family:var(--mono-v2)">${fmtDate(l.dueDate)}</strong></span>
+              </div>
+            </div>`;
+        }).join('')}
     </div>`;
 }
 

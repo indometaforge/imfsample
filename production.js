@@ -13,7 +13,8 @@ const TABS = [
   { key: 'breakdown', label: 'Breakdowns',   icon: 'ti-alert-triangle' },
   { key: 'reqs',      label: 'Requisitions', icon: 'ti-file-text',
     show: () => ['supervisor','hod','admin'].includes(S.sess?.role) || canDo('production') },
-  { key: 'reports',   label: 'Reports',      icon: 'ti-chart-bar' },
+  { key: 'reports',   label: 'Reports',      icon: 'ti-chart-bar',
+    show: () => S.sess?.role === 'admin' || S.sess?.email === 'tanmay@indometaforge.in' },
   { key: 'plans',     label: 'View Plans',   icon: 'ti-calendar' },
 ];
 
@@ -58,6 +59,7 @@ let _reqLines = [];
 let _repStage = 'soft';
 let _repDate  = '';
 let _repShift = '';
+let _repSelectedId = null;
 
 // Plan view filter state
 let _pvStage = 'soft';
@@ -376,25 +378,35 @@ function renderActualEntry() {
     const ms = (S.machineStatus || []).find(s => s.id === m.id);
     const isBreakdown = ms && (ms.status === 'pending_breakdown' || ms.status === 'under_maintenance');
     const totalProcessed = (md?.runs || []).reduce((s, r) => s + (+r.processed || 0), 0);
-    const totalDtMins    = (md?.downtime || []).reduce((s, d) => s + (+d.mins || 0), 0);
     const runsCount      = (md?.runs || []).length;
 
-    let statusColor = 'var(--bdr-mid)';
+    let statusColor = 'var(--line)';
     let statusLabel = 'Tap to log';
     let statusIcon  = '';
-    if (isBreakdown) { statusColor = 'var(--warn)'; statusLabel = 'Breakdown'; statusIcon = '<i class="ti ti-alert-triangle"></i> '; }
-    else if (md?.used === true)  { statusColor = 'var(--ok)'; statusLabel = `${runsCount} run${runsCount!==1?'s':''} · ${totalProcessed} pcs`; statusIcon = '<i class="ti ti-check"></i> '; }
-    else if (md?.used === false && md?.idleReason) { statusColor = 'var(--bdr-mid)'; statusLabel = `Idle: ${md.idleReason.split(' ')[0]}...`; statusIcon = '<i class="ti ti-player-pause"></i> '; }
+    if (isBreakdown) { 
+      statusColor = 'var(--err)'; 
+      statusLabel = 'Breakdown'; 
+      statusIcon = '<i class="ti ti-alert-triangle"></i> '; 
+    } else if (md?.used === true)  { 
+      statusColor = 'var(--ok)'; 
+      statusLabel = `${runsCount} run${runsCount!==1?'s':''} · ${totalProcessed} pcs`; 
+      statusIcon = '<i class="ti ti-circle-check"></i> '; 
+    } else if (md?.used === false && md?.idleReason) { 
+      statusColor = 'var(--line)'; 
+      statusLabel = `Idle: ${md.idleReason}`; 
+      statusIcon = '<i class="ti ti-player-pause"></i> '; 
+    }
 
     const saveStatus = _autoSaveStatus[m.id];
     const saveLbl = saveStatus === 'saving' ? '<i class="ti ti-loader-2"></i> Saving...'
                   : saveStatus === 'saved'   ? '<i class="ti ti-check"></i> Saved'
                   : saveStatus === 'error'   ? '<i class="ti ti-alert-circle"></i> Save error'
                   : '';
-    const statusTxtColor = isBreakdown ? 'var(--warn)' : md?.used ? 'var(--ok)' : 'var(--txt-muted)';
+    const statusTxtColor = isBreakdown ? 'var(--err)' : md?.used ? 'var(--ok)' : 'var(--txt-muted)';
+    const isActive = m.id === _detailMachId ? 'active' : '';
 
     return `
-      <button type="button" class="matrix-tile" onclick="openMachineDetail('${m.id}')" style="border-color:${statusColor}">
+      <button type="button" class="matrix-tile ${isActive}" onclick="openMachineDetail('${m.id}')" style="border-color:${statusColor}">
         <span style="flex:1;min-width:0">
           <span class="matrix-tile-name">${m.name}</span>
           <span class="matrix-tile-code">${m.id_code || m.id}</span>
@@ -405,78 +417,334 @@ function renderActualEntry() {
       </button>`;
   }).join('');
 
+  // Right pane: Detail
+  let detailHtml = '';
+  if (!_detailMachId) {
+    detailHtml = `
+      <div class="imf-split-detail-empty">
+        <i class="ti ti-settings" aria-hidden="true"></i>
+        <h3>No Machine Selected</h3>
+        <p>Choose a machine from the left panel to log operator details, production runs, and downtime.</p>
+      </div>
+    `;
+  } else {
+    const machId = _detailMachId;
+    const m  = (S.machines || []).find(x => x.id === machId) || { id: machId, name: machId, id_code: '' };
+    const md = _machineData[machId] || { used: false, idleReason: '', idleReasonOther: '', operatorId: '', operatorName: '', runs: [], downtime: [] };
+    const ms = (S.machineStatus || []).find(s => s.id === machId);
+    const isBreakdown = ms && (ms.status === 'pending_breakdown' || ms.status === 'under_maintenance');
+    const readOnly = lockedView;
+
+    const IDLE_OPTIONS = ['No Material','Under Maintenance','No Operator','Power Cut / Electricity','Other'];
+
+    const operatorOpts = (S.users || [])
+      .filter(u => (u.role === 'operator' || !u.appUser) && (!u.stage || u.stage === _actStage || u.stage === 'general'))
+      .map(u => `<option value="${u.id}" ${md.operatorId === u.id ? 'selected' : ''}>${u.name}</option>`).join('');
+
+    const setupSessions = (S.setupApprovals || []).filter(sa =>
+      sa.machineId === machId && sa.date === _actDate && sa.shift === _actShift && sa.status === 'approved'
+    );
+    const totalSetupMins = setupSessions.reduce((s, sa) => s + (sa.setupMins || 0), 0);
+
+    const setupHtml = setupSessions.length
+      ? setupSessions.map(sa => `
+          <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px solid var(--line)">
+            <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sa.opName || '—'} <span class="imf-mono" style="color:var(--txt-muted)">${sa.tagId || ''}</span></span>
+            <span style="font-weight:700;flex-shrink:0">${sa.setupMins} min</span>
+          </div>`).join('') +
+        `<div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;padding:7px 0 0;color:var(--violet)">
+          <span>Total Setup</span><span>${totalSetupMins} min</span>
+        </div>`
+      : `<div style="font-size:12px;color:var(--txt-muted)">No approved setup logged for this shift</div>`;
+
+    const totalProcessed = (md.runs || []).reduce((s, r) => s + (+r.processed || 0), 0);
+    const totalRejected  = (md.runs || []).reduce((s, r) => s + (+r.rejected  || 0), 0);
+    const totalDtMins    = (md.downtime || []).reduce((s, d) => s + (+d.mins || 0), 0);
+    const totalTarget    = (md.runs || []).reduce((s, r) => s + (+r.targetQty || 0), 0);
+    const shiftEff       = totalTarget ? Math.round(totalProcessed / totalTarget * 100) : 0;
+
+    const saveStatus = _autoSaveStatus[machId];
+    const saveLbl = saveStatus === 'saving' ? '⟳ Auto-saving...'
+                  : saveStatus === 'saved'   ? '✓ All changes saved'
+                  : saveStatus === 'error'   ? '⚠ Save failed — check connection'
+                  : 'Changes save automatically';
+
+    const runsHtml = (md.runs || []).length === 0
+      ? `<div class="det-item-empty">No runs logged yet</div>`
+      : (md.runs || []).map((r, i) => {
+          const eff = (+r.targetQty) ? Math.round((+r.processed || 0) / (+r.targetQty) * 100) : 0;
+          const effColor = eff >= 80 ? 'ok' : eff >= 50 ? 'warn' : 'err';
+          return `
+          <div class="det-item">
+            <div class="det-item-body">
+              <div class="det-item-title imf-mono" style="font-weight:600;color:var(--imf-navy)">${r.tagId}</div>
+              <div class="det-item-tag" style="font-family:var(--sans);font-weight:500;color:var(--txt-muted)">${r.opName || ''}</div>
+              <div class="det-item-sub">${r.partName || ''}</div>
+              <div style="margin-top:5px;font-size:13px">
+                <span class="imf-mono" style="color:var(--ok);font-weight:700">${r.processed}</span> <span style="font-size:11px;color:var(--txt-muted)">pcs</span>${(+r.targetQty) ? `<span style="color:var(--txt-muted)"> / <span class="imf-mono" style="font-weight:600">${r.targetQty}</span> target · <span style="color:var(--${effColor});font-weight:700">${eff}%</span></span>` : ' produced'}
+                <span class="imf-mono" style="color:var(--err);font-weight:700;margin-left:6px">${r.rejected || 0}</span> <span style="font-size:11px;color:var(--txt-muted)">rej</span>
+              </div>
+            </div>
+            ${readOnly ? '' : `<div class="det-item-actions" style="flex-direction:column">
+              <button class="btn btn-s btn-sm" style="min-height:36px" onclick="openEditRunModal('${machId}',${i})"><i class="ti ti-edit"></i> Edit</button>
+              <button class="btn btn-d btn-sm" style="min-height:36px" onclick="removeRunDetail(${i})"><i class="ti ti-trash"></i> Remove</button>
+            </div>`}
+          </div>`;
+        }).join('');
+
+    const downtimeHtml = (md.downtime || []).length === 0
+      ? `<div class="det-item-empty">No downtime logged</div>`
+      : (md.downtime || []).map((d, i) => `
+          <div class="det-item downtime">
+            <div class="det-item-body">
+              <div class="det-item-title">${d.startTime} → ${d.endTime} <span style="font-weight:400;color:var(--txt-muted)">(${d.mins} min)</span></div>
+              <div class="det-item-sub">${d.type || 'Other'}${d.description ? ' · ' + d.description : ''}</div>
+            </div>
+            ${readOnly ? '' : `<button class="btn btn-ic btn-d" onclick="removeDowntimeDetail(${i})" aria-label="Remove downtime"><i class="ti ti-trash"></i></button>`}
+          </div>`).join('');
+
+    const curIdx = machines.findIndex(x => x.id === machId);
+    const prevMachine = curIdx > 0 ? machines[curIdx - 1] : null;
+    const nextMachine = curIdx >= 0 && curIdx < machines.length - 1 ? machines[curIdx + 1] : null;
+
+    const prevBtn = prevMachine 
+      ? `<button class="btn btn-s" style="flex:1" onclick="openMachineDetail('${prevMachine.id}')"><i class="ti ti-chevron-left"></i> ${prevMachine.name}</button>`
+      : `<button class="btn btn-s" style="flex:1" disabled><i class="ti ti-chevron-left"></i> Start</button>`;
+    const nextBtn = nextMachine 
+      ? `<button class="btn btn-p" style="flex:1" onclick="openMachineDetail('${nextMachine.id}')">${nextMachine.name} <i class="ti ti-chevron-right"></i></button>`
+      : `<button class="btn btn-p" style="flex:1" onclick="backToMatrix()"><i class="ti ti-check"></i> Done</button>`;
+
+    detailHtml = `
+      <div class="imf-split-detail-card">
+        <!-- Header -->
+        <div style="display:flex;align-items:center;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--line);margin-bottom:14px">
+          <button class="btn btn-s btn-sm" onclick="backToMatrix()" style="flex-shrink:0">
+            <i class="ti ti-arrow-left"></i> Matrix
+          </button>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:800;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.name}</div>
+            <div style="font-size:11px;color:var(--violet);font-family:var(--mono)">${m.id_code || m.id}</div>
+          </div>
+          <div id="autosave-lbl" style="font-size:10.5px;color:${readOnly?'var(--txt-muted)':saveStatus==='error'?'var(--err)':saveStatus==='saving'?'var(--warn)':'var(--ok)'};text-align:right;flex-shrink:0;max-width:100px">${readOnly ? 'Finalized · view only' : saveLbl}</div>
+        </div>
+
+        ${readOnly ? `<div class="wbox" style="margin-bottom:12px"><i class="ti ti-lock"></i> <div>Finalized report — view only. Re-open it from the matrix screen (admin) to edit.</div></div>` : ''}
+        ${isBreakdown ? `<div class="ebox" style="margin-bottom:12px"><i class="ti ti-alert-triangle"></i> <div>This machine has an open breakdown. Logging actuals may be inaccurate.</div></div>` : ''}
+
+        <!-- Used / Not Used toggle -->
+        <div class="card" style="margin-bottom:12px">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <div>
+              <div style="font-weight:700">Machine Status</div>
+              <div style="font-size:12px;color:var(--txt-muted)">Was this machine used this shift?</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="font-size:13px;font-weight:600;color:${md.used?'var(--ok)':'var(--txt-muted)'}">${md.used?'Used':'Not Used'}</span>
+              <label class="tsw" style="${readOnly?'opacity:.7':''}" aria-label="Machine used this shift">
+                <input type="checkbox" ${md.used ? 'checked' : ''} ${readOnly ? 'disabled' : ''}
+                  onchange="toggleMachineUsedDetail(this.checked)">
+                <span class="tsl"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        ${md.used ? `
+          <!-- Operator -->
+          <div class="card" style="margin-bottom:12px">
+            <div class="f" style="margin:0">
+              <label>Operator *</label>
+              <select ${readOnly ? 'disabled' : ''} onchange="setDetailField('operatorId',this.value);setDetailField('operatorName',this.options[this.selectedIndex].text);triggerAutoSave()">
+                <option value="">— Select Operator —</option>
+                ${operatorOpts}
+              </select>
+            </div>
+          </div>
+
+          <!-- Setup sessions (read-only) -->
+          <div class="card" style="margin-bottom:12px;background:var(--canvas)">
+            <div style="font-size:12px;font-weight:700;color:var(--txt-muted);margin-bottom:8px">SETUP SESSIONS (this shift)</div>
+            ${setupHtml}
+          </div>
+
+          <!-- Production Runs -->
+          <div class="card" style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <div style="font-size:12px;font-weight:700;color:var(--txt-muted)">PRODUCTION RUNS</div>
+              ${readOnly ? '' : `<button class="btn btn-s btn-sm" onclick="openAddRunModal('${machId}')">
+                <i class="ti ti-scan"></i> Add Run
+              </button>`}
+            </div>
+            ${runsHtml}
+          </div>
+
+          <!-- Downtime -->
+          <div class="card" style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <div style="font-size:12px;font-weight:700;color:var(--txt-muted)">DOWNTIME SESSIONS</div>
+              ${readOnly ? '' : `<button class="btn btn-s btn-sm" onclick="openAddDowntimeModal('${machId}')">
+                <i class="ti ti-plus"></i> Add
+              </button>`}
+            </div>
+            ${downtimeHtml}
+          </div>
+
+          <!-- Summary -->
+          <div class="card" style="margin-bottom:12px;background:var(--canvas)">
+            <div style="font-size:12px;font-weight:700;color:var(--txt-muted);margin-bottom:10px">SHIFT SUMMARY</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;background:var(--sur);border-radius:var(--rs);padding:10px 12px;margin-bottom:8px">
+              <div>
+                <div style="font-size:10px;color:var(--txt-muted)">TARGET (after setup)</div>
+                <div class="imf-mono" style="font-size:18px;font-weight:800">${totalTarget} pcs</div>
+              </div>
+              <div style="text-align:right">
+                <div style="font-size:10px;color:var(--txt-muted)">EFFICIENCY</div>
+                <div class="imf-mono" style="font-size:18px;font-weight:800;color:var(--${shiftEff>=80?'ok':shiftEff>=50?'warn':'err'})">${totalTarget ? shiftEff + '%' : '—'}</div>
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center">
+              <div style="background:var(--sur);border-radius:var(--rs);padding:10px 4px">
+                <div class="imf-mono" style="font-size:20px;font-weight:800;color:var(--ok)">${totalProcessed}</div>
+                <div style="font-size:10px;color:var(--txt-muted)">Produced</div>
+              </div>
+              <div style="background:var(--sur);border-radius:var(--rs);padding:10px 4px">
+                <div class="imf-mono" style="font-size:20px;font-weight:800;color:var(--err)">${totalRejected}</div>
+                <div style="font-size:10px;color:var(--txt-muted)">Rejected</div>
+              </div>
+              <div style="background:var(--sur);border-radius:var(--rs);padding:10px 4px">
+                <div class="imf-mono" style="font-size:20px;font-weight:800;color:var(--warn)">${totalDtMins + totalSetupMins}</div>
+                <div style="font-size:10px;color:var(--txt-muted)">Lost Mins</div>
+              </div>
+            </div>
+            <div style="margin-top:8px;font-size:11px;color:var(--txt-muted);text-align:center">
+              Lost mins = ${totalDtMins} downtime + ${totalSetupMins} setup
+            </div>
+          </div>
+        ` : `
+          <!-- Idle reason (required dropdown) -->
+          <div class="card" style="margin-bottom:12px">
+            <div class="f">
+              <label>Idle Reason *</label>
+              <select id="idle-reason-sel" ${readOnly ? 'disabled' : ''} onchange="onIdleReasonChange(this.value)">
+                <option value="">— Select reason —</option>
+                ${IDLE_OPTIONS.map(o => `<option value="${o}" ${md.idleReason===o?'selected':''}>${o}</option>`).join('')}
+              </select>
+            </div>
+            <div id="idle-other-wrap" style="display:${md.idleReason==='Other'?'block':'none'};margin-top:8px">
+              <div class="f" style="margin:0">
+                <label>Please specify *</label>
+                <input type="text" id="idle-other-txt" value="${md.idleReasonOther||''}"
+                  placeholder="Describe the reason..."
+                  oninput="setDetailField('idleReasonOther',this.value);triggerAutoSave()">
+              </div>
+            </div>
+          </div>
+        `}
+
+        <!-- Machine Navigation -->
+        ${readOnly ? '' : `
+          <div class="imf-nav-row">
+            ${prevBtn}
+            ${nextBtn}
+          </div>
+        `}
+      </div>
+    `;
+  }
+
+  const layoutClass = _detailMachId ? 'detail-active' : '';
+
   document.getElementById('page-content').innerHTML = `
-    <div style="padding-bottom:80px">
-      <div style="display:flex;align-items:center;gap:12px;padding:12px 0 8px;border-bottom:1px solid var(--bdr);margin-bottom:12px">
+    <div style="padding-bottom:20px">
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 0 8px;border-bottom:1px solid var(--line);margin-bottom:12px">
         <button class="btn btn-s btn-sm" onclick="backToHub()" style="flex-shrink:0">
           <i class="ti ti-arrow-left"></i> Back
         </button>
         <div style="flex:1">
           <div style="font-weight:800;font-size:15px">${stageLabel} — Log Actuals</div>
-          <div style="font-size:11px;color:var(--txt-muted)">Tap a machine to log its data</div>
+          <div style="font-size:11px;color:var(--txt-muted)">Tap a machine to log operator, runs, and downtime</div>
         </div>
       </div>
 
-      <div class="card" style="margin-bottom:12px">
-        <div class="row-3">
-          <div class="f">
-            <label>Date</label>
-            <input type="date" id="act-date" value="${_actDate}" onchange="_actDate=this.value;loadActualsView()">
+      <div class="imf-split-layout ${layoutClass}">
+        <!-- LEFT: MASTER (Machines list) -->
+        <div class="imf-split-master">
+          <div class="card" style="margin-bottom:0">
+            <div class="f">
+              <label>Date</label>
+              <input type="date" id="act-date" value="${_actDate}" onchange="_actDate=this.value;loadActualsView()">
+            </div>
+            <div class="f">
+              <label>Shift</label>
+              <select id="act-shift" onchange="_actShift=this.value;loadActualsView()">
+                ${shiftOpts}
+              </select>
+            </div>
+            <div class="f">
+              <label>Supervisor *</label>
+              <select id="act-sup" onchange="_actSupervisor=this.value">
+                <option value="">— Select —</option>
+                ${supervisorOpts}
+              </select>
+            </div>
           </div>
-          <div class="f">
-            <label>Shift</label>
-            <select id="act-shift" onchange="_actShift=this.value;loadActualsView()">
-              ${shiftOpts}
-            </select>
+
+          ${lockedView ? `
+            <div class="wbox" style="margin-bottom:0">
+              <i class="ti ti-info-circle"></i>
+              <div>
+                <div style="font-weight:700;margin-bottom:2px">Finalized report — view only</div>
+                <div style="font-size:12px">${submittedRec.totalProcessed || 0} pcs · ${submittedRec.machinesUsed || 0} machine(s) used.</div>
+              </div>
+            </div>
+            ${canEditReport ? `
+            <button class="btn btn-s btn-full" onclick="goToReportsForShift()">
+              <i class="ti ti-chart-bar"></i> View / Edit / Delete in Reports
+            </button>` : ''}
+          ` : ''}
+
+          ${isEditingThis ? `
+            <div class="ibox" style="margin-bottom:0">
+              <i class="ti ti-edit"></i>
+              <div>Editing an existing report. Change anything, then tap <strong>Save Changes</strong>.</div>
+            </div>
+          ` : ''}
+
+          <div style="font-size:11.5px;font-weight:700;color:var(--txt-muted);margin:8px 0 2px">MACHINES (${machines.length})</div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            ${machines.length ? matrixHtml : emptyState('ti-tool','No Machines',`No active machines for ${stageLabel}.`)}
           </div>
-          <div class="f">
-            <label>Supervisor *</label>
-            <select id="act-sup" onchange="_actSupervisor=this.value">
-              <option value="">— Select —</option>
-              ${supervisorOpts}
-            </select>
-          </div>
+
+          ${!lockedView && machines.length ? `
+            <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
+              ${isEditingThis ? `
+                <button class="btn btn-s btn-full" onclick="cancelEditReport()">
+                  <i class="ti ti-x"></i> Cancel — Discard Changes
+                </button>
+              ` : (TEST_MODE ? `
+                <button class="btn btn-s btn-full" style="border-color:var(--warn);color:var(--warn)" onclick="sampleFillActuals()">
+                  <i class="ti ti-wand"></i> Sample Fill (Testing)
+                </button>
+              ` : '')}
+              <button class="btn btn-p btn-full" onclick="finalizeShift()">
+                <i class="ti ti-check"></i> ${isEditingThis ? 'Save Changes' : 'Finalize Shift'}
+              </button>
+            </div>
+          ` : ''}
+        </div>
+
+        <!-- RIGHT: DETAIL -->
+        <div class="imf-split-detail">
+          ${detailHtml}
         </div>
       </div>
-
-      ${lockedView ? `<div class="wbox" style="margin-bottom:10px">
-          <i class="ti ti-info-circle"></i>
-          <div>
-            <div style="font-weight:700;margin-bottom:2px">Finalized report — view only</div>
-            <div style="font-size:12px">${submittedRec.totalProcessed || 0} pcs · ${submittedRec.machinesUsed || 0} machine(s) used${submittedRec.submittedByName ? ' · by ' + submittedRec.submittedByName : ''}. The machines below show the saved data.</div>
-          </div>
-        </div>
-        ${canEditReport ? `
-        <button class="btn btn-s btn-full" style="margin-bottom:10px" onclick="goToReportsForShift()">
-          <i class="ti ti-chart-bar"></i> View / Edit / Delete in Reports
-        </button>` : ''}` : ''}
-
-      ${isEditingThis ? `<div class="ibox" style="margin-bottom:10px">
-          <i class="ti ti-edit"></i>
-          <div>Editing an existing report. Change anything below, then tap <strong>Save Changes</strong>.</div>
-        </div>` : ''}
-
-      <div style="font-size:12px;font-weight:700;color:var(--txt-muted);margin-bottom:8px">MACHINES (${machines.length})</div>
-      ${machines.length ? matrixHtml : emptyState('ti-tool','No Machines',`No active machines for ${stageLabel}.`)}
-
-      ${!lockedView && machines.length ? `
-      <div class="action-bar-sticky">
-        ${isEditingThis ? `<button class="btn btn-s btn-full" onclick="cancelEditReport()">
-          <i class="ti ti-x"></i> Cancel — Discard Changes
-        </button>` : (TEST_MODE ? `<button class="btn btn-s btn-full" style="border-color:var(--warn);color:var(--warn)" onclick="sampleFillActuals()">
-          <i class="ti ti-wand"></i> Sample Fill (Testing)
-        </button>` : '')}
-        <button class="btn btn-p btn-full" onclick="finalizeShift()">
-          <i class="ti ti-check"></i> ${isEditingThis ? 'Save Changes' : 'Finalize Shift'}
-        </button>
-      </div>` : ''}
-    </div>`;
+    </div>
+  `;
 }
 
-/* ── ACTUAL ENTRY: MACHINE DETAIL (full-page drill-down) ─────────── */
 function openMachineDetail(machId) {
   _detailMachId  = machId;
-  _activeView    = 'actual_detail';
+  _activeView    = 'actual';
   if (!_machineData[machId]) {
     _machineData[machId] = { used: false, idleReason: '', idleReasonOther: '', operatorId: '', operatorName: '', runs: [], downtime: [] };
   }
@@ -484,210 +752,7 @@ function openMachineDetail(machId) {
 }
 
 function renderMachineDetail() {
-  const machId = _detailMachId;
-  const m  = (S.machines || []).find(x => x.id === machId) || { id: machId, name: machId, id_code: '' };
-  const md = _machineData[machId] || { used: false, idleReason: '', idleReasonOther: '', operatorId: '', operatorName: '', runs: [], downtime: [] };
-  const ms = (S.machineStatus || []).find(s => s.id === machId);
-  const isBreakdown = ms && (ms.status === 'pending_breakdown' || ms.status === 'under_maintenance');
-  const readOnly = _viewingFinalized; // viewing a finalized report → no editing here
-
-  const IDLE_OPTIONS = ['No Material','Under Maintenance','No Operator','Power Cut / Electricity','Other'];
-
-  const operatorOpts = (S.users || [])
-    .filter(u => (u.role === 'operator' || !u.appUser) && (!u.stage || u.stage === _actStage || u.stage === 'general'))
-    .map(u => `<option value="${u.id}" ${md.operatorId === u.id ? 'selected' : ''}>${u.name}</option>`).join('');
-
-  // Setup sessions for this machine + date + shift
-  const setupSessions = (S.setupApprovals || []).filter(sa =>
-    sa.machineId === machId && sa.date === _actDate && sa.shift === _actShift && sa.status === 'approved'
-  );
-  const totalSetupMins = setupSessions.reduce((s, sa) => s + (sa.setupMins || 0), 0);
-
-  const setupHtml = setupSessions.length
-    ? setupSessions.map(sa => `
-        <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px solid var(--bdr)">
-          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sa.opName || '—'} <span style="color:var(--txt-muted);font-family:monospace">${sa.tagId || ''}</span></span>
-          <span style="font-weight:700;flex-shrink:0">${sa.setupMins} min</span>
-        </div>`).join('') +
-      `<div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;padding:7px 0 0;color:var(--acc)">
-        <span>Total Setup</span><span>${totalSetupMins} min</span>
-      </div>`
-    : `<div style="font-size:12px;color:var(--txt-muted)">No approved setup logged for this shift</div>`;
-
-  const totalProcessed = (md.runs || []).reduce((s, r) => s + (+r.processed || 0), 0);
-  const totalRejected  = (md.runs || []).reduce((s, r) => s + (+r.rejected  || 0), 0);
-  const totalDtMins    = (md.downtime || []).reduce((s, d) => s + (+d.mins || 0), 0);
-  const totalTarget    = (md.runs || []).reduce((s, r) => s + (+r.targetQty || 0), 0);
-  const shiftEff       = totalTarget ? Math.round(totalProcessed / totalTarget * 100) : 0;
-
-  const saveStatus = _autoSaveStatus[machId];
-  const saveLbl = saveStatus === 'saving' ? '⟳ Auto-saving...'
-                : saveStatus === 'saved'   ? '✓ All changes saved'
-                : saveStatus === 'error'   ? '⚠ Save failed — check connection'
-                : 'Changes save automatically';
-
-  const runsHtml = (md.runs || []).length === 0
-    ? `<div class="det-item-empty">No runs logged yet</div>`
-    : (md.runs || []).map((r, i) => {
-        const eff = (+r.targetQty) ? Math.round((+r.processed || 0) / (+r.targetQty) * 100) : 0;
-        const effColor = eff >= 90 ? 'ok' : eff >= 70 ? 'warn' : 'err';
-        return `
-        <div class="det-item">
-          <div class="det-item-body">
-            <div class="det-item-title">${r.tagId}</div>
-            <div class="det-item-tag" style="font-family:monospace">${r.opName || ''}</div>
-            <div class="det-item-sub">${r.partName || ''}</div>
-            <div style="margin-top:5px;font-size:13px">
-              <span style="color:var(--ok);font-weight:700">${r.processed}</span> pcs${(+r.targetQty) ? `<span style="color:var(--txt-muted)"> / ${r.targetQty} target · <span style="color:var(--${effColor});font-weight:700">${eff}%</span></span>` : ' produced'}
-              <span style="color:var(--err);font-weight:700;margin-left:6px">${r.rejected || 0}</span> rej
-            </div>
-          </div>
-          ${readOnly ? '' : `<div class="det-item-actions" style="flex-direction:column">
-            <button class="btn btn-s btn-sm" style="min-height:36px" onclick="openEditRunModal('${machId}',${i})"><i class="ti ti-edit"></i> Edit</button>
-            <button class="btn btn-d btn-sm" style="min-height:36px" onclick="removeRunDetail(${i})"><i class="ti ti-trash"></i> Remove</button>
-          </div>`}
-        </div>`;
-      }).join('');
-
-  const downtimeHtml = (md.downtime || []).length === 0
-    ? `<div class="det-item-empty">No downtime logged</div>`
-    : (md.downtime || []).map((d, i) => `
-        <div class="det-item downtime">
-          <div class="det-item-body">
-            <div class="det-item-title">${d.startTime} → ${d.endTime} <span style="font-weight:400;color:var(--txt-muted)">(${d.mins} min)</span></div>
-            <div class="det-item-sub">${d.type || 'Other'}${d.description ? ' · ' + d.description : ''}</div>
-          </div>
-          ${readOnly ? '' : `<button class="btn btn-ic btn-d" onclick="removeDowntimeDetail(${i})" aria-label="Remove downtime"><i class="ti ti-trash"></i></button>`}
-        </div>`).join('');
-
-  document.getElementById('page-content').innerHTML = `
-    <div style="padding-bottom:80px">
-      <!-- Header -->
-      <div style="display:flex;align-items:center;gap:10px;padding:12px 0 10px;border-bottom:1px solid var(--bdr);margin-bottom:14px">
-        <button class="btn btn-s btn-sm" onclick="backToMatrix()" style="flex-shrink:0">
-          <i class="ti ti-arrow-left"></i> Matrix
-        </button>
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:800;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.name}</div>
-          <div style="font-size:11px;color:var(--acc);font-family:monospace">${m.id_code || m.id}</div>
-        </div>
-        <div id="autosave-lbl" style="font-size:10px;color:${readOnly?'var(--txt-muted)':saveStatus==='error'?'var(--err)':saveStatus==='saving'?'var(--warn)':'var(--ok)'};text-align:right;flex-shrink:0;max-width:100px">${readOnly ? 'Finalized · view only' : saveLbl}</div>
-      </div>
-
-      ${readOnly ? `<div class="wbox" style="margin-bottom:12px"><i class="ti ti-lock"></i> <div>Finalized report — view only. Re-open it from the matrix screen (admin) to edit.</div></div>` : ''}
-      ${isBreakdown ? `<div class="ebox" style="margin-bottom:12px"><i class="ti ti-alert-triangle"></i> <div>This machine has an open breakdown. Logging actuals may be inaccurate.</div></div>` : ''}
-
-      <!-- Used / Not Used toggle -->
-      <div class="card" style="margin-bottom:12px">
-        <div style="display:flex;align-items:center;justify-content:space-between">
-          <div>
-            <div style="font-weight:700">Machine Status</div>
-            <div style="font-size:12px;color:var(--txt-muted)">Was this machine used this shift?</div>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:13px;font-weight:600;color:${md.used?'var(--ok)':'var(--txt-muted)'}">${md.used?'Used':'Not Used'}</span>
-            <label class="tsw" style="${readOnly?'opacity:.7':''}" aria-label="Machine used this shift">
-              <input type="checkbox" ${md.used ? 'checked' : ''} ${readOnly ? 'disabled' : ''}
-                onchange="toggleMachineUsedDetail(this.checked)">
-              <span class="tsl"></span>
-            </label>
-          </div>
-        </div>
-      </div>
-
-      ${md.used ? `
-        <!-- Operator -->
-        <div class="card" style="margin-bottom:12px">
-          <div class="f" style="margin:0">
-            <label>Operator *</label>
-            <select ${readOnly ? 'disabled' : ''} onchange="setDetailField('operatorId',this.value);setDetailField('operatorName',this.options[this.selectedIndex].text);triggerAutoSave()">
-              <option value="">— Select Operator —</option>
-              ${operatorOpts}
-            </select>
-          </div>
-        </div>
-
-        <!-- Setup sessions (read-only) -->
-        <div class="card" style="margin-bottom:12px;background:var(--bg)">
-          <div style="font-size:12px;font-weight:700;color:var(--txt-muted);margin-bottom:8px">SETUP SESSIONS (this shift)</div>
-          ${setupHtml}
-        </div>
-
-        <!-- Production Runs -->
-        <div class="card" style="margin-bottom:12px">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <div style="font-size:12px;font-weight:700;color:var(--txt-muted)">PRODUCTION RUNS</div>
-            ${readOnly ? '' : `<button class="btn btn-s btn-sm" onclick="openAddRunModal('${machId}')">
-              <i class="ti ti-scan"></i> Add Run
-            </button>`}
-          </div>
-          ${runsHtml}
-        </div>
-
-        <!-- Downtime -->
-        <div class="card" style="margin-bottom:12px">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <div style="font-size:12px;font-weight:700;color:var(--txt-muted)">DOWNTIME SESSIONS</div>
-            ${readOnly ? '' : `<button class="btn btn-s btn-sm" onclick="openAddDowntimeModal('${machId}')">
-              <i class="ti ti-plus"></i> Add
-            </button>`}
-          </div>
-          ${downtimeHtml}
-        </div>
-
-        <!-- Summary -->
-        <div class="card" style="margin-bottom:12px;background:var(--bg)">
-          <div style="font-size:12px;font-weight:700;color:var(--txt-muted);margin-bottom:10px">SHIFT SUMMARY</div>
-          <div style="display:flex;justify-content:space-between;align-items:center;background:var(--sur);border-radius:8px;padding:10px 12px;margin-bottom:8px">
-            <div>
-              <div style="font-size:10px;color:var(--txt-muted)">TARGET (after setup)</div>
-              <div style="font-size:18px;font-weight:800">${totalTarget} pcs</div>
-            </div>
-            <div style="text-align:right">
-              <div style="font-size:10px;color:var(--txt-muted)">EFFICIENCY</div>
-              <div style="font-size:18px;font-weight:800;color:var(--${shiftEff>=90?'ok':shiftEff>=70?'warn':'err'})">${totalTarget ? shiftEff + '%' : '—'}</div>
-            </div>
-          </div>
-          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center">
-            <div style="background:var(--sur);border-radius:8px;padding:10px 4px">
-              <div style="font-size:20px;font-weight:800;color:var(--ok)">${totalProcessed}</div>
-              <div style="font-size:10px;color:var(--txt-muted)">Produced</div>
-            </div>
-            <div style="background:var(--sur);border-radius:8px;padding:10px 4px">
-              <div style="font-size:20px;font-weight:800;color:var(--err)">${totalRejected}</div>
-              <div style="font-size:10px;color:var(--txt-muted)">Rejected</div>
-            </div>
-            <div style="background:var(--sur);border-radius:8px;padding:10px 4px">
-              <div style="font-size:20px;font-weight:800;color:var(--warn)">${totalDtMins + totalSetupMins}</div>
-              <div style="font-size:10px;color:var(--txt-muted)">Lost Mins</div>
-            </div>
-          </div>
-          <div style="margin-top:8px;font-size:11px;color:var(--txt-muted);text-align:center">
-            Lost mins = ${totalDtMins} downtime + ${totalSetupMins} setup
-          </div>
-        </div>
-
-      ` : `
-        <!-- Idle reason (required dropdown) -->
-        <div class="card" style="margin-bottom:12px">
-          <div class="f">
-            <label>Idle Reason *</label>
-            <select id="idle-reason-sel" ${readOnly ? 'disabled' : ''} onchange="onIdleReasonChange(this.value)">
-              <option value="">— Select reason —</option>
-              ${IDLE_OPTIONS.map(o => `<option value="${o}" ${md.idleReason===o?'selected':''}>${o}</option>`).join('')}
-            </select>
-          </div>
-          <div id="idle-other-wrap" style="display:${md.idleReason==='Other'?'block':'none'};margin-top:8px">
-            <div class="f" style="margin:0">
-              <label>Please specify *</label>
-              <input type="text" id="idle-other-txt" value="${md.idleReasonOther||''}"
-                placeholder="Describe the reason..."
-                oninput="setDetailField('idleReasonOther',this.value);triggerAutoSave()">
-            </div>
-          </div>
-        </div>
-      `}
-    </div>`;
+  renderActualEntry();
 }
 
 /* — detail helpers — */
@@ -836,27 +901,23 @@ function backToMatrix() {
 /* — Add Run Modal — */
 let _runMachId = '';
 let _runCard   = null;
+let _runTagId  = '';
 
 function openAddRunModal(machId) {
   _runMachId    = machId;
   _detailMachId = machId;
   _runCard      = null;
+  _runTagId     = '';
   const mach = (S.machines || []).find(m => m.id === machId);
   openModal(`
     <div class="mtit"><i class="ti ti-scan"></i> Add Production Run</div>
-    <div style="font-size:12px;color:var(--txt-muted);margin-bottom:14px">Machine: <strong>${mach ? mach.name : machId}</strong></div>
+    <div style="font-size:12px;color:var(--txt-muted);margin-bottom:14px">Machine: <strong>\${mach ? mach.name : machId}</strong></div>
 
-    <div class="card-hd">Scan / Enter Route Card TAG</div>
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <input id="run-tag-input" type="text" placeholder="e.g. TAG042"
-        oninput="this.value=this.value.toUpperCase()"
-        autocomplete="off" spellcheck="false" style="flex:1"
-        onkeydown="if(event.key==='Enter')runFetchTag()">
-      <button class="btn btn-s btn-ic" style="width:44px;height:44px" title="Scan QR" onclick="openQrScanner(v=>{document.getElementById('run-tag-input').value=v.toUpperCase();runFetchTag();},'Scan TAG')">
-        <i class="ti ti-camera"></i>
+    <div class="card" style="margin-bottom:12px;border:none;padding:0">
+      <button class="qr-scan-btn" id="run-scan-btn" onclick="openQrScanner(v=>runFetchTag(v),'Scan TAG')" style="width:100%">
+        <i class="ti ti-qrcode"></i> Scan TAG
       </button>
     </div>
-    <button class="btn btn-s" style="width:100%;margin-bottom:12px" onclick="runFetchTag()">Load TAG →</button>
 
     <div id="run-tag-info"></div>
     <div id="run-form" style="display:none">
@@ -876,8 +937,10 @@ function openAddRunModal(machId) {
   `);
 }
 
-async function runFetchTag() {
-  const tagId = (document.getElementById('run-tag-input')?.value || '').trim().toUpperCase();
+async function runFetchTag(tagId) {
+  if (!tagId) {
+    tagId = (document.getElementById('run-tag-input')?.value || '').trim().toUpperCase();
+  }
   if (!tagId) { toast('Enter or scan a TAG'); return; }
   if (!tagId.match(/^TAG\d+$/)) { toast('Invalid TAG format'); return; }
 
@@ -887,7 +950,7 @@ async function runFetchTag() {
   try {
     const card = await fetchRouteCard(tagId);
     if (!card) {
-      if (infoDiv) infoDiv.innerHTML = `<div class="ebox">TAG ${tagId} not found</div>`;
+      if (infoDiv) infoDiv.innerHTML = `<div class="ebox">TAG \${tagId} not found</div>`;
       return;
     }
 
@@ -902,14 +965,6 @@ async function runFetchTag() {
       .sort((a, b) => (a.seqNo || 0) - (b.seqNo || 0));
     const completedOpIds = (card.opHistory || []).filter(h => h.stage === _actStage).map(h => h.opId);
 
-    // Prefer the operation actually approved via Setup for THIS exact TAG +
-    // machine + date/shift — that's the ground truth of what was physically
-    // run. Falling back to "next incomplete op in sequence" breaks the
-    // moment a deviation-approved run jumps ahead of a step that's still
-    // missing from opHistory: it would silently attribute the run to the
-    // skipped, non-final op instead of the one actually performed (and the
-    // route card would never reach *_done). S.setupApprovals is loaded
-    // orderBy('createdAt','desc'), so [0] after filtering is the most recent.
     const approvedSetupsForTag = (S.setupApprovals || []).filter(sa =>
       sa.tagId === tagId && sa.machineId === _runMachId &&
       sa.date === _actDate && sa.shift === _actShift && sa.status === 'approved'
@@ -920,9 +975,6 @@ async function runFetchTag() {
     let deviationHtml = '';
     if (matchedSetup) {
       nextOp = partOpsForStage.find(po => po.opId === matchedSetup.opId) || { opId: matchedSetup.opId, seqNo: 0 };
-      // No deviation banner here — if this setup required a deviation, it
-      // already went through Plant Head approval before it could be
-      // approved at all (see confirmRequestDeviation / approveDeviation).
     } else {
       nextOp = partOpsForStage.find(po => !completedOpIds.includes(po.opId));
       if (nextOp && partOpsForStage.length > 1) {
@@ -935,10 +987,10 @@ async function runFetchTag() {
               <div class="wbox" style="flex-direction:column;align-items:stretch">
                 <div style="font-weight:700;font-size:12px"><i class="ti ti-alert-triangle"></i> Sequence Deviation Detected</div>
                 <div style="font-size:11px;margin-top:2px">
-                  Previous operation "<strong>${prevOpName}</strong>" (seq ${prevRequired.seqNo}) has no completion on this TAG.
+                  Previous operation "<strong>\${prevOpName}</strong>" (seq \${prevRequired.seqNo}) has no completion on this TAG.
                 </div>
                 <button class="btn btn-warn btn-sm btn-full" style="margin-top:8px"
-                  onclick="showDeviationConfirmModal('${tagId}','${prevOpName}',${prevRequired.seqNo})">
+                  onclick="showDeviationConfirmModal('\${tagId}','\${prevOpName}',\${prevRequired.seqNo})">
                   Request Sequence Deviation Approval
                 </button>
               </div>`;
@@ -950,34 +1002,33 @@ async function runFetchTag() {
     const opName = nextOp ? ((S.operations || []).find(o => o.id === nextOp?.opId)?.name || '—') : 'No next op';
     const cycleTimeSecs = nextOp ? ((S.partOps || []).find(po => po.partId === card.partId && po.opId === nextOp.opId)?.cycleTimeSecs || 0) : 0;
 
-    // Target = pieces achievable in the shift at this op's cycle time, after
-    // deducting approved setup for this machine/shift (reuses core calcOEE).
     const setupMins = machineSetupMins(_runMachId);
     const targetQty = cycleTimeSecs ? calcOEE(cycleTimeSecs, setupMins, 0, 0).targetQty : 0;
     _runCard = { ...card, nextOp, cycleTimeSecs, targetQty };
+    _runTagId = tagId;
 
     if (infoDiv) infoDiv.innerHTML = `
-      ${deviationHtml}
+      \${deviationHtml}
       <div class="sbox" style="flex-direction:column;align-items:stretch;font-size:12px">
         <div style="font-weight:700;margin-bottom:6px"><i class="ti ti-circle-check"></i> TAG Valid</div>
-        <div class="kv-row" style="padding:3px 0"><span class="text-muted">TAG</span><strong style="font-family:monospace;margin-left:auto">${tagId}</strong></div>
-        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Part</span><strong style="margin-left:auto;text-align:right">${card.partName}</strong></div>
-        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Next Op</span><strong style="margin-left:auto;text-align:right">${opName}</strong></div>
-        <div class="kv-row" style="padding:3px 0;border-bottom:none"><span class="text-muted">Qty on TAG</span><strong style="margin-left:auto">${card.currentQty} pcs</strong></div>
-        ${targetQty ? `<div class="kv-row" style="padding:3px 0;border-bottom:none"><span class="text-muted">Target (after setup)</span><strong style="color:var(--acc);margin-left:auto">${targetQty} pcs</strong></div>` : ''}
-        ${card.heatCode ? `<div class="kv-row" style="padding:3px 0;border-bottom:none"><span class="text-muted">Heat Code</span><strong style="color:var(--ok);margin-left:auto"><i class="ti ti-flame"></i> ${card.heatCode}</strong></div>` : ''}
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">TAG</span><strong style="font-family:monospace;margin-left:auto">\${tagId}</strong></div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Part</span><strong style="margin-left:auto;text-align:right">\${card.partName}</strong></div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Next Op</span><strong style="margin-left:auto;text-align:right">\${opName}</strong></div>
+        <div class="kv-row" style="padding:3px 0;border-bottom:none"><span class="text-muted">Qty on TAG</span><strong style="margin-left:auto">\${card.currentQty} pcs</strong></div>
+        \${targetQty ? \`<div class="kv-row" style="padding:3px 0;border-bottom:none"><span class="text-muted">Target (after setup)</span><strong style="color:var(--acc);margin-left:auto">\${targetQty} pcs</strong></div>\` : ''}
+        \${card.heatCode ? \`<div class="kv-row" style="padding:3px 0;border-bottom:none"><span class="text-muted">Heat Code</span><strong style="color:var(--ok);margin-left:auto"><i class="ti ti-flame"></i> \${card.heatCode}</strong></div>\` : ''}
       </div>`;
 
     const runForm = document.getElementById('run-form');
     if (runForm) runForm.style.display = 'block';
 
   } catch (e) {
-    if (infoDiv) infoDiv.innerHTML = `<div class="ebox">Error: ${friendlyError(e)}</div>`;
+    if (infoDiv) infoDiv.innerHTML = `<div class="ebox">Error: \${friendlyError(e)}</div>`;
   }
 }
 
 function confirmAddRun() {
-  if (!_runCard) { toast('Load a TAG first'); return; }
+  if (!_runCard || !_runTagId) { toast('Load a TAG first'); return; }
   const processed = parseInt(document.getElementById('run-processed')?.value) || 0;
   const rejected  = parseInt(document.getElementById('run-rejected')?.value) || 0;
   if (!processed || processed < 1) { toast('Enter processed quantity'); return; }
@@ -986,7 +1037,7 @@ function confirmAddRun() {
   if (!_machineData[machId]) _machineData[machId] = { used: true, idleReason: '', operatorId: '', operatorName: '', runs: [], downtime: [] };
   _machineData[machId].used = true;
 
-  const tagId = (document.getElementById('run-tag-input')?.value || '').trim().toUpperCase();
+  const tagId = _runTagId;
   _machineData[machId].runs.push({
     tagId,
     partId:        _runCard.partId,
@@ -1004,7 +1055,7 @@ function confirmAddRun() {
   closeModal();
   triggerAutoSave();
   renderMachineDetail();
-  toast(`Run added: ${processed} pcs ✓`);
+  toast(`Run added: \${processed} pcs ✓`);
 }
 
 /* — Add Downtime Modal — */
@@ -1477,7 +1528,7 @@ function cancelEditReport() {
 
 /* Delete a whole report (two-step). */
 function confirmDeleteReport(recId) {
-  if (!canManageReports()) { toast('Not permitted'); return; }
+  if (!isOwner()) { toast('Not permitted'); return; }
   const rec = (S.actuals || []).find(a => a.id === recId);
   const when = rec ? `${fmtDate(rec.date)} · ${(S.shifts || {})[rec.shift]?.label || rec.shift}` : 'this shift';
   openModal(`
@@ -1501,7 +1552,7 @@ function confirmDeleteReport(recId) {
 }
 
 async function deleteReportFromList(recId) {
-  if (!canManageReports()) { toast('Not permitted'); return; }
+  if (!isOwner()) { toast('Not permitted'); return; }
   toast('Deleting report…');
   try {
     const snap = await db.collection('actuals').doc(recId).get();
@@ -1758,12 +1809,9 @@ function buildSetupHtml() {
   const softCount = (S.machines || []).filter(m => m.stage === 'soft' && m.active !== false).length;
   const hardCount = (S.machines || []).filter(m => m.stage === 'hard' && m.active !== false).length;
 
-  // Default the shift to the CURRENT configured shift (e.g. s1/s2/s3) — same
-  // key Production uses when filing actuals. Without this the dropdown silently
-  // sat on the first shift, so setups never matched the Production view.
   const _curShift = getActiveShift().key;
   const shiftOpts = Object.entries(S.shifts || {})
-    .map(([k, v]) => `<option value="${k}" ${k === _curShift ? 'selected' : ''}>${v.label || k}</option>`).join('');
+    .map(([k, v]) => `<option value="\${k}" \${k === _curShift ? 'selected' : ''}>\${v.label || k}</option>`).join('');
 
   return `
     <div style="padding-bottom:20px">
@@ -1773,13 +1821,13 @@ function buildSetupHtml() {
           <label>Machine *</label>
           <select id="setup-mach" onchange="onSetupMachChange(this.value)">
             <option value="">— Select Stage —</option>
-            <option value="_STAGE_soft">▸ Soft Stage (${softCount} machines)</option>
-            <option value="_STAGE_hard">▸ Hard Stage (${hardCount} machines)</option>
+            <option value="_STAGE_soft">▸ Soft Stage (\${softCount} machines)</option>
+            <option value="_STAGE_hard">▸ Hard Stage (\${hardCount} machines)</option>
           </select>
         </div>
         <div class="row-2">
-          <div class="f"><label>Date</label><input id="setup-date" type="date" value="${dateStr()}" max="${dateStr()}"></div>
-          <div class="f"><label>Shift</label><select id="setup-shift">${shiftOpts}</select></div>
+          <div class="f"><label>Date</label><input id="setup-date" type="date" value="\${dateStr()}" max="\${dateStr()}"></div>
+          <div class="f"><label>Shift</label><select id="setup-shift">\${shiftOpts}</select></div>
         </div>
         <div class="f">
           <label>Operator</label>
@@ -1789,27 +1837,70 @@ function buildSetupHtml() {
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-hd"><i class="ti ti-qrcode"></i> Scan Route Card TAG</div>
-        <div style="display:flex;gap:8px;margin-bottom:10px">
-          <input id="setup-tag-input" type="text" placeholder="e.g. TAG042"
-            oninput="this.value=this.value.toUpperCase()"
-            autocomplete="off" spellcheck="false" style="flex:1"
-            onkeydown="if(event.key==='Enter')setupFetchTag()">
-          <button class="btn btn-s btn-ic" style="width:44px;height:44px" title="Scan QR"
-            onclick="openQrScanner(v=>{document.getElementById('setup-tag-input').value=v.toUpperCase();setupFetchTag();},'Scan TAG')">
-            <i class="ti ti-camera"></i>
-          </button>
-        </div>
-        <button class="btn btn-s" style="width:100%" onclick="setupFetchTag()">Load TAG →</button>
+      <div class="card" style="margin-bottom:12px;border:none;padding:0">
+        <button class="qr-scan-btn" onclick="openQrScanner(v=>setupFetchTag(v),'Scan TAG')" style="width:100%">
+          <i class="ti ti-qrcode"></i> Scan TAG
+        </button>
       </div>
 
       <div id="setup-tag-info"></div>
       <div id="setup-form" style="display:none"></div>
 
-      ${buildSetupLogHtml()}
+      \${buildSetupLogHtml()}
     </div>`;
 }
+
+async function exportSetupExcel() {
+  const list = (S.setupApprovals || [])
+    .slice()
+    .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+
+  if (!list.length) { toast('Nothing to export — no setup logs available.'); return; }
+
+  const rows = list.map(sa => {
+    const statusMeta = SETUP_STATUS_META[sa.status] || { label: sa.status || '—' };
+    const opName = (S.users || []).find(u => u.id === sa.operatorId)?.name || sa.operatorName || sa.requestedByName || '—';
+    return {
+      tagId: sa.tagId || '—',
+      opName: sa.opName || '—',
+      machine: sa.machineName || sa.machineId || '—',
+      date: sa.date || '—',
+      shift: S.shifts?.[sa.shift]?.label || sa.shift || '—',
+      setupMins: +sa.setupMins || 0,
+      operator: opName,
+      status: statusMeta.label,
+    };
+  });
+
+  const totals = {
+    setupMins: rows.reduce((s, r) => s + r.setupMins, 0)
+  };
+
+  await exportToExcel({
+    filename: `IMF_Setup_Log_${dateStr()}.xlsx`,
+    reportTitle: 'Production Setup Log Report',
+    filterSummary: `Generated: ${fmtDate(dateStr())} · ${rows.length} setup record(s)`,
+    columns: [
+      { header: 'TAG ID', key: 'tagId', width: 14 },
+      { header: 'Operation', key: 'opName', width: 24 },
+      { header: 'Machine', key: 'machine', width: 18 },
+      { header: 'Date', key: 'date', width: 14 },
+      { header: 'Shift', key: 'shift', width: 12 },
+      { header: 'Setup Time', key: 'setupMins', width: 14, align: 'right', numFmt: '#,##0 "min"' },
+      { header: 'Operator/Supervisor', key: 'operator', width: 20 },
+      { header: 'Status', key: 'status', width: 16 },
+    ],
+    rows,
+    totals,
+  });
+}
+
+const SETUP_STATUS_META = {
+  pending:             { cls: 'rag-a', icon: 'ti-clock',          label: 'Pending' },
+  approved:            { cls: 'rag-g', icon: 'ti-circle-check',  label: 'Approved' },
+  rejected:            { cls: 'rag-r', icon: 'ti-alert-octagon', label: 'Rejected' },
+  awaiting_deviation:  { cls: 'rag-b', icon: 'ti-clock-pause',   label: 'Awaiting Deviation' },
+};
 
 function buildSetupLogHtml() {
   const list = (S.setupApprovals || [])
@@ -1820,42 +1911,85 @@ function buildSetupLogHtml() {
 
   const canDelete = S.sess?.role === 'admin' || S.sess?.role === 'hod' || S.sess?.role === 'supervisor';
 
-  return `
-    <div class="card" style="margin-top:12px">
-      <div class="card-hd"><i class="ti ti-clipboard-list"></i> Logged Setups
-        <span style="font-size:11px;font-weight:400;color:var(--txt-muted);margin-left:8px">${list.length} recent</span>
-      </div>
-      ${list.map(sa => setupLogRow(sa, canDelete)).join('')}
-    </div>`;
-}
+  const tableRowsHtml = list.map(sa => {
+    const statusMeta = SETUP_STATUS_META[sa.status] || { cls: 'rag-b', icon: 'ti-help-circle', label: sa.status || '—' };
+    const dateShift = `${sa.date || ''} · ${S.shifts?.[sa.shift]?.label || sa.shift || '—'}`;
+    const opName = (S.users || []).find(u => u.id === sa.operatorId)?.name || sa.operatorName || sa.requestedByName || '—';
+    return `
+      <tr>
+        <td class="pin mono">${sa.tagId || '—'}</td>
+        <td>${sa.opName || '—'}</td>
+        <td>${sa.machineName || sa.machineId || '—'}</td>
+        <td>${dateShift}</td>
+        <td class="num">${sa.setupMins || 0} min</td>
+        <td>${opName}</td>
+        <td><span class="imf-badge ${statusMeta.cls}"><i class="ti ${statusMeta.icon}"></i> ${statusMeta.label}</span></td>
+        <td style="text-align:right">
+          ${canDelete ? `
+            <button class="imf-rowact" style="color:var(--err)" onclick="confirmDeleteSetup('${sa.id}')" title="Delete setup log">
+              <i class="ti ti-trash"></i>
+            </button>` : ''}
+        </td>
+      </tr>
+    `;
+  }).join('');
 
-function setupLogRow(sa, canDelete) {
-  const statusColor = sa.status === 'approved' ? 'var(--ok)' : sa.status === 'rejected' ? 'var(--err)'
-    : sa.status === 'awaiting_deviation' ? 'var(--imf-steel)' : 'var(--warn)';
-  const statusLabel = sa.status === 'awaiting_deviation' ? 'Awaiting Deviation' : sa.status;
+  const cardsHtml = list.map(sa => {
+    const statusMeta = SETUP_STATUS_META[sa.status] || { cls: 'rag-b', icon: 'ti-help-circle', label: sa.status || '—' };
+    const dateShift = `${sa.date || ''} · ${S.shifts?.[sa.shift]?.label || sa.shift || '—'}`;
+    const opName = (S.users || []).find(u => u.id === sa.operatorId)?.name || sa.operatorName || sa.requestedByName || '—';
+    return `
+      <div class="imf-card">
+        <div class="imf-card-top">
+          <span class="imf-mono">${sa.tagId || '—'}</span>
+          <div class="grow"></div>
+          <span class="imf-badge ${statusMeta.cls}"><i class="ti ${statusMeta.icon}"></i> ${statusMeta.label}</span>
+        </div>
+        <div class="imf-card-lead">
+          <span class="nm">${sa.opName || '—'}</span>
+          <span class="qty">${sa.setupMins || 0}<small> min</small></span>
+        </div>
+        <div class="imf-card-meta">
+          <span>${sa.machineName || '—'}</span> · <span>${dateShift}</span>
+        </div>
+        <div class="imf-card-foot" style="justify-content:space-between">
+          <span>By: ${opName}</span>
+          ${canDelete ? `
+            <button class="btn btn-ic btn-sm" style="background:none;border:none;color:var(--err);padding:0" onclick="confirmDeleteSetup('${sa.id}')">
+              <i class="ti ti-trash"></i>
+            </button>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+
   return `
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;
-                padding:10px 0;border-bottom:1px solid var(--bdr)">
-      <div style="flex:1;min-width:0">
-        <div style="font-weight:700;font-size:13px;font-family:monospace">${sa.tagId || '—'}
-          <span style="font-weight:400;font-size:11px;font-family:inherit;color:var(--txt-muted);margin-left:6px">${sa.opName || ''}</span>
+    <div class="imf-tablewrap" style="margin-top:16px">
+      <div class="imf-table-toolbar">
+        <div class="grow">
+          <div style="font-size:16px;font-weight:700">Logged Setups</div>
+          <div class="text-sm text-muted">${list.length} recent setup logs</div>
         </div>
-        <div style="font-size:11px;color:var(--txt-muted);margin-top:2px">
-          ${sa.machineName || sa.machineId || '—'} · ${sa.date || ''} Shift ${sa.shift || '—'}
-          · ${sa.setupMins || 0} min
-        </div>
-        <div style="font-size:11px;color:var(--txt-muted)">${sa.operatorName || sa.requestedByName || '—'}</div>
+        <button class="btn btn-ghost btn-sm" onclick="exportSetupExcel()"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Export All</button>
       </div>
-      <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
-        <span style="font-size:10px;font-weight:700;background:${statusColor};color:#fff;
-                     border-radius:4px;padding:3px 8px;text-transform:uppercase">${statusLabel}</span>
-        ${canDelete ? `
-        <button class="btn btn-ic" style="background:var(--err);border-color:var(--err);color:#fff;width:36px;height:36px"
-          onclick="confirmDeleteSetup('${sa.id}')" aria-label="Delete setup log">
-          <i class="ti ti-trash"></i>
-        </button>` : ''}
+      <div class="imf-table-scroll">
+        <table class="imf-table">
+          <thead><tr>
+            <th class="pin">TAG ID</th>
+            <th>Operation</th>
+            <th>Machine</th>
+            <th>Date/Shift</th>
+            <th class="num">Setup Mins</th>
+            <th>Operator</th>
+            <th>Status</th>
+            <th></th>
+          </tr></thead>
+          <tbody>${tableRowsHtml}</tbody>
+        </table>
       </div>
-    </div>`;
+    </div>
+    <div class="imf-cards" style="margin-top:12px">${cardsHtml}</div>
+  `;
 }
 
 function confirmDeleteSetup(id) {
@@ -1884,6 +2018,7 @@ function confirmDeleteSetup(id) {
 }
 
 async function deleteSetup(id) {
+  if (!isOwner()) return;
   try {
     await db.collection('setupApprovals').doc(id).delete();
     S.setupApprovals = (S.setupApprovals || []).filter(x => x.id !== id);
@@ -1946,8 +2081,10 @@ function updateSetupOperatorDropdown(stage) {
     operators.map(u => `<option value="${u.id}">${u.name}</option>`).join('');
 }
 
-async function setupFetchTag() {
-  const tagId = (document.getElementById('setup-tag-input')?.value || '').trim().toUpperCase();
+async function setupFetchTag(tagId) {
+  if (!tagId) {
+    tagId = (document.getElementById('setup-tag-input')?.value || '').trim().toUpperCase();
+  }
   if (!tagId) { toast('Enter or scan a TAG'); return; }
   if (!tagId.match(/^TAG\d+$/)) { toast('Invalid TAG format (e.g. TAG042)'); return; }
 
@@ -1959,13 +2096,13 @@ async function setupFetchTag() {
   try {
     const card = await fetchRouteCard(tagId);
     if (!card) {
-      if (infoDiv) infoDiv.innerHTML = `<div class="ebox">TAG ${tagId} not found</div>`;
+      if (infoDiv) infoDiv.innerHTML = `<div class="ebox">TAG \${tagId} not found</div>`;
       return;
     }
 
     const validStatuses = ['store_issued','soft_wip','soft_done','ht_done','hard_wip'];
     if (!validStatuses.includes(card.status)) {
-      if (infoDiv) infoDiv.innerHTML = `<div class="ebox">TAG status is "${card.status}" — expected: store_issued / soft_done / ht_done</div>`;
+      if (infoDiv) infoDiv.innerHTML = `<div class="ebox">TAG status is "\${card.status}" — expected: store_issued / soft_done / ht_done / hard_wip</div>`;
       return;
     }
 
@@ -1976,7 +2113,6 @@ async function setupFetchTag() {
       _setupStage = (card.status === 'ht_done' || card.status === 'hard_wip') ? 'hard' : 'soft';
     }
 
-    // Hard stage: heatCode required
     if (_setupStage === 'hard' && !card.heatCode) {
       if (infoDiv) infoDiv.innerHTML = `<div class="ebox">Hard stage setup requires a heat code. This TAG has not cleared Heat Treatment.</div>`;
       return;
@@ -1988,7 +2124,6 @@ async function setupFetchTag() {
     const completedOpIds = (card.opHistory || []).filter(h => h.stage === _setupStage).map(h => h.opId);
     const nextOp = partOpsForStage.find(po => !completedOpIds.includes(po.opId));
 
-    // Sequence deviation check
     let seqWarningHtml = '';
     if (nextOp && partOpsForStage.length > 1) {
       const nextIdx = partOpsForStage.findIndex(po => po.opId === nextOp.opId);
@@ -2000,7 +2135,7 @@ async function setupFetchTag() {
             <div class="wbox" style="flex-direction:column;align-items:stretch">
               <div style="font-weight:700;font-size:13px"><i class="ti ti-alert-triangle"></i> Sequence Deviation Detected</div>
               <div style="font-size:12px;margin-top:2px">
-                Previous operation "<strong>${prevOpName}</strong>" (seq ${prevRequired.seqNo}) has no completion on this TAG.
+                Previous operation "<strong>\${prevOpName}</strong>" (seq \${prevRequired.seqNo}) has no completion on this TAG.
               </div>
               <div style="font-size:11px;margin-top:4px">
                 If it <strong>was</strong> produced this shift (report not filed yet), you can verify it on submit.
@@ -2014,23 +2149,20 @@ async function setupFetchTag() {
       }
     }
 
-    // Setup is locked to the next operation in sequence — same pattern as
-    // the Add Run screen. Out-of-order setup goes through the deviation
-    // banner/approval below, not a free pick from the full op list.
     const nextOpIdx  = nextOp ? partOpsForStage.findIndex(po => po.opId === nextOp.opId) : -1;
     const nextOpName = nextOp ? ((S.operations || []).find(o => o.id === nextOp.opId)?.name || '—') : '';
 
     if (infoDiv) infoDiv.innerHTML = `
-      ${seqWarningHtml}
+      \${seqWarningHtml}
       <div class="sbox" style="flex-direction:column;align-items:stretch;font-size:13px">
         <div style="font-weight:700;margin-bottom:6px"><i class="ti ti-circle-check"></i> TAG Valid</div>
-        <div class="kv-row" style="padding:3px 0"><span class="text-muted">TAG</span><strong style="font-family:monospace;color:var(--acc);margin-left:auto">${tagId}</strong></div>
-        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Part</span><strong style="margin-left:auto;text-align:right">${card.partName}</strong></div>
-        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Part No.</span><span style="font-family:monospace;margin-left:auto">${card.partNo}</span></div>
-        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Customer</span><span style="margin-left:auto;text-align:right">${card.customerName || '—'}</span></div>
-        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Batch</span><span style="font-family:monospace;margin-left:auto">${card.batchCode || '—'}</span></div>
-        ${card.heatCode ? `<div class="kv-row" style="padding:3px 0"><span class="text-muted">Heat Code</span><strong style="color:var(--ok);margin-left:auto"><i class="ti ti-flame"></i> ${card.heatCode}</strong></div>` : ''}
-        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Qty on TAG</span><strong style="color:var(--acc);margin-left:auto">${card.currentQty} pcs</strong></div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">TAG</span><strong style="font-family:monospace;color:var(--acc);margin-left:auto">\${tagId}</strong></div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Part</span><strong style="margin-left:auto;text-align:right">\${card.partName}</strong></div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Part No.</span><span style="font-family:monospace;margin-left:auto">\${card.partNo}</span></div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Customer</span><span style="margin-left:auto;text-align:right">\${card.customerName || '—'}</span></div>
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Batch</span><span style="font-family:monospace;margin-left:auto">\${card.batchCode || '—'}</span></div>
+        \${card.heatCode ? \`<div class="kv-row" style="padding:3px 0"><span class="text-muted">Heat Code</span><strong style="color:var(--ok);margin-left:auto"><i class="ti ti-flame"></i> \${card.heatCode}</strong></div>\` : ''}
+        <div class="kv-row" style="padding:3px 0"><span class="text-muted">Qty on TAG</span><strong style="color:var(--acc);margin-left:auto">\${card.currentQty} pcs</strong></div>
       </div>`;
 
     if (formDiv) {
@@ -2041,13 +2173,13 @@ async function setupFetchTag() {
           <div class="f">
             <label>Operation</label>
             <div class="sbox" style="font-size:13px;font-weight:600">
-              ${nextOp
-                ? `${nextOpName} <span class="bdg bdg-n" style="margin-left:6px">Step ${nextOpIdx + 1} of ${partOpsForStage.length}</span>`
+              \${nextOp
+                ? \`\${nextOpName} <span class="bdg bdg-n" style="margin-left:6px">Step \${nextOpIdx + 1} of \${partOpsForStage.length}</span>\`
                 : partOpsForStage.length
-                  ? `All ${_setupStage} operations already completed on this TAG`
-                  : `No operations defined for this part/${_setupStage}`}
+                  ? \`All \${_setupStage} operations already completed on this TAG\`
+                  : \`No operations defined for this part/\${_setupStage}\`}
             </div>
-            <input type="hidden" id="setup-op-sel" value="${nextOp?.opId || ''}">
+            <input type="hidden" id="setup-op-sel" value="\${nextOp?.opId || ''}">
           </div>
           <div class="f">
             <label>Setup Time (minutes) *</label>
@@ -2065,7 +2197,7 @@ async function setupFetchTag() {
         </div>`;
     }
   } catch (e) {
-    if (infoDiv) infoDiv.innerHTML = `<div class="ebox">Error: ${friendlyError(e)}</div>`;
+    if (infoDiv) infoDiv.innerHTML = `<div class="ebox">Error: \${friendlyError(e)}</div>`;
   }
 }
 
@@ -2489,19 +2621,25 @@ function buildBreakdownHtml() {
 
 function breakdownCard(b) {
   const mach = (S.machines || []).find(m => m.id === b.machineId);
-  const statusColor = b.status === 'open' ? 'var(--err)' : b.status === 'acknowledged' ? 'var(--warn)' : 'var(--ok)';
+  const dateShift = `${b.date || ''} · ${b.shift ? 'Shift ' + b.shift : ''} · ${b.breakdownTime || ''}`;
   return `
-    <div class="card" style="margin-bottom:10px;border:1.5px solid ${statusColor}">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
-        <div>
-          <div style="font-weight:700">${b.machineName || mach?.name || '—'}</div>
-          <div style="font-size:11px;color:var(--txt-muted)">${b.date || ''} · ${b.shift ? 'Shift ' + b.shift : ''} · ${b.breakdownTime || ''}</div>
-        </div>
+    <div class="imf-card" style="margin-bottom:12px; border-left: 3px solid ${b.status==='open'?'var(--err)':b.status==='acknowledged'?'var(--warn)':'var(--ok)'}">
+      <div class="imf-card-top">
+        <span style="font-weight:700;font-size:14.5px;color:var(--imf-navy)">${b.machineName || mach?.name || '—'}</span>
+        <div class="grow"></div>
         ${stBadge(b.status)}
       </div>
-      <div style="font-size:12px;margin-bottom:4px">${b.description || ''}</div>
-      ${b.faultCategory ? `<div style="font-size:11px;color:var(--txt-muted)">Fault: ${b.faultCategory}</div>` : ''}
-      <div style="font-size:11px;color:var(--txt-muted);margin-top:4px">Reported by ${b.reportedByName || '—'} · ${fmtTS(b.createdAt)}</div>
+      <div class="imf-card-lead" style="margin-bottom:8px">
+        <span style="font-size:13px;font-weight:500;color:var(--txt);line-height:1.5">${b.description || ''}</span>
+      </div>
+      ${b.faultCategory ? `<div style="font-size:11.5px;color:var(--txt-muted);margin-bottom:4px"><i class="ti ti-tool"></i> Fault Category: <strong>${b.faultCategory}</strong></div>` : ''}
+      <div class="imf-card-meta" style="margin:6px 0 0">
+        <span>${dateShift}</span>
+      </div>
+      <div class="imf-card-foot" style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px">
+        <span>Reported by: ${b.reportedByName || '—'}</span>
+        <span style="margin-left:auto;font-size:11px">${fmtTS(b.createdAt)}</span>
+      </div>
     </div>`;
 }
 
@@ -2601,43 +2739,148 @@ async function submitBreakdown() {
 /* ══════════════════════════════════════════════════════════════════════
    REQUISITIONS TAB
    ══════════════════════════════════════════════════════════════════════ */
+async function exportReqsExcel() {
+  const list = (S.requisitions || [])
+    .filter(r => r.department === 'production' || r.requestedBy === S.sess.userId)
+    .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+
+  if (!list.length) { toast('Nothing to export — no requisitions available.'); return; }
+
+  const rows = [];
+  list.forEach(r => {
+    const statusLabel = { pending:'Pending', approved:'Approved', rejected:'Rejected', partial:'Partial', fulfilled:'Fulfilled' }[r.status] || r.status || '—';
+    (r.lines || []).forEach(l => {
+      rows.push({
+        reqNo: r.reqNo || '—',
+        date: r.date || '—',
+        neededBy: r.neededBy || '—',
+        requestedBy: r.requestedByName || '—',
+        partNo: l.partNo || '—',
+        partName: l.partName || '—',
+        qtyRequested: +l.qtyRequested || 0,
+        qtyIssued: +l.qtyIssued || 0,
+        lotCode: l.lotCode || '—',
+        status: statusLabel,
+        notes: r.notes || '',
+      });
+    });
+  });
+
+  const totals = {
+    qtyRequested: rows.reduce((s, r) => s + r.qtyRequested, 0),
+    qtyIssued: rows.reduce((s, r) => s + r.qtyIssued, 0),
+  };
+
+  await exportToExcel({
+    filename: `IMF_Requisitions_${dateStr()}.xlsx`,
+    reportTitle: 'Material Requisitions Report',
+    filterSummary: `Generated: ${fmtDate(dateStr())} · ${list.length} Requisition(s) (${rows.length} lines)`,
+    columns: [
+      { header: 'Req No.', key: 'reqNo', width: 14 },
+      { header: 'Date', key: 'date', width: 14 },
+      { header: 'Needed By', key: 'neededBy', width: 14 },
+      { header: 'Requested By', key: 'requestedBy', width: 18 },
+      { header: 'Part No.', key: 'partNo', width: 14 },
+      { header: 'Part Name', key: 'partName', width: 24 },
+      { header: 'Qty Requested', key: 'qtyRequested', width: 16, align: 'right', numFmt: '#,##0' },
+      { header: 'Qty Issued', key: 'qtyIssued', width: 14, align: 'right', numFmt: '#,##0' },
+      { header: 'Lot Code', key: 'lotCode', width: 16 },
+      { header: 'Status', key: 'status', width: 14 },
+      { header: 'Notes', key: 'notes', width: 20 },
+    ],
+    rows,
+    totals,
+  });
+}
+
 function buildReqsHtml() {
   const myReqs = (S.requisitions || [])
     .filter(r => r.department === 'production' || r.requestedBy === S.sess.userId)
     .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
 
-  const statusBadgeMap = { pending:'bdg-a', approved:'bdg-g', rejected:'bdg-r', partial:'bdg-b', fulfilled:'bdg-g' };
   const statusLabelMap = { pending:'Pending', approved:'Approved', rejected:'Rejected', partial:'Partial', fulfilled:'Fulfilled' };
 
-  const listHtml = myReqs.length
-    ? myReqs.map(r => `
-        <div class="card" style="margin-bottom:10px" onclick="viewReqModal('${r.id}')">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
-            <div>
-              <div style="font-weight:700">${r.reqNo || '—'}</div>
-              <div style="font-size:11px;color:var(--txt-muted)">${r.date || ''}${r.neededBy ? ' · Needed by ' + r.neededBy : ''}</div>
-            </div>
-            <span class="bdg ${statusBadgeMap[r.status] || 'bdg-gr'}">${statusLabelMap[r.status] || r.status}</span>
-          </div>
-          <div style="font-size:12px;color:var(--txt-muted);margin-bottom:6px">By ${r.requestedByName || '—'}</div>
-          ${(r.lines || []).map(l => `
-            <div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0">
-              <span style="font-weight:600">${l.partName}</span>
-              <span style="font-weight:700;color:var(--acc)">${l.qtyRequested} pcs</span>
-            </div>`).join('')}
+  const tableRowsHtml = myReqs.map(r => {
+    const badgeCls = r.status === 'pending' ? 'rag-a' : r.status === 'approved' ? 'rag-g' : r.status === 'rejected' ? 'rag-r' : r.status === 'partial' ? 'rag-b' : 'rag-g';
+    const badgeIcon = r.status === 'pending' ? 'ti-clock' : r.status === 'rejected' ? 'ti-alert-octagon' : 'ti-circle-check';
+    const linesSummary = (r.lines || []).map(l => `${l.partName} (<span class="imf-mono" style="font-weight:600">${l.qtyRequested}</span>)`).join(', ');
+    return `
+      <tr onclick="viewReqModal('${r.id}')" style="cursor:pointer">
+        <td class="pin mono">${r.reqNo || '—'}</td>
+        <td>${r.date || '—'}</td>
+        <td>${r.neededBy || '—'}</td>
+        <td>${r.requestedByName || '—'}</td>
+        <td style="white-space:normal;max-width:300px">${linesSummary}</td>
+        <td><span class="imf-badge ${badgeCls}"><i class="ti ${badgeIcon}"></i> ${statusLabelMap[r.status] || r.status}</span></td>
+        <td style="text-align:right" onclick="event.stopPropagation()">
           ${r.status === 'pending' && r.requestedBy === S.sess.userId
-            ? `<button class="btn btn-d btn-sm" style="margin-top:8px" onclick="event.stopPropagation();cancelReq('${r.id}')">Cancel</button>`
+            ? `<button class="imf-rowact" style="color:var(--err)" onclick="cancelReq('${r.id}')" title="Cancel Requisition"><i class="ti ti-x"></i></button>`
             : ''}
-        </div>`).join('')
-    : emptyState('ti-file-text', 'No Requisitions', 'Tap + New to create a material request.');
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  const cardsHtml = myReqs.map(r => {
+    const badgeCls = r.status === 'pending' ? 'rag-a' : r.status === 'approved' ? 'rag-g' : r.status === 'rejected' ? 'rag-r' : r.status === 'partial' ? 'rag-b' : 'rag-g';
+    const badgeIcon = r.status === 'pending' ? 'ti-clock' : r.status === 'rejected' ? 'ti-alert-octagon' : 'ti-circle-check';
+    const totalQty = (r.lines || []).reduce((s, l) => s + (+l.qtyRequested || 0), 0);
+    return `
+      <div class="imf-card" onclick="viewReqModal('${r.id}')">
+        <div class="imf-card-top">
+          <span class="imf-mono">${r.reqNo || '—'}</span>
+          <div class="grow"></div>
+          <span class="imf-badge ${badgeCls}"><i class="ti ${badgeIcon}"></i> ${statusLabelMap[r.status] || r.status}</span>
+        </div>
+        <div class="imf-card-lead">
+          <span class="nm">${(r.lines || []).map(l => l.partName).join(', ')}</span>
+          <span class="qty">${totalQty}<small> pcs</small></span>
+        </div>
+        <div class="imf-card-meta">
+          <span>Date: ${r.date || '—'}</span> · <span>Needed: ${r.neededBy || '—'}</span>
+        </div>
+        <div class="imf-card-foot" style="justify-content:space-between">
+          <span>By: ${r.requestedByName || '—'}</span>
+          ${r.status === 'pending' && r.requestedBy === S.sess.userId
+            ? `<button class="btn btn-d btn-sm" onclick="event.stopPropagation();cancelReq('${r.id}')">Cancel</button>`
+            : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
 
   return `
-    <div style="padding-bottom:20px">
-      <button class="btn btn-p" style="width:100%;margin:10px 0" onclick="openNewReqModal()">
+    <div class="imf-tablewrap" style="margin-top:16px">
+      <div class="imf-table-toolbar">
+        <div class="grow">
+          <div style="font-size:16px;font-weight:700">Material Requisitions</div>
+          <div class="text-sm text-muted">${myReqs.length} total request${myReqs.length!==1?'s':''}</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="exportReqsExcel()"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Export All</button>
+        <button class="btn btn-p btn-sm" onclick="openNewReqModal()"><i class="ti ti-plus" aria-hidden="true"></i> New Requisition</button>
+      </div>
+      <div class="imf-table-scroll">
+        <table class="imf-table">
+          <thead><tr>
+            <th class="pin">Req No</th>
+            <th>Date</th>
+            <th>Needed By</th>
+            <th>Requested By</th>
+            <th>Materials Summary</th>
+            <th>Status</th>
+            <th></th>
+          </tr></thead>
+          <tbody>${myReqs.length ? tableRowsHtml : `<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--txt-muted)">No requisitions found.</td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="imf-cards" style="margin-top:12px">
+      <button class="btn btn-p" style="width:100%;margin-bottom:12px" onclick="openNewReqModal()">
         <i class="ti ti-plus"></i> New Requisition
       </button>
-      ${listHtml}
-    </div>`;
+      ${myReqs.length ? cardsHtml : emptyState('ti-file-text', 'No Requisitions', 'Tap New Requisition to log a request.')}
+    </div>
+  `;
 }
 
 function genReqNo() {
@@ -2839,7 +3082,149 @@ async function _doCancelReq(id) {
 /* ══════════════════════════════════════════════════════════════════════
    REPORTS TAB
    ══════════════════════════════════════════════════════════════════════ */
+async function exportSingleShiftExcel(r) {
+  if (!r) return;
+  const rows = [];
+  (r.machines || []).forEach(m => {
+    if (m.used) {
+      if (m.runs && m.runs.length) {
+        m.runs.forEach(run => {
+          rows.push({
+            machineName: m.machineName || '—',
+            operatorName: m.operatorName || '—',
+            tagId: run.tagId || '—',
+            partName: run.partName || '—',
+            opName: run.opName || '—',
+            processed: +run.processed || 0,
+            rejected: +run.rejected || 0,
+            setupMins: +m.setupMins || 0,
+            downtimeMins: +m.totalDtMins || 0,
+            oee: m.oee || 0,
+            status: 'Used',
+            notes: (m.downtime || []).map(dt => `${dt.reason || 'Downtime'}: ${dt.mins}m`).join('; ')
+          });
+        });
+      } else {
+        rows.push({
+          machineName: m.machineName || '—',
+          operatorName: m.operatorName || '—',
+          tagId: '—',
+          partName: '—',
+          opName: '—',
+          processed: 0,
+          rejected: 0,
+          setupMins: +m.setupMins || 0,
+          downtimeMins: +m.totalDtMins || 0,
+          oee: m.oee || 0,
+          status: 'Used (No Runs)',
+          notes: (m.downtime || []).map(dt => `${dt.reason || 'Downtime'}: ${dt.mins}m`).join('; ')
+        });
+      }
+    } else {
+      rows.push({
+        machineName: m.machineName || '—',
+        operatorName: '—',
+        tagId: '—',
+        partName: '—',
+        opName: '—',
+        processed: 0,
+        rejected: 0,
+        setupMins: 0,
+        downtimeMins: 0,
+        oee: 0,
+        status: 'Idle',
+        notes: `Idle Reason: ${m.idleReason || 'None'}`
+      });
+    }
+  });
+
+  const totals = {
+    processed: rows.reduce((s, row) => s + row.processed, 0),
+    rejected: rows.reduce((s, row) => s + row.rejected, 0),
+  };
+
+  await exportToExcel({
+    filename: `IMF_Production_Report_${r.date}_${r.shift}.xlsx`,
+    reportTitle: `Production Shift Report - ${r.stage === 'soft' ? 'Soft Stage' : 'Hard Stage'}`,
+    filterSummary: `Date: ${fmtDate(r.date)} · Shift: ${S.shifts?.[r.shift]?.label || r.shift} · Supervisor: ${r.supervisorName || '—'}`,
+    columns: [
+      { header: 'Machine', key: 'machineName', width: 16 },
+      { header: 'Operator', key: 'operatorName', width: 18 },
+      { header: 'Tag ID', key: 'tagId', width: 14 },
+      { header: 'Part Name', key: 'partName', width: 24 },
+      { header: 'Operation', key: 'opName', width: 18 },
+      { header: 'Processed', key: 'processed', width: 14, align: 'right', numFmt: '#,##0' },
+      { header: 'Rejected', key: 'rejected', width: 12, align: 'right', numFmt: '#,##0' },
+      { header: 'Setup Mins', key: 'setupMins', width: 14, align: 'right', numFmt: '#,##0' },
+      { header: 'Downtime Mins', key: 'downtimeMins', width: 16, align: 'right', numFmt: '#,##0' },
+      { header: 'OEE %', key: 'oee', width: 10, align: 'right', numFmt: '0"%"' },
+      { header: 'Status', key: 'status', width: 14 },
+      { header: 'Notes/Downtime', key: 'notes', width: 30 },
+    ],
+    rows,
+    totals,
+  });
+}
+
+async function exportAllReportsExcel() {
+  let results = (S.actuals || []).filter(a => {
+    if (a.stage !== _repStage) return false;
+    if (_repDate && a.date !== _repDate) return false;
+    if (_repShift && a.shift !== _repShift) return false;
+    return true;
+  }).sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+
+  if (!results.length) { toast('Nothing to export — no records available.'); return; }
+
+  const rows = results.map(r => ({
+    date: r.date || '—',
+    shift: S.shifts?.[r.shift]?.label || r.shift || '—',
+    supervisorName: r.supervisorName || '—',
+    totalProcessed: +r.totalProcessed || 0,
+    totalRejected: (r.machines || []).reduce((s, m) => s + (+m.totalRejected || 0), 0),
+    avgOEE: r.avgOEE || 0,
+    machinesUsed: +r.machinesUsed || 0,
+    submittedBy: r.submittedByName || '—',
+    createdAt: fmtTS(r.createdAt),
+  }));
+
+  const totals = {
+    totalProcessed: rows.reduce((s, r) => s + r.totalProcessed, 0),
+    totalRejected: rows.reduce((s, r) => s + r.totalRejected, 0),
+    machinesUsed: rows.reduce((s, r) => s + r.machinesUsed, 0),
+  };
+
+  await exportToExcel({
+    filename: `IMF_Production_Reports_Summary_${_repStage}_${_repDate || dateStr()}.xlsx`,
+    reportTitle: `Production Shift Summaries - ${_repStage === 'soft' ? 'Soft Stage' : 'Hard Stage'}`,
+    filterSummary: `Date: ${_repDate || 'All'} · Shift: ${_repShift || 'All'} · Generated: ${fmtDate(dateStr())}`,
+    columns: [
+      { header: 'Date', key: 'date', width: 14 },
+      { header: 'Shift', key: 'shift', width: 12 },
+      { header: 'Supervisor', key: 'supervisorName', width: 18 },
+      { header: 'Processed Qty', key: 'totalProcessed', width: 16, align: 'right', numFmt: '#,##0' },
+      { header: 'Rejected Qty', key: 'totalRejected', width: 14, align: 'right', numFmt: '#,##0' },
+      { header: 'Avg OEE %', key: 'avgOEE', width: 14, align: 'right', numFmt: '0"%"' },
+      { header: 'Machines Used', key: 'machinesUsed', width: 16, align: 'right', numFmt: '#,##0' },
+      { header: 'Submitted By', key: 'submittedBy', width: 18 },
+      { header: 'Created At', key: 'createdAt', width: 20 },
+    ],
+    rows,
+    totals,
+  });
+}
+
 function buildReportsHtml() {
+  if (S.sess?.role !== 'admin' && S.sess?.email !== 'tanmay@indometaforge.in') {
+    return `
+      <div style="padding:40px 20px;text-align:center;color:var(--err)">
+        <i class="ti ti-lock" style="font-size:48px;display:block;margin-bottom:12px;color:var(--err)"></i>
+        <div style="font-size:18px;font-weight:700;margin-bottom:8px">Access Denied</div>
+        <div style="font-size:13px;color:var(--txt-muted)">The Reports tab is restricted to Admins only.</div>
+      </div>
+    `;
+  }
+
   const shiftOpts = [
     `<option value="">All Shifts</option>`,
     ...Object.entries(S.shifts || { s1:{label:'Shift 1'}, s2:{label:'Shift 2'}, s3:{label:'Shift 3'} })
@@ -2852,18 +3237,18 @@ function buildReportsHtml() {
         <div class="row-3">
           <div class="f">
             <label>Stage</label>
-            <select onchange="_repStage=this.value;loadAndRenderReports()">
+            <select onchange="_repStage=this.value;_repSelectedId=null;loadAndRenderReports()">
               <option value="soft" ${_repStage==='soft'?'selected':''}>Soft Stage</option>
               <option value="hard" ${_repStage==='hard'?'selected':''}>Hard Stage</option>
             </select>
           </div>
           <div class="f">
             <label>Date</label>
-            <input type="date" value="${_repDate}" onchange="_repDate=this.value;loadAndRenderReports()">
+            <input type="date" value="${_repDate}" onchange="_repDate=this.value;_repSelectedId=null;loadAndRenderReports()">
           </div>
           <div class="f">
             <label>Shift</label>
-            <select onchange="_repShift=this.value;loadAndRenderReports()">${shiftOpts}</select>
+            <select onchange="_repShift=this.value;_repSelectedId=null;loadAndRenderReports()">${shiftOpts}</select>
           </div>
         </div>
       </div>
@@ -2877,6 +3262,11 @@ async function loadAndRenderReports() {
   const w = document.getElementById('reports-content');
   if (!w) return;
 
+  if (S.sess?.role !== 'admin' && S.sess?.email !== 'tanmay@indometaforge.in') {
+    w.innerHTML = '';
+    return;
+  }
+
   let results = (S.actuals || []).filter(a => {
     if (a.stage !== _repStage) return false;
     if (_repDate && a.date !== _repDate) return false;
@@ -2884,98 +3274,311 @@ async function loadAndRenderReports() {
     return true;
   }).sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
 
-  if (!results.length) {
-    w.innerHTML = emptyState('ti-chart-bar', 'No Records', 'No production records match the selected filters.');
-    return;
-  }
-
   const totalProcessed = results.reduce((s, r) => s + (r.totalProcessed || 0), 0);
-  const totalMachinesUsed = results.reduce((s, r) => s + (r.machinesUsed || 0), 0);
   const totalRejected = results.reduce((s, r) => s + (r.machines || []).reduce((ss, m) => ss + (m.totalRejected || 0), 0), 0);
   const oeeSamples = results.filter(r => r.avgOEE > 0);
   const avgOEE = oeeSamples.length ? Math.round(oeeSamples.reduce((s, r) => s + r.avgOEE, 0) / oeeSamples.length) : 0;
+  const oeeColor = avgOEE >= 80 ? 'ok' : avgOEE >= 50 ? 'warn' : 'err';
+  const activeMachinesCount = new Set(results.flatMap(r => (r.machines || []).filter(m => m.used).map(m => m.machineId || m.machineName))).size;
 
-  const oeeColor = avgOEE >= 75 ? 'ok' : avgOEE >= 50 ? 'warn' : 'err';
+  if (results.length && !_repSelectedId) {
+    _repSelectedId = results[0].id;
+  }
 
-  const reportCardsHtml = results.map(r => {
-    const machUsed = (r.machines || []).filter(m => m.used);
+  const selectedReport = results.find(r => r.id === _repSelectedId) || results[0];
+
+  const tableRowsHtml = results.map(r => {
+    const isSelected = r.id === selectedReport?.id;
+    const shiftLabel = S.shifts?.[r.shift]?.label || r.shift || '—';
+    const rejections = (r.machines || []).reduce((s, m) => s + (+m.totalRejected || 0), 0);
+    const oeeBadgeCls = r.avgOEE >= 80 ? 'rag-g' : r.avgOEE >= 50 ? 'rag-a' : 'rag-r';
     return `
-      <div class="card" style="margin-bottom:12px">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
-          <div>
-            <div style="font-weight:700">${r.date || '—'} · Shift ${r.shift || '—'}</div>
-            <div style="font-size:11px;color:var(--txt-muted)">${r.supervisorName || ''} · ${fmtTS(r.createdAt)}</div>
-          </div>
-          <div style="text-align:right">
-            <div style="font-size:18px;font-weight:800;color:var(--acc)">${r.totalProcessed || 0} <span style="font-size:11px;font-weight:400">pcs</span></div>
-            <div style="font-size:11px;color:var(--txt-muted)">${r.machinesUsed || 0} machines</div>
-          </div>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px">
-          <div style="text-align:center;background:var(--bg);border-radius:6px;padding:6px">
-            <div style="font-size:15px;font-weight:800;color:var(--ok)">${r.totalProcessed || 0}</div>
-            <div style="font-size:10px;color:var(--txt-muted)">Processed</div>
-          </div>
-          <div style="text-align:center;background:var(--bg);border-radius:6px;padding:6px">
-            <div style="font-size:15px;font-weight:800;color:var(--err)">${(r.machines || []).reduce((s,m)=>s+(m.totalRejected||0),0)}</div>
-            <div style="font-size:10px;color:var(--txt-muted)">Rejected</div>
-          </div>
-          <div style="text-align:center;background:var(--bg);border-radius:6px;padding:6px">
-            <div style="font-size:15px;font-weight:800;color:${r.avgOEE>=75?'var(--ok)':r.avgOEE>=50?'var(--warn)':'var(--err)'}">${r.avgOEE || 0}%</div>
-            <div style="font-size:10px;color:var(--txt-muted)">Avg OEE</div>
-          </div>
-        </div>
-        ${machUsed.length ? `
-          <div style="font-size:11px;font-weight:700;color:var(--txt-muted);margin-bottom:4px">PER MACHINE</div>
-          ${machUsed.map(m => `
-            <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 10px;font-size:12px;padding:6px 0;border-bottom:1px solid var(--bdr)">
-              <span style="font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto">${m.machineName}</span>
-              <span style="color:var(--txt-muted);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto">${m.operatorName || '—'}</span>
-              <span style="flex-shrink:0"><strong>${m.totalProcessed}</strong> pcs</span>
-              <span style="flex-shrink:0;font-weight:600;color:${m.oee>=75?'var(--ok)':m.oee>=50?'var(--warn)':'var(--err)'}">${m.oee || 0}% OEE</span>
-            </div>`).join('')}
-        ` : ''}
-        ${canManageReports() ? `
-          <div style="display:flex;gap:8px;margin-top:12px">
-            <button class="btn btn-s" style="flex:1" onclick="editReportFromList('${r.id}')">
-              <i class="ti ti-edit"></i> Edit
-            </button>
-            <button class="btn btn-s" style="flex:1;border-color:var(--err);color:var(--err)" onclick="confirmDeleteReport('${r.id}')">
-              <i class="ti ti-trash"></i> Delete
-            </button>
-          </div>` : ''}
-      </div>`;
+      <tr class="${isSelected ? 'selected' : ''}" onclick="_repSelectedId='${r.id}';loadAndRenderReports()" style="cursor:pointer">
+        <td class="pin mono">${r.date || '—'}</td>
+        <td style="font-weight:600">${shiftLabel}</td>
+        <td>${r.supervisorName || '—'}</td>
+        <td style="text-align:right;font-weight:600">${r.totalProcessed || 0}</td>
+        <td style="text-align:right;color:${rejections > 0 ? 'var(--err)' : 'inherit'}">${rejections}</td>
+        <td style="text-align:right"><span class="imf-badge ${oeeBadgeCls}">${r.avgOEE || 0}%</span></td>
+      </tr>
+    `;
   }).join('');
 
+  const cardsHtml = results.map(r => {
+    const isSelected = r.id === selectedReport?.id;
+    const shiftLabel = S.shifts?.[r.shift]?.label || r.shift || '—';
+    const rejections = (r.machines || []).reduce((s, m) => s + (+m.totalRejected || 0), 0);
+    const oeeBadgeCls = r.avgOEE >= 80 ? 'rag-g' : r.avgOEE >= 50 ? 'rag-a' : 'rag-r';
+    return `
+      <div class="imf-card ${isSelected ? 'active-border' : ''}" onclick="_repSelectedId='${r.id}';loadAndRenderReports()">
+        <div class="imf-card-top">
+          <span style="font-weight:700">${r.date || '—'} · ${shiftLabel}</span>
+          <span class="imf-badge ${oeeBadgeCls}">${r.avgOEE || 0}% OEE</span>
+        </div>
+        <div class="imf-card-lead">
+          <span class="nm">${r.supervisorName || '—'}</span>
+          <span class="qty">${r.totalProcessed}<small> pcs</small></span>
+        </div>
+        <div class="imf-card-meta">
+          <span>Rejections: ${rejections} pcs</span> · <span>Machines: ${r.machinesUsed || 0}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  let detailHtml = '';
+  if (selectedReport) {
+    const r = selectedReport;
+    const shiftLabel = S.shifts?.[r.shift]?.label || r.shift || '—';
+    const rejections = (r.machines || []).reduce((s, m) => s + (+m.totalRejected || 0), 0);
+    const activeMachs = (r.machines || []).filter(m => m.used);
+    const idleMachs   = (r.machines || []).filter(m => !m.used);
+
+    const machinesListHtml = activeMachs.map(m => {
+      const oeeCls = m.oee >= 80 ? 'rag-g' : m.oee >= 50 ? 'rag-a' : 'rag-r';
+      const runsHtml = (m.runs || []).map(run => `
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px;padding:4px 0;border-bottom:1px dashed var(--bdr)">
+          <div style="flex:1;min-width:0;padding-right:8px">
+            <div style="font-weight:600;text-overflow:ellipsis;overflow:hidden;white-space:nowrap">${run.partName || '—'}</div>
+            <div style="font-size:11px;color:var(--txt-muted)">${run.opName || '—'} · Tag: <span class="imf-mono" style="font-weight:600">${run.tagId || '—'}</span></div>
+          </div>
+          <div style="text-align:right;flex-shrink:0">
+            <div><strong>${run.processed || 0}</strong> <small>pcs</small></div>
+            ${run.rejected > 0 ? `<div style="font-size:11px;color:var(--err)">${run.rejected} rejected</div>` : ''}
+          </div>
+        </div>
+      `).join('');
+
+      const downtimeHtml = (m.downtime || []).map(dt => `
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--err);padding:2px 0">
+          <span><i class="ti ti-clock-pause"></i> ${dt.reason || 'Downtime'}${dt.otherText ? ` (${dt.otherText})` : ''}</span>
+          <strong>${dt.mins || 0}m</strong>
+        </div>
+      `).join('');
+
+      return `
+        <div class="imf-card" style="margin-bottom:12px; border-left: 3px solid ${m.oee >= 80 ? 'var(--ok)' : m.oee >= 50 ? 'var(--warn)' : 'var(--err)'}">
+          <div class="imf-card-top">
+            <span style="font-weight:700;font-size:14px">${m.machineName}</span>
+            <span class="imf-badge ${oeeCls}">${m.oee || 0}% OEE</span>
+          </div>
+          <div class="imf-card-meta" style="margin:4px 0 8px">
+            <span>Operator: <strong>${m.operatorName || '—'}</strong></span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:8px;background:var(--bg);padding:6px;border-radius:var(--rs);text-align:center;margin-bottom:8px">
+            <div>
+              <div style="font-weight:700;font-size:13px">${m.totalProcessed || 0}</div>
+              <div style="font-size:10px;color:var(--txt-muted)">Processed</div>
+            </div>
+            <div>
+              <div style="font-weight:700;font-size:13px;color:${m.totalRejected > 0 ? 'var(--err)' : 'inherit'}">${m.totalRejected || 0}</div>
+              <div style="font-size:10px;color:var(--txt-muted)">Rejected</div>
+            </div>
+            <div>
+              <div style="font-weight:700;font-size:13px">${m.setupMins || 0}m</div>
+              <div style="font-size:10px;color:var(--txt-muted)">Setup</div>
+            </div>
+            <div>
+              <div style="font-weight:700;font-size:13px;color:${m.totalDtMins > 0 ? 'var(--err)' : 'inherit'}">${m.totalDtMins || 0}m</div>
+              <div style="font-size:10px;color:var(--txt-muted)">Downtime</div>
+            </div>
+          </div>
+          ${runsHtml ? `<div style="margin-top:8px">${runsHtml}</div>` : `<div style="font-size:12px;color:var(--txt-muted);font-style:italic;padding:4px 0">No runs logged.</div>`}
+          ${downtimeHtml ? `<div style="margin-top:6px;border-top:1px dashed var(--bdr);padding-top:6px">${downtimeHtml}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    const idleListHtml = idleMachs.map(m => `
+      <div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg);border:1px solid var(--bdr);border-radius:var(--rs);padding:8px 12px;font-size:12.5px">
+        <span style="font-weight:600;color:var(--txt-muted)">${m.machineName}</span>
+        <span style="font-size:11.5px;color:var(--txt-muted)">Idle: <strong>${m.idleReason || '—'}</strong></span>
+      </div>
+    `).join('');
+
+    const canEdit = canManageReports();
+    const canDel  = isOwner();
+
+    detailHtml = `
+      <button class="btn btn-ghost btn-sm imf-mobile-back" onclick="_repSelectedId=null;loadAndRenderReports()" style="margin-bottom:12px">
+        <i class="ti ti-arrow-left"></i> Back to Shifts
+      </button>
+      <div class="card" style="margin-bottom:0">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid var(--bdr);padding-bottom:12px;margin-bottom:12px">
+          <div>
+            <div style="font-size:16px;font-weight:800;color:var(--imf-navy)">${r.date || '—'} · ${shiftLabel}</div>
+            <div style="font-size:12px;color:var(--txt-muted)">Supervisor: <strong>${r.supervisorName || '—'}</strong></div>
+            <div style="font-size:11px;color:var(--txt-muted);margin-top:2px">Submitted by ${r.submittedByName || '—'} · ${fmtTS(r.createdAt)}</div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-ghost btn-sm" onclick="exportSingleShiftExcel(S.actuals.find(x=>x.id==='${r.id}'))" title="Export this shift to Excel">
+              <i class="ti ti-file-spreadsheet"></i> Export Excel
+            </button>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:8px;text-align:center;margin-bottom:16px">
+          <div style="background:var(--bg);border-radius:var(--rs);padding:8px">
+            <div style="font-size:16px;font-weight:800;color:var(--ok)">${r.totalProcessed || 0}</div>
+            <div style="font-size:11px;color:var(--txt-muted)">Processed</div>
+          </div>
+          <div style="background:var(--bg);border-radius:var(--rs);padding:8px">
+            <div style="font-size:16px;font-weight:800;color:${rejections > 0 ? 'var(--err)' : 'inherit'}">${rejections}</div>
+            <div style="font-size:11px;color:var(--txt-muted)">Rejections</div>
+          </div>
+          <div style="background:var(--bg);border-radius:var(--rs);padding:8px">
+            <div style="font-size:16px;font-weight:800;color:${r.avgOEE >= 80 ? 'var(--ok)' : r.avgOEE >= 50 ? 'var(--warn)' : 'var(--err)'}">${r.avgOEE || 0}%</div>
+            <div style="font-size:11px;color:var(--txt-muted)">Avg OEE</div>
+          </div>
+        </div>
+        <div style="font-size:13px;font-weight:700;color:var(--imf-navy);margin-bottom:8px">MACHINE LOGS (${activeMachs.length} active)</div>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          ${machinesListHtml || `<div style="font-size:12px;color:var(--txt-muted);text-align:center;padding:12px">No active machines logged.</div>`}
+        </div>
+        ${idleMachs.length ? `
+          <div style="font-size:13px;font-weight:700;color:var(--txt-muted);margin:16px 0 8px">IDLE MACHINES (${idleMachs.length})</div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            ${idleListHtml}
+          </div>
+        ` : ''}
+        ${(canEdit || canDel) ? `
+          <div style="display:flex;gap:10px;margin-top:18px;border-top:1px solid var(--bdr);padding-top:14px">
+            ${canEdit ? `
+              <button class="btn btn-s" style="flex:1" onclick="editReportFromList('${r.id}')">
+                <i class="ti ti-edit"></i> Edit Report
+              </button>
+            ` : ''}
+            ${canDel ? `
+              <button class="btn btn-s" style="flex:1;border-color:var(--err);color:var(--err)" onclick="confirmDeleteReport('${r.id}')">
+                <i class="ti ti-trash"></i> Delete Report
+              </button>
+            ` : ''}
+          </div>
+        ` : ''}
+      </div>
+    `;
+  } else {
+    detailHtml = results.length
+      ? `
+      <div style="text-align:center;padding:48px;color:var(--txt-muted)">
+        <i class="ti ti-click" style="font-size:36px;display:block;margin-bottom:8px"></i>
+        Select a shift report from the left pane to view detailed logs.
+      </div>
+    `
+      : '';
+  }
+
+  const layoutClass = _repSelectedId ? 'detail-active' : '';
+
   w.innerHTML = `
-    <div class="stats-3" style="margin:8px 0 12px">
+    <div class="stats-4" style="margin:8px 0 12px">
       <div class="stat-card info">
         <div class="stat-lbl">Total Processed</div>
-        <div class="stat-val">${totalProcessed}</div>
+        <div class="stat-val">${totalProcessed.toLocaleString()}</div>
         <div class="stat-sub">pcs</div>
       </div>
       <div class="stat-card ${totalRejected > 0 ? 'warn' : 'ok'}">
         <div class="stat-lbl">Total Rejection</div>
-        <div class="stat-val">${totalRejected}</div>
+        <div class="stat-val">${totalRejected.toLocaleString()}</div>
         <div class="stat-sub">pcs</div>
       </div>
       <div class="stat-card ${oeeColor}">
         <div class="stat-lbl">Avg OEE</div>
         <div class="stat-val">${avgOEE}%</div>
-        <div class="stat-sub">${results.length} shifts</div>
+        <div class="stat-sub">${oeeSamples.length} shift${oeeSamples.length !== 1 ? 's' : ''}</div>
+      </div>
+      <div class="stat-card violet">
+        <div class="stat-lbl">Active Machines</div>
+        <div class="stat-val">${activeMachinesCount}</div>
+        <div class="stat-sub">unique machines</div>
       </div>
     </div>
-    <div class="stat-card info" style="margin-bottom:12px;text-align:center">
-      <div class="stat-lbl">Total Machines Used</div>
-      <div class="stat-val">${totalMachinesUsed}</div>
-      <div class="stat-sub">across all shifts</div>
+    <div class="imf-split-layout ${layoutClass}">
+      <div class="imf-split-master">
+        <div class="imf-tablewrap" style="margin-top:0">
+          <div class="imf-table-toolbar">
+            <div class="grow">
+              <div style="font-size:15px;font-weight:700">Shift Summaries</div>
+              <div class="text-sm text-muted">${results.length} report${results.length !== 1 ? 's' : ''} filtered</div>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="exportAllReportsExcel()"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Export All</button>
+          </div>
+          ${results.length === 0 ? emptyState('ti-chart-bar', 'No Records', 'No production records match the selected filters.') : `
+          <div class="imf-table-scroll">
+            <table class="imf-table">
+              <thead>
+                <tr>
+                  <th class="pin">Date</th>
+                  <th>Shift</th>
+                  <th>Supervisor</th>
+                  <th style="text-align:right">Processed</th>
+                  <th style="text-align:right">Rejected</th>
+                  <th style="text-align:right">OEE</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${tableRowsHtml}
+              </tbody>
+            </table>
+          </div>`}
+        </div>
+        ${results.length ? `<div class="imf-cards" style="margin-top:0">${cardsHtml}</div>` : ''}
+      </div>
+      <div class="imf-split-detail">
+        ${detailHtml}
+      </div>
     </div>
-    ${reportCardsHtml}`;
+  `;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
    PLANS VIEW TAB
    ══════════════════════════════════════════════════════════════════════ */
+async function exportPlansExcel() {
+  const results = (S.plans || []).filter(p => {
+    if (p.stage !== _pvStage) return false;
+    if (_pvDate && p.date !== _pvDate) return false;
+    return true;
+  }).sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+
+  if (!results.length) { toast('Nothing to export — no plans available.'); return; }
+
+  const rows = [];
+  results.forEach(p => {
+    (p.entries || []).forEach(e => {
+      rows.push({
+        date: p.date || '—',
+        stage: p.stage === 'soft' ? 'Soft Stage' : 'Hard Stage',
+        machineName: e.machineName || '—',
+        partName: e.partName || '—',
+        plannedQty: +e.plannedQty || 0,
+        submittedBy: p.submittedByName || '—',
+        createdAt: fmtTS(p.createdAt),
+      });
+    });
+  });
+
+  const totals = {
+    plannedQty: rows.reduce((s, r) => s + r.plannedQty, 0),
+  };
+
+  await exportToExcel({
+    filename: `IMF_Plans_${_pvStage}_${_pvDate || dateStr()}.xlsx`,
+    reportTitle: `Production Plans - ${_pvStage === 'soft' ? 'Soft Stage' : 'Hard Stage'}`,
+    filterSummary: `Date: ${_pvDate || 'All'} · Generated: ${fmtDate(dateStr())} · ${results.length} Plan(s)`,
+    columns: [
+      { header: 'Date', key: 'date', width: 14 },
+      { header: 'Stage', key: 'stage', width: 14 },
+      { header: 'Machine', key: 'machineName', width: 18 },
+      { header: 'Part Name', key: 'partName', width: 24 },
+      { header: 'Planned Qty', key: 'plannedQty', width: 16, align: 'right', numFmt: '#,##0' },
+      { header: 'Submitted By', key: 'submittedBy', width: 18 },
+      { header: 'Created At', key: 'createdAt', width: 20 },
+    ],
+    rows,
+    totals,
+  });
+}
+
 function buildPlansViewHtml() {
   return `
     <div style="padding-bottom:20px">
@@ -3010,30 +3613,98 @@ async function loadAndRenderPlans() {
     return true;
   }).sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
 
-  if (!results.length) {
-    w.innerHTML = emptyState('ti-calendar', 'No Plans', 'No plans found for the selected filters.');
-    return;
-  }
+  // Construct flat table rows for desktop
+  const tableRows = [];
+  results.forEach(p => {
+    (p.entries || []).forEach((e, idx) => {
+      tableRows.push(`
+        <tr>
+          ${idx === 0 ? `<td rowspan="${p.entries.length}" class="pin" style="vertical-align:top;font-weight:600">${p.date || '—'}</td>` : ''}
+          <td>${e.machineName || '—'}</td>
+          <td>${e.partName || '—'}</td>
+          <td style="text-align:right;font-weight:600">${e.plannedQty || 0}</td>
+          ${idx === 0 ? `<td rowspan="${p.entries.length}" style="vertical-align:top;color:var(--txt-muted);font-size:12px">
+            By ${p.submittedByName || '—'}<br><small>${fmtTS(p.createdAt)}</small>
+          </td>` : ''}
+        </tr>
+      `);
+    });
+  });
 
-  w.innerHTML = results.map(p => `
-    <div class="card" style="margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
-        <div>
-          <div style="font-weight:700">${p.date || '—'} · ${p.stage === 'soft' ? 'Soft Stage' : 'Hard Stage'}</div>
-          <div style="font-size:11px;color:var(--txt-muted)">By ${p.submittedByName || '—'} · ${fmtTS(p.createdAt)}</div>
-        </div>
-        <div style="font-size:18px;font-weight:800;color:var(--acc)">${p.totalPlanned || 0} <span style="font-size:11px;font-weight:400">pcs</span></div>
+  // Construct cards for mobile
+  const cardsHtml = results.map(p => `
+    <div class="imf-card">
+      <div class="imf-card-top">
+        <span style="font-weight:700">${p.date || '—'}</span>
+        <span class="imf-badge rag-b">${p.stage === 'soft' ? 'Soft' : 'Hard'}</span>
       </div>
-      ${(p.entries || []).map(e => `
-        <div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--bdr)">
-          <span style="font-weight:600">${e.machineName}</span>
-          <span style="color:var(--txt-muted)">${e.partName || '—'}</span>
-          <span><strong>${e.plannedQty || 0}</strong> pcs</span>
-        </div>`).join('')}
-    </div>`).join('');
+      <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
+        ${(p.entries || []).map(e => `
+          <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px dashed var(--bdr)">
+            <span style="font-weight:600;color:var(--txt)">${e.machineName}</span>
+            <span style="color:var(--txt-muted);max-width:150px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.partName || '—'}</span>
+            <span style="font-weight:700;color:var(--acc)">${e.plannedQty || 0} <small>pcs</small></span>
+          </div>
+        `).join('')}
+      </div>
+      <div class="imf-card-foot" style="margin-top:8px;font-size:11px;color:var(--txt-muted)">
+        <span>By: ${p.submittedByName || '—'}</span>
+        <span>${fmtTS(p.createdAt)}</span>
+      </div>
+    </div>
+  `).join('');
+
+  w.innerHTML = `
+    <div class="imf-tablewrap" style="margin-top:16px">
+      <div class="imf-table-toolbar">
+        <div class="grow">
+          <div style="font-size:16px;font-weight:700">Production Plans</div>
+          <div class="text-sm text-muted">${results.length} plan(s) matching filter</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="exportPlansExcel()"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Export All</button>
+      </div>
+      ${results.length === 0 ? emptyState('ti-calendar', 'No Plans', 'No plans found for the selected filters.') : `
+      <div class="imf-table-scroll">
+        <table class="imf-table">
+          <thead><tr>
+            <th class="pin">Date</th>
+            <th>Machine</th>
+            <th>Part Name</th>
+            <th style="text-align:right">Planned Qty</th>
+            <th>Submitted By</th>
+          </tr></thead>
+          <tbody>
+            ${tableRows.join('')}
+          </tbody>
+        </table>
+      </div>`}
+    </div>
+    ${results.length ? `<div class="imf-cards" style="margin-top:12px">${cardsHtml}</div>` : ''}
+  `;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
    BOOT
    ══════════════════════════════════════════════════════════════════════ */
+window.onGlobalScan = function(tagId) {
+  if (_activeTab === 'setup') {
+    setupFetchTag(tagId);
+  } else if (_activeTab === 'hub' && _activeView === 'actual') {
+    if (document.getElementById('run-processed') || document.getElementById('run-scan-btn')) {
+      runFetchTag(tagId);
+    } else if (_detailMachId) {
+      openAddRunModal(_detailMachId);
+      runFetchTag(tagId);
+    } else {
+      toast('Select a machine first to log a run');
+    }
+  } else if (_activeTab === 'hub' && _activeView === 'actual_detail') {
+    if (_seqResolveState) {
+      _seqResolveState._rescanOk = (tagId === _setupTagId);
+      if (!_seqResolveState._rescanOk) toast(`Scanned TAG does not match \${_setupTagId}`);
+      _renderSeqResolveModal();
+    }
+  }
+};
+
 document.addEventListener('DOMContentLoaded', init);

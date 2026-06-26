@@ -949,7 +949,7 @@ function renderHealth() {
 
   const cutoffDate = (() => {
     const d = new Date(); d.setDate(d.getDate() - 90);
-    return d.toISOString().slice(0, 10);
+    return _localDateStr(d);
   })();
 
   const machines = S.machines || [];

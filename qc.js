@@ -58,6 +58,7 @@ const S_QC = {
 
 /* ── Boot ────────────────────────────────────────────────────────────── */
 async function init() {
+  window.onGlobalScan = qcFetchTag;
   try { await initShell(); } catch (e) {
     clearSess(); window.location.replace('index.html'); return;
   }
@@ -145,28 +146,17 @@ function renderInspect() {
 
   el.innerHTML = `
     <div>
-      <div class="card" style="margin-bottom:14px;border-top:3px solid var(--acc)">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-          <div style="background:var(--acc);border-radius:8px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-            <i class="ti ti-scan" style="color:#fff;font-size:17px"></i>
+      <div class="imf-card" style="margin-bottom:14px;border-top:3px solid var(--imf-navy)">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <div style="background:var(--imf-navy);border-radius:var(--rs);width:40px;height:40px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="ti ti-scan" style="color:#fff;font-size:20px"></i>
           </div>
           <div>
-            <div style="font-size:13px;font-weight:800;color:var(--txt)">Final Inspection</div>
-            <div style="font-size:11px;color:var(--txt-muted)">Scan or enter a QC-ready TAG</div>
+            <div style="font-size:15px;font-weight:800;color:var(--txt)">Final Inspection</div>
+            <div style="font-size:12px;color:var(--txt-muted)">Scan or enter a QC-ready TAG</div>
           </div>
         </div>
-        <div style="display:flex;gap:8px;margin-bottom:10px">
-          <input type="text" id="qc-tag-input" placeholder="TAG UID…"
-            style="flex:1;font-family:monospace;font-size:15px;text-transform:uppercase;letter-spacing:.06em;font-weight:700"
-            onkeydown="if(event.key==='Enter')qcFetchTag()">
-          <button class="btn btn-s" onclick="openQrScanner(qcOnScan,'Scan TAG for QC')"
-            style="padding:10px 16px;font-size:18px">
-            <i class="ti ti-qrcode"></i>
-          </button>
-        </div>
-        <button class="btn btn-p" style="width:100%;font-size:14px;padding:12px" onclick="qcFetchTag()">
-          <i class="ti ti-arrow-right"></i> Load TAG
-        </button>
+        <button class="btn btn-p" onclick="openQrScanner(qcOnScan, 'Scan TAG for QC')" style="width:100%"><i class="ti ti-qrcode"></i> Scan TAG</button>
       </div>
       <div id="qc-result"></div>
     </div>`;
@@ -175,23 +165,25 @@ function renderInspect() {
 }
 
 function qcOnScan(tagId) {
-  const input = document.getElementById('qc-tag-input');
-  if (input) input.value = tagId.toUpperCase();
-  qcFetchTag();
+  qcFetchTag(tagId);
 }
 
-async function qcFetchTag() {
-  const input = document.getElementById('qc-tag-input');
-  const tagId = (input?.value || '').trim().toUpperCase();
-  if (!tagId) { toast('Enter or scan a TAG UID'); return; }
+async function qcFetchTag(tagId) {
+  let parsedTagId = tagId;
+  if (!parsedTagId) {
+    const input = document.getElementById('qc-tag-input');
+    parsedTagId = input?.value;
+  }
+  const finalTagId = (parsedTagId || '').trim().toUpperCase();
+  if (!finalTagId) { toast('Enter or scan a TAG UID'); return; }
 
   const resultEl = document.getElementById('qc-result');
   if (resultEl) resultEl.innerHTML = `<div class="empty"><div class="empty-ic"><i class="ti ti-loader" style="animation:spin 1s linear infinite"></i></div><p>Loading TAG…</p></div>`;
 
   try {
-    const card = await fetchRouteCard(tagId);
+    const card = await fetchRouteCard(finalTagId);
     if (!card) {
-      showInspectError(`TAG <strong>${tagId}</strong> not found. Verify the UID and try again.`); return;
+      showInspectError(`TAG <strong>${finalTagId}</strong> not found. Verify the UID and try again.`); return;
     }
     const err = qcValidateCard(card);
     if (err) { showInspectError(err); return; }
@@ -208,8 +200,9 @@ function qcValidateCard(card) {
     const LBLS = {
       store_issued: 'Store Issued', soft_wip: 'Soft Machining In Progress',
       soft_done: 'Soft Done (not yet heat treated)', ht_queue: 'HT Queue',
-      ht_done: 'HT Done (not yet hard machined)', qc_cleared: 'Already QC Cleared',
-      dispatched: 'Already Dispatched', scrapped: 'Scrapped',
+      sb_pending: 'HT Done (pending Shot Blasting)', sb_wip: 'In Shot Blasting',
+      ht_done: 'HT & Blasting Done (not yet hard machined)',
+      qc_cleared: 'Already QC Cleared', dispatched: 'Already Dispatched', scrapped: 'Scrapped',
     };
     return `TAG status is <strong>${LBLS[card.status] || card.status}</strong> — this TAG cannot be inspected at QC right now.`;
   }
@@ -260,34 +253,31 @@ function renderInspectResult() {
   }).join('');
 
   el.innerHTML = `
-    <div class="card" style="margin-bottom:12px;border-top:3px solid var(--acc)">
-      <!-- TAG header -->
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:12px">
-        <div>
-          <span class="tag-uid" style="font-size:13px">${card.id}</span>
-          ${card.cardColor === 'YELLOW' ? `<span class="bdg-a" style="margin-left:6px;font-size:10px">REWORK</span>` : ''}
-        </div>
-        <button class="btn btn-s btn-sm" onclick="_inspCard=null;renderInspect()">
+    <div class="imf-card" style="margin-bottom:12px;border-top:3px solid var(--accent-violet)">
+      <div class="imf-card-top">
+        <span class="imf-mono">${card.id}</span>
+        ${card.cardColor === 'YELLOW' ? `<span class="imf-badge rag-a" style="margin-left:6px;font-size:10px">REWORK</span>` : ''}
+        <div class="grow"></div>
+        <button class="btn btn-ghost btn-sm" onclick="_inspCard=null;renderInspect()">
           <i class="ti ti-x"></i> Clear
         </button>
       </div>
-
-      <!-- Part info -->
-      <div style="background:var(--bg);border-radius:var(--rs);padding:10px 12px;margin-bottom:14px">
-        <div style="font-size:15px;font-weight:800;margin-bottom:2px">${partName}</div>
-        <div style="font-size:11px;color:var(--txt-muted)">${custName}</div>
-        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
-          ${card.batchCode ? `<div style="font-size:11px"><span style="color:var(--txt-muted)">Batch</span> <strong>${card.batchCode}</strong></div>` : ''}
-          ${card.heatCode  ? `<div style="font-size:11px"><span style="color:var(--txt-muted)">Heat</span> <strong style="font-family:monospace">${card.heatCode}</strong></div>` : ''}
-        </div>
-        <div style="display:flex;align-items:baseline;gap:6px;margin-top:10px">
-          <span style="font-size:32px;font-weight:900;line-height:1;color:var(--txt)">${total}</span>
-          <span style="font-size:12px;color:var(--txt-muted)">pcs to inspect</span>
-        </div>
+      
+      <div class="imf-card-lead" style="margin-top:12px">
+        <span class="nm">${partName}</span>
+        <span class="qty">${total} <small>pcs</small></span>
+      </div>
+      
+      <div class="imf-card-meta">
+        <i class="ti ti-building-factory-2"></i> ${custName}
+      </div>
+      <div class="imf-card-meta" style="margin-top:4px">
+        ${card.batchCode ? `<span>Batch: <strong>${card.batchCode}</strong></span>` : ''}
+        ${card.heatCode  ? `<span style="margin-left:8px">Heat: <strong class="imf-mono">${card.heatCode}</strong></span>` : ''}
       </div>
 
       <!-- Disposition inputs -->
-      <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:10px">DISPOSITION</div>
+      <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:10px;margin-top:16px;border-top:1px solid var(--bdr);padding-top:16px;">DISPOSITION</div>
       <div class="row-3" style="margin-bottom:10px">
         <div class="f">
           <label style="color:var(--err)"><i class="ti ti-alert-triangle" aria-hidden="true"></i> Scrap</label>
@@ -634,58 +624,74 @@ function renderIQC() {
   const history = S_QC.inward.filter(r => r.iqcStatus && r.iqcStatus !== 'pending')
     .sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 50);
 
-  el.innerHTML = `
-    <div style="display:flex;gap:4px;background:var(--sur2);border:1px solid var(--bdr);border-radius:var(--rpill);
-                padding:3px;margin-bottom:14px;width:fit-content">
-      <button onclick="_iqcFilt='pending';renderIQC()"
-        style="padding:6px 18px;border-radius:var(--rpill);border:none;cursor:pointer;font-size:13px;font-weight:600;
-               background:${_iqcFilt==='pending'?'var(--imf-navy)':'transparent'};
-               color:${_iqcFilt==='pending'?'#fff':'var(--txt-muted)'}">
+  const filterTabs = `
+    <div class="imf-seg" style="margin-bottom:16px;width:fit-content;">
+      <button class="seg-btn ${_iqcFilt==='pending'?'active':''}" onclick="_iqcFilt='pending';renderIQC()">
         Pending${pending.length ? ` (${pending.length})` : ''}
       </button>
-      <button onclick="_iqcFilt='history';renderIQC()"
-        style="padding:6px 18px;border-radius:var(--rpill);border:none;cursor:pointer;font-size:13px;font-weight:600;
-               background:${_iqcFilt==='history'?'var(--imf-navy)':'transparent'};
-               color:${_iqcFilt==='history'?'#fff':'var(--txt-muted)'}">
+      <button class="seg-btn ${_iqcFilt==='history'?'active':''}" onclick="_iqcFilt='history';renderIQC()">
         History
       </button>
-    </div>
+    </div>`;
 
-    ${_iqcFilt === 'pending'
-      ? (pending.length
-          ? pending.map(iqcPendingCard).join('')
-          : `<div class="empty"><div class="empty-ic"><i class="ti ti-circle-check"></i></div>
-               <h3>All lots cleared</h3><p>No inward receipts awaiting inspection.</p></div>`)
-      : (history.length
-          ? `<div class="card" style="padding:0;overflow:hidden">${history.map(iqcHistCard).join('')}</div>`
-          : `<div class="empty"><div class="empty-ic"><i class="ti ti-history"></i></div>
-               <h3>No IQC history</h3><p>Completed inspections will appear here.</p></div>`)}
-  `;
+  let content = '';
+  if (_iqcFilt === 'pending') {
+    if (pending.length) {
+      content = `<div class="imf-cards">${pending.map(iqcPendingCard).join('')}</div>`;
+    } else {
+      content = `<div class="imf-empty"><div class="ic"><i class="ti ti-circle-check"></i></div>
+                 <h3>All lots cleared</h3><p>No inward receipts awaiting inspection.</p></div>`;
+    }
+  } else {
+    if (history.length) {
+      content = `
+        <div class="imf-tablewrap">
+          <div class="imf-table-scroll">
+            <table class="imf-table">
+              <thead><tr>
+                <th class="pin">Supplier</th>
+                <th class="num">Date</th>
+                <th>Lot Code</th>
+                <th class="num">Total Pcs</th>
+                <th>Inspected By</th>
+                <th>Result</th>
+              </tr></thead>
+              <tbody>${history.map(iqcHistTableRow).join('')}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="imf-cards mt-12">${history.map(iqcHistCard).join('')}</div>`;
+    } else {
+      content = `<div class="imf-empty"><div class="ic"><i class="ti ti-history"></i></div>
+                 <h3>No IQC history</h3><p>Completed inspections will appear here.</p></div>`;
+    }
+  }
+
+  el.innerHTML = filterTabs + content;
 }
 
 function iqcPendingCard(r) {
   const parts = r.parts || [];
   const totalPcs = parts.reduce((s, p) => s + (+p.qty || 0), 0);
   return `
-    <div class="card" style="margin-bottom:10px;border:1.5px solid var(--warn)">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:10px">
-        <div>
-          <div style="font-weight:700;font-size:14px">${r.supplierName || '—'}</div>
-          <div style="font-size:12px;color:var(--txt-muted);margin-top:2px">
-            ${fmtDate(r.date)} · <span style="font-family:monospace">${r.masterLotCode || '—'}</span>
-            ${r.dcNo ? ` · DC: ${r.dcNo}` : ''}
-          </div>
-        </div>
-        <span class="bdg bdg-a"><span class="bdg-dot"></span>IQC Pending</span>
+    <div class="imf-card" style="border:1.5px solid var(--warn)">
+      <div class="imf-card-top">
+        <span class="nm">${r.supplierName || '—'}</span>
+        <div class="grow"></div>
+        <span class="imf-badge rag-a"><i class="ti ti-clock"></i> IQC Pending</span>
       </div>
-      <div style="background:var(--sur2);border-radius:var(--rs);padding:8px 10px;margin-bottom:12px">
+      <div class="imf-card-meta">
+        <i class="ti ti-calendar"></i> ${fmtDate(r.date)} · <span class="imf-mono" style="color:var(--txt)">${r.masterLotCode || '—'}</span>
+        ${r.dcNo ? ` · DC: ${r.dcNo}` : ''}
+      </div>
+      <div style="background:var(--sur2);border-radius:var(--rs);padding:8px 12px;margin-bottom:12px;border:1px solid var(--bdr)">
         ${parts.map(p => `
-          <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px">
-            <span>${p.partName} <span style="font-family:monospace;font-size:11px;color:var(--txt-muted)">${p.partNo||''}</span></span>
-            <strong>${p.qty} pcs</strong>
+          <div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px">
+            <span>${p.partName} <span class="imf-mono" style="font-size:11px;color:var(--txt-muted)">${p.partNo||''}</span></span>
+            <strong class="mono">${p.qty} pcs</strong>
           </div>`).join('')}
-        <div style="border-top:1px solid var(--bdr);margin-top:6px;padding-top:6px;font-size:12px;color:var(--txt-muted)">
-          Total: <strong>${totalPcs} pcs</strong>
+        <div style="border-top:1px solid var(--bdr);margin-top:6px;padding-top:6px;font-size:12px;color:var(--txt-muted);display:flex;justify-content:space-between;">
+          <span>Total:</span><strong class="mono" style="color:var(--txt)">${totalPcs} pcs</strong>
         </div>
       </div>
       <div style="display:flex;gap:8px">
@@ -693,7 +699,7 @@ function iqcPendingCard(r) {
           <i class="ti ti-circle-check"></i> Accept
         </button>
         <button class="btn" style="flex:1;background:var(--ok-bg);color:var(--ok);border:1.5px solid var(--ok-bdr)" onclick="openIQCModal('${r.id}','conditional')">
-          <i class="ti ti-alert-circle"></i> Conditional
+          <i class="ti ti-alert-circle"></i> Cond
         </button>
         <button class="btn" style="flex:1;background:var(--err-bg);color:var(--err);border:1.5px solid var(--err-bdr)" onclick="openIQCModal('${r.id}','rejected')">
           <i class="ti ti-ban"></i> Reject
@@ -702,23 +708,52 @@ function iqcPendingCard(r) {
     </div>`;
 }
 
+function iqcHistTableRow(r) {
+  const parts = r.parts || [];
+  const totalPcs = parts.reduce((s, p) => s + (+p.qty || 0), 0);
+  const result = S_QC.iqcResults.find(q => q.inwId === r.id);
+  
+  let bcls = 'rag-gr';
+  if (r.iqcStatus === 'accepted') bcls = 'st-qc_cleared';
+  if (r.iqcStatus === 'conditional') bcls = 'rag-a';
+  if (r.iqcStatus === 'rejected') bcls = 'rag-r';
+
+  return `
+    <tr>
+      <td class="pin">${r.supplierName || '—'}</td>
+      <td class="num">${fmtDate(r.date)}</td>
+      <td class="mono">${r.masterLotCode||'—'}</td>
+      <td class="num" style="font-weight:700">${totalPcs}</td>
+      <td>${result?.checkedByName || '—'}</td>
+      <td><span class="imf-badge ${bcls}">${IQC_LABEL[r.iqcStatus]||r.iqcStatus}</span></td>
+    </tr>`;
+}
+
 function iqcHistCard(r) {
   const parts = r.parts || [];
   const totalPcs = parts.reduce((s, p) => s + (+p.qty || 0), 0);
   const result = S_QC.iqcResults.find(q => q.inwId === r.id);
+  
+  let bcls = 'rag-gr';
+  if (r.iqcStatus === 'accepted') bcls = 'st-qc_cleared';
+  if (r.iqcStatus === 'conditional') bcls = 'rag-a';
+  if (r.iqcStatus === 'rejected') bcls = 'rag-r';
+
   return `
-    <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--bdr)">
-      <div style="flex:1;min-width:0">
-        <div style="font-weight:600;font-size:13px">${r.supplierName || '—'}</div>
-        <div style="font-size:11px;color:var(--txt-muted);margin-top:2px">
-          ${fmtDate(r.date)} · <span style="font-family:monospace">${r.masterLotCode||'—'}</span>
-          · ${totalPcs} pcs${result?.checkedByName ? ` · by ${result.checkedByName}` : ''}
-        </div>
-        ${result?.notes ? `<div style="font-size:11px;color:var(--txt-muted);margin-top:2px;font-style:italic">${result.notes}</div>` : ''}
+    <div class="imf-card">
+      <div class="imf-card-top">
+        <span class="nm">${r.supplierName || '—'}</span>
+        <div class="grow"></div>
+        <span class="imf-badge ${bcls}">${IQC_LABEL[r.iqcStatus]||r.iqcStatus}</span>
       </div>
-      <span class="bdg ${IQC_BADGE[r.iqcStatus]||'bdg-gr'}" style="flex-shrink:0">
-        <span class="bdg-dot"></span>${IQC_LABEL[r.iqcStatus]||r.iqcStatus}
-      </span>
+      <div class="imf-card-lead">
+        <span class="imf-mono" style="font-size:12px">${r.masterLotCode||'—'}</span>
+        <span class="qty">${totalPcs} <small>pcs</small></span>
+      </div>
+      <div class="imf-card-meta">
+        <i class="ti ti-user"></i> ${result?.checkedByName || '—'} · ${fmtDate(r.date)}
+      </div>
+      ${result?.notes ? `<div class="imf-card-foot"><em>Notes:</em> ${result.notes}</div>` : ''}
     </div>`;
 }
 
@@ -1030,91 +1065,124 @@ function renderHistory() {
   const totalOk   = S_QC.inspections.reduce((s, r) => s + (r.okQty    || 0), 0);
   const totalScr  = S_QC.inspections.reduce((s, r) => s + (r.scrapQty || 0), 0);
 
-  if (!S_QC.inspections.length) {
-    el.innerHTML = `
-      <div style="display:flex;justify-content:flex-end;margin-bottom:10px">
-        <button class="btn btn-s btn-sm" onclick="refreshQC()"><i class="ti ti-refresh"></i> Refresh</button>
-      </div>
-      <div class="empty">
-        <div class="empty-ic"><i class="ti ti-history"></i></div>
-        <h3>No inspections yet</h3>
-        <p>Completed QC inspections will appear here.</p>
-      </div>`;
-    return;
-  }
+  const hasInsp = S_QC.inspections.length > 0;
 
   el.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <div style="font-size:11px;color:var(--txt-muted)">${S_QC.inspections.length} inspection${S_QC.inspections.length!==1?'s':''} · last 100</div>
-      <button class="btn btn-s btn-sm" onclick="refreshQC()"><i class="ti ti-refresh"></i></button>
+    <div class="imf-tablewrap">
+      <div class="imf-table-toolbar">
+        <div class="grow">
+          <div style="font-size:16px;font-weight:700">QC History</div>
+          <div class="text-sm text-muted">${S_QC.inspections.length} inspection${S_QC.inspections.length!==1?'s':''} · last 100</div>
+        </div>
+        <div style="display:flex; gap:16px; align-items:center;">
+          <div style="text-align:right">
+            <div style="font-size:11px;color:var(--txt-muted);text-transform:uppercase;font-weight:700">Inspected</div>
+            <div class="mono" style="font-size:14px;font-weight:600">${totalInsp}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:11px;color:var(--ok);text-transform:uppercase;font-weight:700">OK</div>
+            <div class="mono" style="font-size:14px;font-weight:600">${totalOk}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:11px;color:var(--err);text-transform:uppercase;font-weight:700">Scrap</div>
+            <div class="mono" style="font-size:14px;font-weight:600">${totalScr}</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="refreshQC()"><i class="ti ti-refresh"></i></button>
+        </div>
+      </div>
+      ${!hasInsp ? `
+      <div class="imf-empty">
+        <div class="ic"><i class="ti ti-history"></i></div>
+        <h3>No inspections yet</h3>
+        <p>Completed QC inspections will appear here.</p>
+      </div>` : `
+      <div class="imf-table-scroll">
+        <table class="imf-table">
+          <thead><tr>
+            <th class="pin">TAG ID</th>
+            <th>Part</th>
+            <th>Customer</th>
+            <th class="num">Date</th>
+            <th>By</th>
+            <th class="num grp grp-l">Total</th>
+            <th class="num grp">OK</th>
+            <th class="num grp">Rework</th>
+            <th class="num grp grp-r">Scrap</th>
+            <th class="num">Yield</th>
+          </tr></thead>
+          <tbody>${S_QC.inspections.map(inspTableRow).join('')}</tbody>
+        </table>
+      </div>`}
     </div>
-    <div class="stats-3" style="margin-bottom:14px">
-      <div class="stat-card">
-        <div class="stat-lbl">Inspected</div><div class="stat-val">${totalInsp}</div>
-      </div>
-      <div class="stat-card ok">
-        <div class="stat-lbl">OK</div><div class="stat-val">${totalOk}</div>
-      </div>
-      <div class="stat-card ${totalScr > 0 ? 'err' : ''}">
-        <div class="stat-lbl">Scrap</div><div class="stat-val">${totalScr}</div>
-      </div>
-    </div>
-    ${S_QC.inspections.map(inspRow).join('')}`;
+    ${hasInsp ? `<div class="imf-cards mt-12">${S_QC.inspections.map(inspCard).join('')}</div>` : ''}`;
 }
 
-function inspRow(r) {
+function inspTableRow(r) {
   const total = r.totalQty || 0;
   const ok    = r.okQty    || 0;
   const scr   = r.scrapQty || 0;
   const rwk   = r.reworkQty || 0;
   const pct   = total > 0 ? Math.round((ok / total) * 100) : 100;
-  const pctCol = pct >= 95 ? 'var(--ok)' : pct >= 80 ? 'var(--warn)' : 'var(--err)';
-  const bdrCol = scr > 0 ? 'var(--err)' : rwk > 0 ? 'var(--warn)' : 'var(--ok)';
+  
+  let row = `
+    <tr>
+      <td class="pin mono">${r.tagId}</td>
+      <td>${r.partName || '—'}</td>
+      <td>${r.customerName || '—'}</td>
+      <td class="num">${fmtDate(r.date)}</td>
+      <td>${r.inspectedByName || '—'}</td>
+      <td class="num grp grp-l">${total}</td>
+      <td class="num grp" style="color:var(--ok)">${ok}</td>
+      <td class="num grp" style="color:var(--warn)">${rwk}</td>
+      <td class="num grp grp-r" style="color:var(--err)">${scr}</td>
+      <td class="num" style="font-weight:700">${pct}%</td>
+    </tr>`;
+
+  if (r.defectDescription || r.reworkTagId) {
+    row += `<tr><td colspan="10" style="padding:8px 16px;background:var(--sur2);font-size:12px;color:var(--txt-mid)">
+      ${r.defectDescription ? `<em>Defect:</em> ${r.defectDescription} ` : ''}
+      ${r.reworkTagId ? ` · <em>Rework TAG:</em> <span class="mono">${r.reworkTagId}</span>` : ''}
+    </td></tr>`;
+  }
+  return row;
+}
+
+function inspCard(r) {
+  const total = r.totalQty || 0;
+  const ok    = r.okQty    || 0;
+  const scr   = r.scrapQty || 0;
+  const rwk   = r.reworkQty || 0;
+  const pct   = total > 0 ? Math.round((ok / total) * 100) : 100;
 
   return `
-    <div class="card" style="margin-bottom:10px;border:1.5px solid ${bdrCol}">
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
-        <div style="flex:1;min-width:0">
-          <span class="tag-uid" style="font-size:11px;margin-bottom:4px;display:inline-block">${r.tagId}</span>
-          <div style="font-size:13px;font-weight:800">${r.partName || '—'}</div>
-          <div style="font-size:11px;color:var(--txt-muted)">
-            ${r.customerName || '—'} · ${fmtDate(r.date)} · By ${r.inspectedByName || '—'}
-          </div>
+    <div class="imf-card">
+      <div class="imf-card-top">
+        <span class="imf-mono">${r.tagId}</span>
+        <div class="grow"></div>
+        <span class="imf-badge ${pct >= 95 ? 'st-qc_cleared' : 'rag-a'}"><i class="ti ti-activity"></i> ${pct}% Yield</span>
+      </div>
+      <div class="imf-card-lead">
+        <span class="nm">${r.partName || '—'}</span>
+        <span class="qty">${total} <small>pcs</small></span>
+      </div>
+      <div class="imf-card-meta">
+        <i class="ti ti-user"></i> ${r.inspectedByName || '—'} · ${fmtDate(r.date)}
+      </div>
+      <div class="imf-split">
+        <div style="background:var(--ok-bg)">
+          <div class="k" style="color:var(--ok)">OK</div>
+          <div class="v" style="color:var(--ok)">${ok}</div>
         </div>
-        <div style="text-align:center;flex-shrink:0">
-          <div style="font-size:20px;font-weight:900;line-height:1;color:${pctCol}">${pct}%</div>
-          <div style="font-size:9px;color:var(--txt-muted);font-weight:700">YIELD</div>
+        <div style="background:var(--warn-bg)">
+          <div class="k" style="color:var(--warn)">RWK</div>
+          <div class="v" style="color:var(--warn)">${rwk}</div>
+        </div>
+        <div style="background:var(--err-bg)">
+          <div class="k" style="color:var(--err)">SCRAP</div>
+          <div class="v" style="color:var(--err)">${scr}</div>
         </div>
       </div>
-
-      <div class="stats-3" style="margin-bottom:${(r.okQty > 0 || r.defectDescription || r.reworkTagId) ? '8px' : '0'}">
-        <div class="stat-card ${scr > 0 ? 'err' : ''}">
-          <div class="stat-lbl">Scrap</div><div class="stat-val">${scr}</div>
-        </div>
-        <div class="stat-card ${rwk > 0 ? 'warn' : ''}">
-          <div class="stat-lbl">Rework</div><div class="stat-val">${rwk}</div>
-        </div>
-        <div class="stat-card ${ok > 0 ? 'ok' : ''}">
-          <div class="stat-lbl">OK / ${total}</div><div class="stat-val">${ok}</div>
-        </div>
-      </div>
-
-      ${ok > 0 ? `
-        <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:${r.defectDescription ? '8px' : '0'}">
-          ${(r.okOEM    || 0) > 0 ? `<span class="bdg-acc">OEM ${r.okOEM}</span>`    : ''}
-          ${(r.okSpares || 0) > 0 ? `<span class="bdg-gr">Spares ${r.okSpares}</span>` : ''}
-          ${(r.okMarket || 0) > 0 ? `<span class="bdg-p">Market ${r.okMarket}</span>` : ''}
-        </div>` : ''}
-      ${r.defectDescription ? `
-        <div style="font-size:11px;color:var(--txt-mid);font-style:italic;line-height:1.4;border-top:1px solid var(--bdr);padding-top:6px">
-          "${r.defectDescription}"
-        </div>` : ''}
-      ${r.reworkTagId ? `
-        <div style="margin-top:6px;font-size:11px;display:flex;align-items:center;gap:6px">
-          <i class="ti ti-arrow-forward" style="color:var(--warn)"></i>
-          <span style="color:var(--txt-muted)">Rework card:</span>
-          <span class="tag-uid" style="font-size:10px">${r.reworkTagId}</span>
-        </div>` : ''}
+      ${r.defectDescription ? `<div class="imf-card-foot"><em>Defect:</em> ${r.defectDescription}</div>` : ''}
     </div>`;
 }
 
@@ -1127,58 +1195,105 @@ function renderCleared() {
 
   const totalPcs = S_QC.clearedCards.reduce((s, c) => s + (c.currentQty || 0), 0);
 
-  if (!S_QC.clearedCards.length) {
-    el.innerHTML = `
-      <div style="display:flex;justify-content:flex-end;margin-bottom:10px">
-        <button class="btn btn-s btn-sm" onclick="refreshQC()"><i class="ti ti-refresh"></i> Refresh</button>
-      </div>
-      <div class="empty">
-        <div class="empty-ic"><i class="ti ti-circle-check"></i></div>
-        <h3>No cleared TAGs</h3>
-        <p>QC-cleared route cards awaiting dispatch will appear here.</p>
-      </div>`;
-    return;
-  }
+  const hasCleared = S_QC.clearedCards.length > 0;
 
   el.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <div>
-        <div style="font-size:12px;font-weight:700">${S_QC.clearedCards.length} TAG${S_QC.clearedCards.length !== 1 ? 's' : ''} cleared</div>
-        <div style="font-size:11px;color:var(--txt-muted)">${totalPcs} pcs ready for dispatch</div>
+    <div class="imf-tablewrap">
+      <div class="imf-table-toolbar">
+        <div class="grow">
+          <div style="font-size:16px;font-weight:700">QC Cleared TAGs</div>
+          <div class="text-sm text-muted">${S_QC.clearedCards.length} TAG${S_QC.clearedCards.length !== 1 ? 's' : ''} ready for dispatch</div>
+        </div>
+        <div style="display:flex; gap:16px; align-items:center;">
+          <div style="text-align:right">
+            <div style="font-size:11px;color:var(--ok);text-transform:uppercase;font-weight:700">Total Cleared</div>
+            <div class="mono" style="font-size:14px;font-weight:600">${totalPcs} pcs</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="refreshQC()"><i class="ti ti-refresh"></i></button>
+        </div>
       </div>
-      <button class="btn btn-s btn-sm" onclick="refreshQC()"><i class="ti ti-refresh"></i></button>
+      ${!hasCleared ? `
+      <div class="imf-empty">
+        <div class="ic"><i class="ti ti-circle-check"></i></div>
+        <h3>No cleared TAGs</h3>
+        <p>QC-cleared route cards awaiting dispatch will appear here.</p>
+      </div>` : `
+      <div class="imf-table-scroll">
+        <table class="imf-table">
+          <thead><tr>
+            <th class="pin">TAG ID</th>
+            <th>Part</th>
+            <th>Customer</th>
+            <th>Batch Code</th>
+            <th>Heat Code</th>
+            <th class="num">Cleared Qty</th>
+            <th class="num grp grp-l">OEM</th>
+            <th class="num grp">Spares</th>
+            <th class="num grp grp-r">Market</th>
+          </tr></thead>
+          <tbody>${S_QC.clearedCards.map(clearedTableRow).join('')}</tbody>
+        </table>
+      </div>`}
     </div>
-    ${S_QC.clearedCards.map(clearedRow).join('')}`;
+    ${hasCleared ? `<div class="imf-cards mt-12">${S_QC.clearedCards.map(clearedCard).join('')}</div>` : ''}`;
 }
 
-function clearedRow(c) {
+function clearedTableRow(c) {
   const oem    = c.qty_oem    || 0;
   const spares = c.qty_spares || 0;
   const market = c.qty_market || 0;
 
   return `
-    <div class="card" style="margin-bottom:10px;border:1.5px solid var(--ok)">
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
-        <div style="flex:1;min-width:0">
-          <span class="tag-uid" style="font-size:11px;display:inline-block;margin-bottom:4px">${c.id}</span>
-          <div style="font-size:14px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.partName || '—'}</div>
-          <div style="font-size:11px;color:var(--txt-muted);margin-top:2px">${c.customerName || '—'}</div>
-          <div style="font-size:11px;color:var(--txt-muted);margin-top:1px;display:flex;gap:10px;flex-wrap:wrap">
-            ${c.batchCode ? `<span>Batch: <strong>${c.batchCode}</strong></span>` : ''}
-            ${c.heatCode  ? `<span>Heat: <strong style="font-family:monospace">${c.heatCode}</strong></span>` : ''}
-          </div>
+    <tr>
+      <td class="pin mono">${c.id}</td>
+      <td>${c.partName || '—'}</td>
+      <td>${c.customerName || '—'}</td>
+      <td class="mono">${c.batchCode || '—'}</td>
+      <td class="mono">${c.heatCode || '—'}</td>
+      <td class="num" style="color:var(--ok);font-weight:700">${c.currentQty || 0}</td>
+      <td class="num grp grp-l">${oem}</td>
+      <td class="num grp">${spares}</td>
+      <td class="num grp grp-r">${market}</td>
+    </tr>`;
+}
+
+function clearedCard(c) {
+  const oem    = c.qty_oem    || 0;
+  const spares = c.qty_spares || 0;
+  const market = c.qty_market || 0;
+
+  return `
+    <div class="imf-card">
+      <div class="imf-card-top">
+        <span class="imf-mono">${c.id}</span>
+        <div class="grow"></div>
+        <span class="imf-badge st-qc_cleared"><i class="ti ti-rosette-discount-check"></i> Cleared</span>
+      </div>
+      <div class="imf-card-lead">
+        <span class="nm">${c.partName || '—'}</span>
+        <span class="qty">${c.currentQty || 0} <small>pcs</small></span>
+      </div>
+      <div class="imf-card-meta">
+        <i class="ti ti-building-factory-2"></i> ${c.customerName || '—'}
+      </div>
+      <div class="imf-split">
+        <div style="background:var(--commercial-tint)">
+          <div class="k">OEM</div>
+          <div class="v">${oem}</div>
         </div>
-        <div style="text-align:center;flex-shrink:0;background:var(--ok-bg);border-radius:var(--rs);padding:10px 16px">
-          <div style="font-size:28px;font-weight:900;color:var(--ok);line-height:1">${c.currentQty || 0}</div>
-          <div style="font-size:9px;font-weight:700;color:var(--ok);text-transform:uppercase;letter-spacing:.04em">pcs OK</div>
+        <div style="background:var(--commercial-tint)">
+          <div class="k">SPARES</div>
+          <div class="v">${spares}</div>
+        </div>
+        <div style="background:var(--commercial-tint)">
+          <div class="k">MARKET</div>
+          <div class="v">${market}</div>
         </div>
       </div>
-      ${(oem + spares + market) > 0 ? `
-        <div style="display:flex;gap:5px;flex-wrap:wrap;border-top:1px solid var(--bdr);padding-top:8px">
-          ${oem    > 0 ? `<span class="bdg-acc">OEM: ${oem}</span>`      : ''}
-          ${spares > 0 ? `<span class="bdg-gr">Spares: ${spares}</span>`  : ''}
-          ${market > 0 ? `<span class="bdg-p">Market: ${market}</span>`   : ''}
-        </div>` : ''}
+      <div class="imf-card-foot" style="justify-content:space-between">
+        <span>Batch: <strong class="mono">${c.batchCode || '—'}</strong></span>
+        <span>Heat: <strong class="mono">${c.heatCode || '—'}</strong></span>
+      </div>
     </div>`;
 }
 

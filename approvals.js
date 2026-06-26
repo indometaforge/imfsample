@@ -7,12 +7,14 @@
      setupApprovals  — production machine setups (status: pending|approved|rejected)
      setupDeviations — sequence deviations       (status: pending|approved|rejected)
      sparesRequests  — maintenance spares        (status: pending|approved|rejected)
+     scmScrapLedger  — SCM supplier scrap (Forging->CNC supplier)
+                        (status: pending|approved|rejected)
    ═══════════════════════════════════════════════════════════════════ */
 
 'use strict';
 
 /* ── State ─────────────────────────────────────────────────────────── */
-let _tab     = 'all';   // 'all' | 'requisitions' | 'setup' | 'deviations' | 'spares'
+let _tab     = 'all';   // 'all' | 'requisitions' | 'setup' | 'deviations' | 'spares' | 'scrap'
 let _histTab = false;   // showing history section?
 
 const S_APR = {
@@ -20,6 +22,7 @@ const S_APR = {
   setupApprovals:  [],
   setupDeviations: [],
   sparesRequests:  [],
+  scmScrapLedger:  [],
 };
 
 /* ── Shared two-step confirm for approve/reject actions ─────────────── */
@@ -49,7 +52,7 @@ async function init() {
   try { await initShell(); } catch (e) {
     clearSess(); window.location.replace('index.html'); return;
   }
-  if (!canView('production') && !canView('inward')) {
+  if (!canView('production') && !canView('inward') && !canView('scrap_approve')) {
     document.getElementById('page-content').innerHTML =
       `<div class="empty"><div class="empty-ic"><i class="ti ti-lock"></i></div><h3>Access Denied</h3><p>You do not have permission to view approvals.</p></div>`;
     document.getElementById('loading-screen').style.display = 'none';
@@ -64,16 +67,18 @@ async function init() {
 
 async function loadApprovals() {
   try {
-    const [reqSnap, saSnap, sdSnap, spSnap] = await Promise.all([
+    const [reqSnap, saSnap, sdSnap, spSnap, scSnap] = await Promise.all([
       db.collection('requisitions').orderBy('createdAt', 'desc').limit(100).get(),
       db.collection('setupApprovals').orderBy('createdAt', 'desc').limit(200).get(),
       db.collection('setupDeviations').orderBy('createdAt', 'desc').limit(100).get(),
       db.collection('sparesRequests').orderBy('createdAt', 'desc').limit(100).get(),
+      db.collection('scmScrapLedger').orderBy('createdAt', 'desc').limit(100).get(),
     ]);
     S_APR.requisitions    = reqSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     S_APR.setupApprovals  = saSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     S_APR.setupDeviations = sdSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     S_APR.sparesRequests  = spSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    S_APR.scmScrapLedger  = scSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   } catch (e) { console.warn('loadApprovals error:', e.message); }
 }
 
@@ -88,7 +93,8 @@ function render() {
   const pendingSA  = S_APR.setupApprovals.filter(s => s.status === 'pending');
   const pendingSD  = S_APR.setupDeviations.filter(s => s.status === 'pending');
   const pendingSP  = S_APR.sparesRequests.filter(s => s.status === 'pending');
-  const totalPending = pendingReq.length + pendingSA.length + pendingSD.length + pendingSP.length;
+  const pendingSC  = S_APR.scmScrapLedger.filter(s => s.status === 'pending');
+  const totalPending = pendingReq.length + pendingSA.length + pendingSD.length + pendingSP.length + pendingSC.length;
 
   const tabs = [
     { key: 'all',          label: 'All',         count: totalPending },
@@ -96,6 +102,7 @@ function render() {
     { key: 'setup',        label: 'Setup',        count: pendingSA.length },
     { key: 'deviations',   label: 'Deviations',   count: pendingSD.length },
     { key: 'spares',       label: 'Spares',        count: pendingSP.length },
+    { key: 'scrap',        label: 'SCM Scrap',     count: pendingSC.length },
   ];
 
   const tabHtml = tabs.map(t => `
@@ -117,6 +124,9 @@ function render() {
   if (_tab === 'all' || _tab === 'spares') {
     pendingSP.forEach(s => pendingItems.push({ type: 'spares', data: s, ts: s.createdAt }));
   }
+  if (_tab === 'all' || _tab === 'scrap') {
+    pendingSC.forEach(s => pendingItems.push({ type: 'scrap', data: s, ts: s.createdAt }));
+  }
   pendingItems.sort((a, b) => (b.ts?.toMillis?.() || 0) - (a.ts?.toMillis?.() || 0));
 
   const pendingHtml = pendingItems.length
@@ -125,6 +135,7 @@ function render() {
         if (item.type === 'setup')       return setupCard(item.data, true);
         if (item.type === 'deviation')   return deviationCard(item.data, true);
         if (item.type === 'spares')      return sparesCard(item.data, true);
+        if (item.type === 'scrap')       return scrapCard(item.data, true);
         return '';
       }).join('')
     : `<div class="empty" style="padding:32px 0">
@@ -152,6 +163,10 @@ function render() {
     S_APR.sparesRequests.filter(s => ['approved','rejected'].includes(s.status) && (s.approvedAt?.toMillis?.() || 0) > cutoff)
       .forEach(s => histItems.push({ type: 'spares', data: s, ts: s.approvedAt }));
   }
+  if (_tab === 'all' || _tab === 'scrap') {
+    S_APR.scmScrapLedger.filter(s => ['approved','rejected'].includes(s.status) && (s.approvedAt?.toMillis?.() || 0) > cutoff)
+      .forEach(s => histItems.push({ type: 'scrap', data: s, ts: s.approvedAt }));
+  }
   histItems.sort((a, b) => (b.ts?.toMillis?.() || 0) - (a.ts?.toMillis?.() || 0));
   histItems = histItems.slice(0, 20);
 
@@ -169,6 +184,7 @@ function render() {
                  pendingSA.length   ? `${pendingSA.length} setup${pendingSA.length!==1?'s':''}` : '',
                  pendingSD.length   ? `${pendingSD.length} deviation${pendingSD.length!==1?'s':''}` : '',
                  pendingSP.length   ? `${pendingSP.length} spares request${pendingSP.length!==1?'s':''}` : '',
+                 pendingSC.length   ? `${pendingSC.length} scrap request${pendingSC.length!==1?'s':''}` : '',
                ].filter(Boolean).join(' · ')}</div>
              </div>
              <button onclick="refreshAll()" style="margin-left:auto;border:none;background:rgba(255,255,255,.2);color:#fff;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:12px">
@@ -204,6 +220,7 @@ function render() {
             if (item.type === 'setup')       return setupCard(item.data, false);
             if (item.type === 'deviation')   return deviationCard(item.data, false);
             if (item.type === 'spares')      return sparesCard(item.data, false);
+            if (item.type === 'scrap')       return scrapCard(item.data, false);
             return '';
           }).join('') : ''}
         </div>` : ''}
@@ -760,6 +777,118 @@ async function _commitRejectSpares(id, s, rmk) {
     });
     await logAudit('REJECT_SPARES', 'APPROVALS', id, s, { status: 'rejected', rejectionReason: rmk });
     toast('Spares request rejected');
+    await refreshAll();
+  } catch (e) { toast(friendlyError(e)); }
+}
+
+/* ── Card: SCM Supplier Scrap ──────────────────────────────────────── */
+const SCRAP_DEFECT_LABELS = {
+  cracked: 'Cracked / Fractured', porosity: 'Porosity / Internal Void',
+  dimensional: 'Dimensional Out of Tolerance', surface_finish: 'Surface Finish Defect',
+  hardness: 'Hardness / Material Property', machining_damage: 'Machining Damage', other: 'Other',
+};
+
+function scrapCard(s, isPending) {
+  const canAct = isPending && canDo('scrap_approve');
+  const isAuto = s.approvedBy === 'system';
+  return `
+    <div class="card" style="margin-bottom:10px;border:1.5px solid ${isPending?'var(--warn)':'var(--bdr)'}">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
+        <div>
+          <div style="font-weight:800;font-size:14px">${s.supplierName || '—'} <span style="font-family:monospace;font-size:11px;font-weight:400;color:var(--txt-muted)">${s.fpn || ''}${s.cpn ? ' / ' + s.cpn : ''}</span></div>
+          <div style="font-size:11px;color:var(--txt-muted);margin-top:2px">
+            By ${s.requestedByName || '—'} · ${fmtDate(s.date)}
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">
+          ${statusBadge(s.status)}
+          ${moduleTag('SCM', 'ti-truck-delivery')}
+          ${isAuto ? moduleTag('Auto-approved', 'ti-robot') : ''}
+        </div>
+      </div>
+
+      <div style="background:var(--bg);border-radius:6px;padding:8px 10px;margin-bottom:10px">
+        <div style="display:flex;align-items:baseline;gap:8px">
+          <div style="font-size:18px;font-weight:800">${s.qtyScrap || 0} pcs</div>
+          <span style="font-size:10px;font-weight:700;color:var(--txt-muted);background:var(--sur);border:1px solid var(--bdr);border-radius:4px;padding:2px 7px">${SCRAP_DEFECT_LABELS[s.defectCode] || s.defectCode || '—'}</span>
+        </div>
+        <div style="font-size:11px;color:var(--txt-muted);font-style:italic">"${s.reason || '—'}"</div>
+      </div>
+
+      ${canAct ? `
+        <div class="f" style="margin-bottom:8px">
+          <label style="font-size:11px">Approver Remarks *</label>
+          <input type="text" id="scrap-rmk-${s.id}" placeholder="Reason for approval or rejection..." style="font-size:13px">
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ok" style="flex:1" onclick="approveScrap('${s.id}')">
+            <i class="ti ti-check"></i> Approve
+          </button>
+          <button class="btn btn-d" style="flex:1" onclick="rejectScrap('${s.id}')">
+            <i class="ti ti-x"></i> Reject
+          </button>
+        </div>` : ''}
+
+      ${!isPending && s.approvedByName ? `
+        <div style="font-size:11px;color:var(--txt-muted);margin-top:4px;padding-top:8px;border-top:1px solid var(--bdr)">
+          ${s.status === 'rejected' ? 'Rejected' : 'Approved'} by ${s.approvedByName}
+          ${s.rejectionReason ? ` · "${s.rejectionReason}"` : ''}
+          ${s.approverRemarks ? ` · "${s.approverRemarks}"` : ''}
+          ${s.approvedAt ? ` · ${fmtTS(s.approvedAt)}` : ''}
+        </div>` : ''}
+    </div>`;
+}
+
+function approveScrap(id) {
+  const s = S_APR.scmScrapLedger.find(x => x.id === id);
+  if (!s) return;
+  const rmk = (document.getElementById(`scrap-rmk-${id}`)?.value || '').trim();
+  if (!rmk) { toast('Enter approver remarks before approving'); return; }
+  confirmApprovalAction({
+    title: 'Approve Scrap Request?',
+    icon: 'ti-check', color: 'var(--ok)', bg: 'var(--ok-bg)',
+    message: `Approves ${s.qtyScrap || 0} pcs scrap for ${s.supplierName || 'this supplier'} (${s.fpn || ''}/${s.cpn || ''}) — this will deduct from their live Supplier WIP.`,
+    confirmLabel: 'Yes, Approve', confirmClass: 'btn-ok',
+    onConfirm: () => _commitApproveScrap(id, s, rmk),
+  });
+}
+
+async function _commitApproveScrap(id, s, rmk) {
+  try {
+    await db.collection('scmScrapLedger').doc(id).update({
+      status: 'approved', approverRemarks: rmk,
+      approvedBy: S.sess.userId, approvedByName: S.sess.name,
+      approvedAt: serverTS(), updatedAt: serverTS(),
+    });
+    await logAudit('APPROVE_SCM_SCRAP', 'APPROVALS', id, s, { status: 'approved' });
+    toast('Scrap request approved ✓ — Supplier WIP updated');
+    await refreshAll();
+  } catch (e) { toast(friendlyError(e)); }
+}
+
+function rejectScrap(id) {
+  const s = S_APR.scmScrapLedger.find(x => x.id === id);
+  if (!s) return;
+  const rmk = (document.getElementById(`scrap-rmk-${id}`)?.value || '').trim();
+  if (!rmk) { toast('Enter a reason for rejection'); return; }
+  confirmApprovalAction({
+    title: 'Reject Scrap Request?',
+    icon: 'ti-x', color: 'var(--err)', bg: 'var(--err-bg)',
+    message: `Rejects the scrap request for ${s.supplierName || 'this supplier'} with reason: "${rmk}" — Supplier WIP is unaffected.`,
+    confirmLabel: 'Yes, Reject', confirmClass: 'btn-d',
+    onConfirm: () => _commitRejectScrap(id, s, rmk),
+  });
+}
+
+async function _commitRejectScrap(id, s, rmk) {
+  try {
+    await db.collection('scmScrapLedger').doc(id).update({
+      status: 'rejected', rejectionReason: rmk,
+      approvedBy: S.sess.userId, approvedByName: S.sess.name,
+      approvedAt: serverTS(), updatedAt: serverTS(),
+    });
+    await logAudit('REJECT_SCM_SCRAP', 'APPROVALS', id, s, { status: 'rejected', rejectionReason: rmk });
+    toast('Scrap request rejected');
     await refreshAll();
   } catch (e) { toast(friendlyError(e)); }
 }

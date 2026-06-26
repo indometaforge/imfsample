@@ -17,21 +17,20 @@
   </div>
 
   <div id="app" class="shell" style="display:none">
-    <div id="sb-overlay" class="sb-overlay"></div>
-    <nav id="sidebar" class="sidebar" aria-label="Main navigation"></nav>
-
     <div class="main">
       <header class="topbar">
-        <button id="topbar-menu-btn" class="topbar-menu-btn" aria-label="Open menu">
-          <i class="ti ti-menu-2" aria-hidden="true"></i>
-        </button>
+        <div class="topbar-brand" id="topbar-brand">
+          <button id="topbar-menu-btn" class="topbar-menu-btn" aria-label="Open modules menu" aria-haspopup="true" aria-expanded="false" onclick="toggleModuleMenu(event)">
+            <i class="ti ti-menu-2" aria-hidden="true"></i>
+          </button>
+          <img src="logo_dark_transparent.png" alt="Indo Meta Forge Pvt. Ltd." class="topbar-logo-img">
+          <div class="topbar-module-menu" id="topbar-module-menu"></div>
+        </div>
         <div class="topbar-info">
           <div class="topbar-title">Master Data</div>
           <div class="topbar-sub">System configuration &amp; reference data</div>
         </div>
-        <div class="topbar-actions">
-          <span class="topbar-role-pill" id="role-pill"></span>
-        </div>
+        <div class="topbar-actions"></div>
       </header>
 
       <div id="offline-bar" class="offline-bar">
