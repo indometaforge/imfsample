@@ -1272,6 +1272,195 @@ async function exportToExcel(opts) {
   URL.revokeObjectURL(url);
 }
 
+async function exportToPdf(opts) {
+  const { filename, reportTitle, filterSummary = '', columns, rows, totals = null } = opts;
+
+  if (typeof window.jspdf === 'undefined') {
+    toast('PDF export library failed to load. Check your connection and retry.', 4000);
+    return;
+  }
+
+  const { jsPDF } = window.jspdf;
+  const isLandscape = columns.length > 7;
+  const doc = new jsPDF({
+    orientation: isLandscape ? 'landscape' : 'portrait',
+    unit: 'mm',
+    format: 'a4'
+  });
+
+  const pageWidth = isLandscape ? 297 : 210;
+  const pageHeight = isLandscape ? 210 : 297;
+  const margin = 14;
+  const rightMargin = pageWidth - margin;
+
+  // 1. Draw Navy top bar
+  doc.setFillColor(30, 43, 107); // Navy #1E2B6B
+  doc.rect(0, 0, pageWidth, 24, 'F');
+
+  // 2. Embed Logo in top bar
+  if (typeof IMF_LOGO_BASE64 !== 'undefined') {
+    try {
+      const logoW = 34;
+      const logoH = logoW / 2.26;
+      doc.addImage('data:image/png;base64,' + IMF_LOGO_BASE64, 'PNG', margin, 4, logoW, logoH);
+    } catch (e) {
+      console.warn('PDF logo render failed:', e);
+    }
+  }
+
+  // 3. Top bar system title (right aligned)
+  doc.setFont('helvetica', 'oblique');
+  doc.setFontSize(9);
+  doc.setTextColor(201, 207, 232); // #C9CFE8 light gray-blue
+  doc.text('IMF ProTrack — Supply Chain Management', rightMargin, 14, { align: 'right' });
+
+  // 4. Report Title & Gen timestamp
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.setTextColor(30, 43, 107); // Navy
+  doc.text(reportTitle, margin, 36);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(100, 116, 139); // Gray #64748B
+  const genText = `Generated: ${fmtDate(dateStr())} ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
+  doc.text(genText, rightMargin, 36, { align: 'right' });
+
+  // 5. Filter summary
+  if (filterSummary) {
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(9);
+    doc.setTextColor(90, 100, 120);
+    doc.text(filterSummary, margin, 42);
+  }
+
+  // 6. Build Headers & Body
+  const headers = columns.map(c => c.header);
+  const bodyRows = rows.map(r => columns.map(c => {
+    const val = r[c.key];
+    if (val === null || val === undefined) return '—';
+    if (typeof val === 'number' && c.numFmt === '#,##0') {
+      return val.toLocaleString('en-IN');
+    }
+    return String(val);
+  }));
+
+  const footRows = [];
+  if (totals) {
+    const footRow = columns.map(c => {
+      const val = totals[c.key];
+      if (val === null || val === undefined) return '';
+      if (typeof val === 'number') return val.toLocaleString('en-IN');
+      return String(val);
+    });
+    footRows.push(footRow);
+  }
+
+  const columnStyles = {};
+  columns.forEach((col, idx) => {
+    if (col.align === 'right') {
+      columnStyles[idx] = { halign: 'right' };
+    } else if (col.align === 'center') {
+      columnStyles[idx] = { halign: 'center' };
+    }
+  });
+
+  const pageSums = {};
+  let isLastRowDrawn = rows.length === 0;
+
+  // 7. AutoTable call
+  doc.autoTable({
+    head: [headers],
+    body: bodyRows,
+    foot: footRows.length ? footRows : undefined,
+    startY: filterSummary ? 46 : 40,
+    margin: { left: margin, right: margin },
+    theme: 'grid',
+    styles: {
+      font: 'helvetica',
+      fontSize: 9,
+      cellPadding: 2.5,
+      lineColor: [237, 239, 244], // #EDEFF4 hairline
+      lineWidth: 0.1,
+    },
+    headStyles: {
+      fillColor: [30, 43, 107], // Navy #1E2B6B
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+    },
+    footStyles: {
+      fillColor: [245, 243, 255], // Light Violet #F5F3FF
+      textColor: [30, 43, 107],
+      fontStyle: 'bold',
+      lineColor: [30, 43, 107],
+    },
+    columnStyles,
+    willDrawCell: function (data) {
+      if (data.row.section === 'body') {
+        const colKey = columns[data.column.index].key;
+        const val = rows[data.row.index][colKey];
+        if (typeof val === 'number') {
+          if (!pageSums[data.pageNumber]) pageSums[data.pageNumber] = {};
+          pageSums[data.pageNumber][colKey] = (pageSums[data.pageNumber][colKey] || 0) + val;
+        }
+        if (data.column.index === 0) {
+          if (!pageSums[data.pageNumber]) pageSums[data.pageNumber] = {};
+          pageSums[data.pageNumber]._count = (pageSums[data.pageNumber]._count || 0) + 1;
+        }
+        if (data.row.index === rows.length - 1) {
+          isLastRowDrawn = true;
+        }
+      }
+
+      if (data.row.section === 'foot') {
+        const colKey = columns[data.column.index].key;
+        if (isLastRowDrawn) {
+          // Last page: Render grand totals
+          const val = totals ? totals[colKey] : null;
+          if (val !== null && val !== undefined) {
+            data.cell.text = [typeof val === 'number' ? val.toLocaleString('en-IN') : String(val)];
+          } else if (data.column.index === 0) {
+            data.cell.text = ['Grand Total'];
+          } else {
+            data.cell.text = [''];
+          }
+        } else {
+          // Earlier pages: Render page-wise totals
+          const pageRowsCount = pageSums[data.pageNumber] ? pageSums[data.pageNumber]._count : 0;
+          const pageVal = pageSums[data.pageNumber] ? pageSums[data.pageNumber][colKey] : null;
+          
+          if (pageVal !== null && pageVal !== undefined) {
+            data.cell.text = [pageVal.toLocaleString('en-IN')];
+          } else if (colKey === 'shift') {
+            data.cell.text = [`${pageRowsCount} shift${pageRowsCount !== 1 ? 's' : ''}`];
+          } else if (colKey === 'name') {
+            data.cell.text = [`${pageRowsCount} Part${pageRowsCount !== 1 ? 's' : ''}`];
+          } else if (data.column.index === 0) {
+            data.cell.text = ['Page Total'];
+          } else {
+            data.cell.text = [''];
+          }
+        }
+      }
+    },
+    didDrawPage: function (data) {
+      const pageNumStr = `Page ${doc.internal.getNumberOfPages()}`;
+      const footerNote = `Generated by IMF ProTrack · Confidential — for internal & authorised supplier/customer use only`;
+      doc.setFont('helvetica', 'italic');
+      doc.setFontSize(7.5);
+      doc.setTextColor(148, 163, 184); // slate-400
+      
+      // Draw confidentiality footnote on the left
+      doc.text(footerNote, margin, pageHeight - 10);
+      
+      // Draw page number on the right
+      doc.text(pageNumStr, rightMargin, pageHeight - 10, { align: 'right' });
+    }
+  });
+
+  doc.save(filename);
+}
+
 /* ══════════════════════════════════════════════════════════════════════
    GLOBAL EVENT DELEGATION (close dropdowns on outside click)
    ══════════════════════════════════════════════════════════════════════ */

@@ -15,6 +15,7 @@ let activeTab = null;
 let searchQ   = '';
 let _dispExpanded = {};   /* dispatchId -> bool, lot-allocation breakdown toggle */
 let _bnExpanded    = {};   /* fpn -> bool, internal-bottleneck lot breakdown toggle */
+let _planFilter = 'active'; /* 'active', 'today_plus', 'all' */
 
 /* Edit/Delete on every SCM entry: edit is admin-only, delete is restricted
    to one named person by explicit request — mirrors the existing
@@ -90,18 +91,20 @@ async function init() {
 }
 
 async function loadScmData() {
-  const [prodSnap, dispSnap, scrapSnap, inwSnap, planSnap] = await Promise.all([
+  const [prodSnap, dispSnap, scrapSnap, inwSnap, planSnap, configDoc] = await Promise.all([
     db.collection('forgingProduction').get(),
     db.collection('supplierDispatches').get(),
     db.collection('scmScrapLedger').get(),
     db.collection('inward').get(),
     db.collection('forgingPlans').get(),
+    db.collection('config').doc('scm').get(),
   ]);
   S.forgingProduction  = prodSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   S.supplierDispatches = dispSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   S.scmScrapLedger     = scrapSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   S.inward             = inwSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   S.forgingPlans       = planSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+  S.scmConfig          = configDoc.exists ? configDoc.data() : null;
 }
 
 async function refreshScm(collection) {
@@ -130,6 +133,21 @@ function render() {
     </div>
     <div id="section-content"></div>
   `;
+
+  // Inject/manage Working Month toggle in topbar actions
+  const actionsEl = document.querySelector('.topbar-actions');
+  if (actionsEl && !document.getElementById('topbar-wm-toggle')) {
+    actionsEl.insertAdjacentHTML('afterbegin', `
+      <button id="topbar-wm-toggle" class="btn btn-ghost btn-sm" onclick="openWorkingMonthModal()" style="display:none;align-items:center;gap:6px;font-weight:600">
+        <i class="ti ti-calendar-event" aria-hidden="true"></i> Working Month
+      </button>
+    `);
+  }
+  const wmToggle = document.getElementById('topbar-wm-toggle');
+  if (wmToggle) {
+    wmToggle.style.display = (activeTab === 'tower') ? 'inline-flex' : 'none';
+  }
+
   renderSection();
 }
 
@@ -444,23 +462,70 @@ function planLotProgress(p) {
   return { totalPlanned, totalActual, status, lastShiftDate };
 }
 
-function renderPlan() {
+function getFilteredPlans() {
   const q = searchQ.trim().toLowerCase();
-  let list = S.forgingPlans.filter(p =>
-    !q || (p.fpn || '').toLowerCase().includes(q) || (p.hammerName || '').toLowerCase().includes(q) || fpnName(p.fpn).toLowerCase().includes(q));
-  // Earliest shift date first (today at the top, future dates below) —
-  // shiftPlan[0] isn't reliable as a sort key since rows aren't entered
-  // in date order, so find each lot's actual earliest date instead.
-  const earliestDate = (p) => (p.shiftPlan || []).reduce((min, r) => (!min || r.date < min) ? r.date : min, '');
-  list = list.slice().sort((a, b) => earliestDate(a).localeCompare(earliestDate(b)));
+  const wm = getActiveWorkingMonth();
+  const today = dateStr();
+  
+  return S.forgingPlans.filter(p => {
+    if (q && !(p.fpn || '').toLowerCase().includes(q) && !(p.hammerName || '').toLowerCase().includes(q) && !fpnName(p.fpn).toLowerCase().includes(q)) {
+      return false;
+    }
+    
+    const rows = p.shiftPlan || [];
+    if (_planFilter === 'active') {
+      return rows.some(r => r.date >= wm.start && r.date <= wm.end);
+    } else if (_planFilter === 'today_plus') {
+      return rows.some(r => r.date >= today);
+    }
+    return true; // 'all'
+  });
+}
+
+function renderPlan() {
+  const wm = getActiveWorkingMonth();
+  const today = dateStr();
+  const isTanmay = isScmTanmay();
+  const plans = getFilteredPlans();
+
+  // 1. Flatten into shift plan rows
+  const rows = [];
+  plans.forEach(p => {
+    let shifts = (p.shiftPlan || []).slice();
+    if (_planFilter === 'active') {
+      shifts = shifts.filter(r => r.date >= wm.start && r.date <= wm.end);
+    } else if (_planFilter === 'today_plus') {
+      shifts = shifts.filter(r => r.date >= today);
+    }
+
+    shifts.forEach(r => {
+      const actual = S.forgingProduction
+        .filter(prod => prod.planId === p.id && prod.date === r.date && prod.shift === r.shift)
+        .reduce((s, prod) => s + (+prod.qtyForged || 0), 0);
+      const status = planShiftRowStatus(r.date, actual, +r.qtyPlanned || 0);
+
+      rows.push({
+        planId: p.id,
+        fpn: p.fpn,
+        hammerName: p.hammerName || '—',
+        date: r.date,
+        shift: r.shift,
+        qtyPlanned: +r.qtyPlanned || 0,
+        qtyActual: actual,
+        status: status
+      });
+    });
+  });
+
+  // 2. Sort chronologically: Date earliest first, then Shift A, B, C
+  rows.sort((a, b) => a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift));
 
   const styleTag = `
     <style>
-      .btn-delete-plan { opacity: 0; transition: opacity 0.2s; color: var(--err) !important; background: none; border: none; cursor: pointer; padding: 4px; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; }
-      .imf-table tr:hover .btn-delete-plan { opacity: 0.3; }
-      .imf-table tr:hover .btn-delete-plan:hover { opacity: 1; }
-      .imf-card:hover .btn-delete-plan { opacity: 0.3; }
-      .imf-card:hover .btn-delete-plan:hover { opacity: 1; }
+      .btn-delete-plan { opacity: 0.6; transition: opacity 0.2s; color: var(--err) !important; background: none; border: none; cursor: pointer; padding: 4px; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; }
+      .btn-delete-plan:hover { opacity: 1; }
+      .today-highlight { background-color: rgba(30, 43, 107, 0.05) !important; border-left: 3px solid var(--p) !important; }
+      .today-badge { background: var(--p); color: #fff; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; margin-left: 6px; text-transform: uppercase; display: inline-block; vertical-align: middle; }
     </style>
   `;
 
@@ -470,24 +535,56 @@ function renderPlan() {
       <div class="imf-table-toolbar">
         <div class="grow">
           <div style="font-size:16px;font-weight:700">Forging Plan</div>
-          <div class="text-sm text-muted">${list.length} lot${list.length !== 1 ? 's' : ''} planned</div>
+          <div class="text-sm text-muted">${rows.length} shift plan${rows.length !== 1 ? 's' : ''} visible</div>
         </div>
         <div class="imf-search">
           <i class="ti ti-search" aria-hidden="true"></i>
           <input type="search" id="scm-search" placeholder="Search FPN or hammer..." value="${(searchQ || '').replace(/"/g, '&quot;')}" oninput="onSearchInput(this.value)">
         </div>
-        <button class="btn btn-ghost btn-sm" onclick="exportPlanExcel()"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Export</button>
+        <select class="imf-ghost-select" onchange="_planFilter=this.value;renderSection()">
+          <option value="active" ${_planFilter === 'active' ? 'selected' : ''}>Active Cycle (${fmtDate(wm.start)} – ${fmtDate(wm.end)})</option>
+          <option value="today_plus" ${_planFilter === 'today_plus' ? 'selected' : ''}>Today Onwards</option>
+          <option value="all" ${_planFilter === 'all' ? 'selected' : ''}>All Plans</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" onclick="exportPlan('excel')"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Excel</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportPlan('pdf')"><i class="ti ti-file-text" aria-hidden="true"></i> PDF</button>
         ${canDo('scm_production') ? `<button class="btn btn-p btn-sm" onclick="openPlanModal()"><i class="ti ti-plus" aria-hidden="true"></i> Add Plan</button>` : ''}
       </div>
-      ${list.length === 0 ? emptyState('ti-calendar-event', 'No forging plans yet', 'Add a plan to schedule a forging lot across one or more shifts.') : `
+      ${rows.length === 0 ? emptyState('ti-calendar-event', 'No forging plans found', 'No active plans match the current cycle or search filters.') : `
       <div class="imf-table-scroll">
         <table class="imf-table">
-          <thead><tr><th class="pin">FPN</th><th>Hammer</th><th class="num">Date</th><th>Shift</th><th class="num">Planned</th><th class="num">Actual</th><th>Status</th><th></th></tr></thead>
-          <tbody>${list.map(planLotTableRows).join('')}</tbody>
+          <thead><tr>
+            <th class="pin">Date</th>
+            <th>Shift</th>
+            <th>FPN</th>
+            <th>Hammer</th>
+            <th class="num">Planned</th>
+            <th class="num">Actual</th>
+            <th>Status</th>
+            <th></th>
+          </tr></thead>
+          <tbody>${rows.map(r => {
+            const isToday = r.date === today;
+            return `
+              <tr class="${isToday ? 'today-highlight' : ''}">
+                <td class="pin num mono">${fmtDate(r.date)}${isToday ? '<span class="today-badge">Today</span>' : ''}</td>
+                <td>${FORGING_SHIFTS[r.shift]?.label || r.shift}</td>
+                <td><span class="mono" style="font-weight:600">${r.fpn}</span>${fpnName(r.fpn) ? `<div class="text-xs text-muted">${fpnName(r.fpn)}</div>` : ''}</td>
+                <td>${r.hammerName}</td>
+                <td class="num mono">${r.qtyPlanned.toLocaleString('en-IN')}</td>
+                <td class="num mono">${r.qtyActual.toLocaleString('en-IN')}</td>
+                <td>${imfBadge(r.status, PLAN_STATUS_META)}</td>
+                <td style="white-space:nowrap">
+                  ${isScmAdmin() ? `<button class="imf-rowact" onclick="openPlanModal('${r.planId}')" title="Edit forging plan" aria-label="Edit"><i class="ti ti-edit" aria-hidden="true"></i></button>` : ''}
+                  ${isTanmay ? `<button class="btn-delete-plan" onclick="deleteForgingPlan('${r.planId}')" title="Delete forging plan"><i class="ti ti-trash" aria-hidden="true"></i></button>` : ''}
+                </td>
+              </tr>
+            `;
+          }).join('')}</tbody>
         </table>
       </div>`}
     </div>
-    ${list.length > 0 ? `<div class="imf-cards">${list.map(planLotCard).join('')}</div>` : ''}
+    ${rows.length > 0 ? `<div class="imf-cards">${rows.map(planShiftCard).join('')}</div>` : ''}
   `;
 }
 
@@ -498,90 +595,38 @@ function planShiftRowStatus(date, qtyActual, qtyPlanned) {
   return qtyActual > 0 ? 'in_progress' : 'not_started';
 }
 
-/** Each shift row of a lot, with FPN/Hammer/delete rowspan-merged across them — date and shift are always visible, never hidden behind an expand toggle. */
-function planLotTableRows(p) {
-  const rows = (p.shiftPlan || []).slice().sort((a, b) => a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift));
-  const isTanmay = isScmTanmay();
-  const n = rows.length || 1;
-
-  if (!rows.length) {
-    return `
-      <tr>
-        <td class="pin"><span class="mono">${p.fpn}</span>${fpnName(p.fpn) ? `<div class="text-xs text-muted">${fpnName(p.fpn)}</div>` : ''}</td>
-        <td>${p.hammerName || '—'}</td>
-        <td class="num" colspan="5" style="color:var(--txt-muted)">No shift rows</td>
-        <td></td>
-      </tr>`;
-  }
-
-  return rows.map((r, i) => {
-    const actual = S.forgingProduction
-      .filter(prod => prod.planId === p.id && prod.date === r.date && prod.shift === r.shift)
-      .reduce((s, prod) => s + (+prod.qtyForged || 0), 0);
-    const status = planShiftRowStatus(r.date, actual, +r.qtyPlanned || 0);
-    const firstCells = i === 0 ? `
-        <td class="pin" rowspan="${n}"><span class="mono">${p.fpn}</span>${fpnName(p.fpn) ? `<div class="text-xs text-muted">${fpnName(p.fpn)}</div>` : ''}</td>
-        <td rowspan="${n}">${p.hammerName || '—'}</td>` : '';
-    const actionCell = i === 0 ? `
-        <td rowspan="${n}">
-          ${isScmAdmin() ? `<button class="imf-rowact" onclick="openPlanModal('${p.id}')" title="Edit forging plan" aria-label="Edit"><i class="ti ti-edit" aria-hidden="true"></i></button>` : ''}
-          ${isTanmay ? `<button class="btn-delete-plan" onclick="deleteForgingPlan('${p.id}')" title="Delete forging plan"><i class="ti ti-trash" aria-hidden="true"></i></button>` : ''}
-        </td>` : '';
-    return `
-      <tr>
-        ${firstCells}
-        <td class="num">${fmtDate(r.date)}</td>
-        <td>${FORGING_SHIFTS[r.shift]?.label || r.shift}</td>
-        <td class="num mono">${(+r.qtyPlanned || 0).toLocaleString('en-IN')}</td>
-        <td class="num mono">${actual.toLocaleString('en-IN')}</td>
-        <td>${imfBadge(status, PLAN_STATUS_META)}</td>
-        ${actionCell}
-      </tr>`;
-  }).join('');
-}
-
-function planShiftBreakdown(p) {
-  const rows = (p.shiftPlan || []).slice().sort((a, b) => a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift));
+function planShiftCard(r) {
+  const today = dateStr();
+  const isToday = r.date === today;
   return `
-    <div style="display:flex;flex-direction:column;gap:4px">
-      ${rows.map(r => {
-        const actual = S.forgingProduction
-          .filter(prod => prod.planId === p.id && prod.date === r.date && prod.shift === r.shift)
-          .reduce((s, prod) => s + (+prod.qtyForged || 0), 0);
-        const status = planShiftRowStatus(r.date, actual, +r.qtyPlanned || 0);
-        return `
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:12px">
-            <span class="mono">${fmtDate(r.date)} · ${FORGING_SHIFTS[r.shift]?.label || r.shift}</span>
-            <span class="mono">${actual.toLocaleString('en-IN')} / ${(+r.qtyPlanned || 0).toLocaleString('en-IN')} pcs</span>
-            ${imfBadge(status, PLAN_STATUS_META)}
-          </div>`;
-      }).join('')}
-    </div>`;
-}
-
-function planLotCard(p) {
-  const { totalPlanned, totalActual, status } = planLotProgress(p);
-  const isTanmay = isScmTanmay();
-  return `
-    <div class="imf-card">
+    <div class="imf-card ${isToday ? 'today-highlight' : ''}">
       <div class="imf-card-top">
-        <span class="imf-mono">${p.fpn}${fpnName(p.fpn) ? ` <small class="text-muted">${fpnName(p.fpn)}</small>` : ''}</span>
+        <div>
+          <span style="font-weight:700">${fmtDate(r.date)}</span>
+          ${isToday ? '<span class="today-badge">Today</span>' : ''}
+          <div class="text-xs text-muted">${FORGING_SHIFTS[r.shift]?.label || r.shift}</div>
+        </div>
         <div class="grow"></div>
-        ${isScmAdmin() ? `
-          <button class="imf-rowact" onclick="openPlanModal('${p.id}')" title="Edit forging plan" aria-label="Edit" style="margin-right:4px">
-            <i class="ti ti-edit" aria-hidden="true"></i>
-          </button>` : ''}
-        ${isTanmay ? `
-          <button class="btn-delete-plan" onclick="deleteForgingPlan('${p.id}')" title="Delete forging plan" style="margin-right:8px">
-            <i class="ti ti-trash" aria-hidden="true"></i>
-          </button>` : ''}
-        ${imfBadge(status, PLAN_STATUS_META)}
+        ${imfBadge(r.status, PLAN_STATUS_META)}
       </div>
       <div class="imf-card-lead">
-        <span class="nm">${p.hammerName || '—'}</span>
-        <span class="qty">${totalActual.toLocaleString('en-IN')}<small> / ${totalPlanned.toLocaleString('en-IN')} pcs</small></span>
+        <span class="nm" style="font-weight:600">${r.fpn}</span>
+        <span class="qty">${r.qtyActual.toLocaleString('en-IN')}<small> / ${r.qtyPlanned.toLocaleString('en-IN')} pcs</small></span>
       </div>
-      <div class="mt-8">${planShiftBreakdown(p)}</div>
+      <div style="font-size:12px;color:var(--txt-mut);margin:4px 0 8px">
+        ${fpnName(r.fpn) ? `<div>Name: ${fpnName(r.fpn)}</div>` : ''}
+        <div>Hammer: ${r.hammerName}</div>
+      </div>
+      <div class="imf-card-actions" style="display:flex;gap:8px;border-top:1px solid var(--bdr-mid);padding-top:8px">
+        ${isScmAdmin() ? `
+          <button class="btn btn-ghost btn-xs" onclick="openPlanModal('${r.planId}')" title="Edit forging plan" aria-label="Edit">
+            <i class="ti ti-edit" aria-hidden="true"></i> Edit
+          </button>` : ''}
+        ${isScmTanmay() ? `
+          <button class="btn-delete-plan" onclick="deleteForgingPlan('${r.planId}')" title="Delete forging plan" style="margin-left:auto">
+            <i class="ti ti-trash" aria-hidden="true"></i> Delete
+          </button>` : ''}
+      </div>
     </div>`;
 }
 
@@ -774,7 +819,8 @@ function renderProduction() {
           <i class="ti ti-search" aria-hidden="true"></i>
           <input type="search" id="scm-search" placeholder="Search FPN..." value="${(searchQ || '').replace(/"/g, '&quot;')}" oninput="onSearchInput(this.value)">
         </div>
-        <button class="btn btn-ghost btn-sm" onclick="exportProductionExcel()"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Export</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportProduction('excel')"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Excel</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportProduction('pdf')"><i class="ti ti-file-text" aria-hidden="true"></i> PDF</button>
         ${canDo('scm_production') ? `<button class="btn btn-p btn-sm" onclick="openProductionModal()"><i class="ti ti-plus" aria-hidden="true"></i> Log Production</button>` : ''}
       </div>
       ${list.length === 0 ? emptyState('ti-stack-2', 'No production logged yet', 'Log daily forged quantity to start tracking Internal WIP.') : `
@@ -791,9 +837,32 @@ function renderProduction() {
   `;
 }
 
+function productionRemainingCellHtml(remaining, forged) {
+  const dispatched = forged - remaining;
+  if (remaining === 0) {
+    return `
+      <td class="num mono">
+        <span style="color:var(--txt-muted)">0</span>
+        <div class="text-xs text-success" style="font-weight:600;font-size:10px">Fully Dispatched</div>
+      </td>`;
+  }
+  if (dispatched === 0) {
+    return `
+      <td class="num mono">
+        <span>${remaining.toLocaleString('en-IN')}</span>
+        <div class="text-xs text-muted" style="font-size:10px">0% dispatched (Untouched)</div>
+      </td>`;
+  }
+  const pct = Math.round((dispatched / forged) * 100);
+  return `
+    <td class="num mono">
+      <span style="font-weight:600">${remaining.toLocaleString('en-IN')}</span>
+      <div class="text-xs text-muted" style="font-size:10px">${pct}% dispatched (${dispatched.toLocaleString('en-IN')} pcs)</div>
+    </td>`;
+}
+
 function productionTableRow(p) {
   const remaining = p.qtyRemaining ?? p.qtyForged ?? 0;
-  const consumed = remaining < (+p.qtyForged || 0);
   return `
     <tr>
       <td class="pin mono">${p.lotNo || p.id}</td>
@@ -801,7 +870,7 @@ function productionTableRow(p) {
       <td>${p.hammerName || '—'}</td>
       <td class="num">${fmtDate(p.date)}</td>
       <td class="num mono">${(+p.qtyForged || 0).toLocaleString('en-IN')}</td>
-      <td class="num mono"${consumed ? ' style="color:var(--txt-muted)"' : ''}>${remaining.toLocaleString('en-IN')}</td>
+      ${productionRemainingCellHtml(remaining, +p.qtyForged || 0)}
       <td>${p.shift || '—'}</td>
       <td>${p.planId ? '<span class="imf-badge rag-g"><i class="ti ti-link" aria-hidden="true"></i>Planned</span>' : '<span class="imf-badge rag-b">Unplanned</span>'}</td>
       <td>${p.loggedByName || '—'}</td>
@@ -814,6 +883,19 @@ function productionTableRow(p) {
 
 function productionCard(p) {
   const remaining = p.qtyRemaining ?? p.qtyForged ?? 0;
+  const forged = +p.qtyForged || 0;
+  const dispatched = forged - remaining;
+  
+  let dispatchSubtextHtml = '';
+  if (remaining === 0) {
+    dispatchSubtextHtml = `<div class="text-xs text-success" style="font-weight:600;margin-top:2px">Fully Dispatched</div>`;
+  } else if (dispatched === 0) {
+    dispatchSubtextHtml = `<div class="text-xs text-muted" style="margin-top:2px">0% dispatched (Untouched)</div>`;
+  } else {
+    const pct = Math.round((dispatched / forged) * 100);
+    dispatchSubtextHtml = `<div class="text-xs text-muted" style="margin-top:2px">${pct}% dispatched (${dispatched.toLocaleString('en-IN')} pcs)</div>`;
+  }
+
   return `
     <div class="imf-card">
       <div class="imf-card-top">
@@ -821,9 +903,12 @@ function productionCard(p) {
         <div class="grow"></div>
         ${p.planId ? '<span class="imf-badge rag-g"><i class="ti ti-link" aria-hidden="true"></i>Planned</span>' : '<span class="imf-badge rag-b">Unplanned</span>'}
       </div>
-      <div class="imf-card-lead">
-        <span class="nm imf-mono">${p.fpn || '—'}${fpnName(p.fpn) ? ` <small class="text-muted">${fpnName(p.fpn)}</small>` : ''}</span>
-        <span class="qty">${remaining.toLocaleString('en-IN')}<small> / ${(+p.qtyForged || 0).toLocaleString('en-IN')} pcs</small></span>
+      <div class="imf-card-lead" style="align-items: flex-start; flex-direction: column;">
+        <div style="display:flex;justify-content:space-between;width:100%">
+          <span class="nm imf-mono">${p.fpn || '—'}${fpnName(p.fpn) ? ` <small class="text-muted">${fpnName(p.fpn)}</small>` : ''}</span>
+          <span class="qty">${remaining.toLocaleString('en-IN')}<small> / ${forged.toLocaleString('en-IN')} pcs</small></span>
+        </div>
+        ${dispatchSubtextHtml}
       </div>
       <div class="imf-card-meta"><span class="mono">${fmtDate(p.date)}</span><span>·</span><span>${p.shift || '—'}</span><span>·</span><span>${p.hammerName || '—'}</span></div>
       ${(isScmAdmin() || isScmTanmay()) ? `
@@ -993,7 +1078,8 @@ function renderDispatch() {
           <i class="ti ti-search" aria-hidden="true"></i>
           <input type="search" id="scm-search" placeholder="Search supplier, FPN, CPN..." value="${(searchQ || '').replace(/"/g, '&quot;')}" oninput="onSearchInput(this.value)">
         </div>
-        <button class="btn btn-ghost btn-sm" onclick="exportDispatchExcel()"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Export</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportDispatch('excel')"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Excel</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportDispatch('pdf')"><i class="ti ti-file-text" aria-hidden="true"></i> PDF</button>
         ${canDo('scm_dispatch') ? `
           <button class="btn btn-ghost btn-sm" onclick="openScrapModal()"><i class="ti ti-trash-x" aria-hidden="true"></i> Log Scrap</button>
           <button class="btn btn-p btn-sm" onclick="openDispatchModal()"><i class="ti ti-plus" aria-hidden="true"></i> Log Dispatch</button>` : ''}
@@ -1438,119 +1524,258 @@ async function deleteScrapRequest(id) {
    Internal Bottleneck (aged inventory) + live Supplier WIP across all
    CNC suppliers + 5-day forecast — read-only, no writes here.
    ══════════════════════════════════════════════════════════════════════ */
+/* ── Working Month Helper functions ── */
+function getForgingMonthDefaultRange(dateStrRef) {
+  const ref = dateStrRef ? new Date(dateStrRef + 'T00:00:00') : new Date();
+  const y = ref.getFullYear();
+  const m = ref.getMonth(); // 0-indexed
+  const d = ref.getDate();
+  
+  let start, end;
+  if (d >= 20) {
+    start = new Date(y, m, 20);
+    end = new Date(y, m + 1, 20);
+  } else {
+    start = new Date(y, m - 1, 20);
+    end = new Date(y, m, 20);
+  }
+  
+  const pad = (n) => String(n).padStart(2, '0');
+  const fmt = (dt) => `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+  return { start: fmt(start), end: fmt(end) };
+}
+
+function getActiveWorkingMonth() {
+  if (S.scmConfig && S.scmConfig.workingMonthStart && S.scmConfig.workingMonthEnd) {
+    return { start: S.scmConfig.workingMonthStart, end: S.scmConfig.workingMonthEnd };
+  }
+  return getForgingMonthDefaultRange();
+}
+
+async function saveWorkingMonth() {
+  const start = document.getElementById('admin-wm-start').value;
+  const end = document.getElementById('admin-wm-end').value;
+  if (!start || !end) { toast('Please select both start and end dates.'); return; }
+  try {
+    await db.collection('config').doc('scm').set({ workingMonthStart: start, workingMonthEnd: end }, { merge: true });
+    toast('Working month configuration saved.');
+    closeModal();
+    await loadScmData();
+    renderSection();
+  } catch (e) {
+    toast('Error saving configuration: ' + e.message);
+  }
+}
+
+async function resetWorkingMonthToDefault() {
+  const def = getForgingMonthDefaultRange();
+  try {
+    await db.collection('config').doc('scm').set({ workingMonthStart: def.start, workingMonthEnd: def.end }, { merge: true });
+    toast('Working month reset to default (20th to 20th).');
+    closeModal();
+    await loadScmData();
+    renderSection();
+  } catch (e) {
+    toast('Error resetting configuration: ' + e.message);
+  }
+}
+
+function openWorkingMonthModal() {
+  const wm = getActiveWorkingMonth();
+  const isAdmin = isScmAdmin();
+  const dateRangeLabel = `${fmtDate(wm.start)} to ${fmtDate(wm.end)}`;
+
+  let content = `
+    <div class="modal-title">Configure Working Month</div>
+    <div id="modal-err"></div>
+    <div class="ibox" style="margin-bottom:16px">
+      <i class="ti ti-calendar-event" aria-hidden="true"></i>
+      <span>Current active forging month cycle is <strong>${dateRangeLabel}</strong>. This date range scopes the plan summary and planned stats in the Control Tower.</span>
+    </div>
+  `;
+
+  if (isAdmin) {
+    content += `
+      <div class="f">
+        <label for="admin-wm-start" class="f-req">Start Date</label>
+        <input type="date" id="admin-wm-start" value="${wm.start}">
+      </div>
+      <div class="f">
+        <label for="admin-wm-end" class="f-req">End Date</label>
+        <input type="date" id="admin-wm-end" value="${wm.end}">
+      </div>
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button class="btn btn-p flex-1" onclick="saveWorkingMonth()">Save Range</button>
+        <button class="btn btn-s" onclick="resetWorkingMonthToDefault()">Reset (20th-20th)</button>
+      </div>
+      <button class="btn btn-ghost w-full mt-8" onclick="closeModal()">Cancel</button>
+    `;
+  } else {
+    content += `
+      <button class="btn btn-p w-full mt-16" onclick="closeModal()">Close</button>
+    `;
+  }
+
+  openModal(content);
+}
+
+function workingMonthConfigSection(wm) {
+  const dateRangeLabel = `${fmtDate(wm.start)} to ${fmtDate(wm.end)}`;
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;background:var(--sur);padding:12px 16px;border-radius:var(--rs);border:1px solid var(--bdr-mid);margin-bottom:16px;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="imf-badge rag-g" style="padding: 4px 8px; font-weight: 700"><i class="ti ti-calendar-event" aria-hidden="true"></i>Active Cycle</span>
+        <span style="font-weight:700;font-size:14px;color:var(--txt)">${dateRangeLabel}</span>
+      </div>
+      <div style="font-size:12px;color:var(--txt-muted)">
+        Monthly stats are filtered to this cycle. Click "Working Month" in topbar to edit.
+      </div>
+    </div>
+  `;
+}
+
+function progressRingHtml(pct, isUnplanned) {
+  if (isUnplanned) {
+    return `
+      <div style="position:relative;display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px" title="Unplanned production: ${pct} pcs">
+        <svg width="40" height="40" style="transform:rotate(-90deg)">
+          <circle cx="20" cy="20" r="16" stroke="var(--ok)" stroke-width="3" fill="transparent" />
+        </svg>
+        <div style="position:absolute;font-size:9px;font-weight:700;color:var(--ok)">Unpl.</div>
+      </div>
+    `;
+  }
+  
+  const clampedPct = Math.min(100, Math.max(0, pct));
+  const strokeColor = clampedPct >= 100 ? 'var(--ok)' : clampedPct > 0 ? 'var(--warn)' : 'var(--bdr-mid)';
+  const offset = 100.53 - (100.53 * clampedPct) / 100;
+  
+  return `
+    <div style="position:relative;display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px" title="Progress: ${clampedPct}%">
+      <svg width="40" height="40" style="transform:rotate(-90deg)">
+        <circle cx="20" cy="20" r="16" stroke="var(--sur2)" stroke-width="3" fill="transparent" />
+        <circle cx="20" cy="20" r="16" stroke="${strokeColor}" stroke-width="3" fill="transparent"
+                stroke-dasharray="100.53"
+                stroke-dashoffset="${offset}"
+                stroke-linecap="round" />
+      </svg>
+      <div style="position:absolute;font-size:10px;font-weight:700;color:var(--txt)">${clampedPct}%</div>
+    </div>
+  `;
+}
+
+function getMonthlyPlanRollup(wm) {
+  const rollup = {};
+
+  // 1. Process forging plans within date range
+  S.forgingPlans.forEach(p => {
+    (p.shiftPlan || []).forEach(sp => {
+      if (sp.date >= wm.start && sp.date <= wm.end) {
+        if (!rollup[p.fpn]) {
+          rollup[p.fpn] = {
+            fpn: p.fpn,
+            name: fpnName(p.fpn) || '—',
+            planned: 0,
+            actual: 0
+          };
+        }
+        rollup[p.fpn].planned += (+sp.qtyPlanned || 0);
+      }
+    });
+  });
+
+  // 2. Process forging production within date range
+  S.forgingProduction.forEach(prod => {
+    if (prod.date >= wm.start && prod.date <= wm.end) {
+      if (!rollup[prod.fpn]) {
+        rollup[prod.fpn] = {
+          fpn: prod.fpn,
+          name: fpnName(prod.fpn) || '—',
+          planned: 0,
+          actual: 0
+        };
+      }
+      rollup[prod.fpn].actual += (+prod.qtyForged || 0);
+    }
+  });
+
+  return Object.values(rollup).sort((a, b) => b.planned - a.planned || a.fpn.localeCompare(b.fpn));
+}
+
+function monthlyPlanRollupSection(rollup, wm) {
+  const periodLabel = `${fmtDate(wm.start)} – ${fmtDate(wm.end)}`;
+  return `
+    <div class="imf-tablewrap" style="margin-bottom:16px">
+      <div class="imf-table-toolbar">
+        <div class="grow">
+          <div style="font-size:16px;font-weight:700">Monthly Forging Plan Summary (Part-wise)</div>
+          <div class="text-sm text-muted">Rollup of all plans and production scoped to the active cycle (${periodLabel})</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="exportMonthlyPlanRollup('excel')"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Excel</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportMonthlyPlanRollup('pdf')"><i class="ti ti-file-text" aria-hidden="true"></i> PDF</button>
+      </div>
+      ${rollup.length === 0 ? emptyState('ti-calendar-event', 'No forging plans or production this month', 'There are no active planned shifts or logs within this working month date range.') : `
+      <div class="imf-table-scroll">
+        <table class="imf-table">
+          <thead><tr>
+            <th class="pin">FPN</th>
+            <th>Forging Name</th>
+            <th class="num">Planned (pcs)</th>
+            <th class="num">Actual (pcs)</th>
+            <th class="num" style="text-align: center; width: 80px">Progress</th>
+            <th>Status</th>
+          </tr></thead>
+          <tbody>${rollup.map(r => {
+            const pct = r.planned > 0 ? Math.round((r.actual / r.planned) * 100) : 0;
+            
+            let status = 'not_started';
+            if (r.planned > 0) {
+              if (r.actual >= r.planned) status = 'completed';
+              else if (r.actual > 0) status = 'in_progress';
+            } else {
+              status = 'completed';
+            }
+
+            return `
+              <tr>
+                <td class="pin mono">${r.fpn}</td>
+                <td>${r.name}</td>
+                <td class="num mono">${r.planned.toLocaleString('en-IN')}</td>
+                <td class="num mono">${r.actual.toLocaleString('en-IN')}</td>
+                <td style="text-align: center; padding: 6px 0; vertical-align: middle">
+                  ${progressRingHtml(pct, r.planned === 0)}
+                </td>
+                <td>${imfBadge(status, PLAN_STATUS_META)}</td>
+              </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>`}
+    </div>`;
+}
+
 function renderControlTower() {
   const bottleneck = getBottleneckData();
   const wipRows = getSupplierWipData();
   const forecast = getForecastData(wipRows);
+  const wm = getActiveWorkingMonth();
+  const rollup = getMonthlyPlanRollup(wm);
 
   document.getElementById('section-content').innerHTML = `
-    ${controlTowerStats(bottleneck, wipRows)}
-    ${forgingPlanTrackerSection()}
+    ${workingMonthConfigSection(wm)}
+    ${controlTowerStats(bottleneck, wipRows, rollup)}
+    ${monthlyPlanRollupSection(rollup, wm)}
     ${bottleneckSection(bottleneck)}
     ${supplierWipSection(wipRows)}
     ${forecastSection(forecast)}
   `;
 }
 
-/**
- * Every plan shift-row scheduled on `date`, joined against linked actuals.
- * `isPast` relabels an incomplete row as "behind" (its window has closed)
- * instead of "not started"/"in progress" (still actionable today).
- */
-function getForgingPlanShiftRollup(date, isPast) {
-  const rows = [];
-  S.forgingPlans.forEach(p => {
-    (p.shiftPlan || []).forEach(sp => {
-      if (sp.date !== date) return;
-      const qtyActual = S.forgingProduction
-        .filter(prod => prod.planId === p.id && prod.date === sp.date && prod.shift === sp.shift)
-        .reduce((s, prod) => s + (+prod.qtyForged || 0), 0);
-      const status = qtyActual >= sp.qtyPlanned ? 'completed'
-        : isPast ? 'behind'
-        : (qtyActual > 0 ? 'in_progress' : 'not_started');
-      rows.push({ fpn: p.fpn, hammerName: p.hammerName, shift: sp.shift, qtyPlanned: sp.qtyPlanned, qtyActual, status });
-    });
-  });
-  return rows.sort((a, b) => a.hammerName.localeCompare(b.hammerName) || a.shift.localeCompare(b.shift));
-}
-
-function forgingPlanTrackerSection() {
-  const today = dateStr();
-  const yesterday = addDaysStr(today, -1);
-  const todayRows = getForgingPlanShiftRollup(today, false);
-  const yestRows = getForgingPlanShiftRollup(yesterday, true);
-
-  const shiftRowsTable = (rows, emptyMsg) => rows.length === 0
-    ? `<div class="text-xs text-muted" style="padding:4px 0 12px">${emptyMsg}</div>`
-    : `
-      <div class="imf-table-scroll">
-        <table class="imf-table">
-          <thead><tr><th class="pin">FPN</th><th>Hammer</th><th>Shift</th><th class="num">Planned</th><th class="num">Actual</th><th>Status</th></tr></thead>
-          <tbody>${rows.map(r => `
-            <tr>
-              <td class="pin"><span class="mono">${r.fpn}</span>${fpnName(r.fpn) ? `<div class="text-xs text-muted">${fpnName(r.fpn)}</div>` : ''}</td>
-              <td>${r.hammerName}</td>
-              <td>${FORGING_SHIFTS[r.shift]?.label || r.shift}</td>
-              <td class="num mono">${r.qtyPlanned.toLocaleString('en-IN')}</td>
-              <td class="num mono">${r.qtyActual.toLocaleString('en-IN')}</td>
-              <td>${imfBadge(r.status, PLAN_STATUS_META)}</td>
-            </tr>`).join('')}</tbody>
-        </table>
-      </div>`;
-
-  const rank = { behind: 0, in_progress: 1, not_started: 2, completed: 3 };
-  const lots = S.forgingPlans
-    .map(p => ({ p, ...planLotProgress(p) }))
-    .sort((a, b) => (rank[a.status] - rank[b.status]) || (b.lastShiftDate || '').localeCompare(a.lastShiftDate || ''));
-
-  return `
-    <div class="imf-tablewrap" style="margin-bottom:16px">
-      <div class="imf-table-toolbar">
-        <div class="grow">
-          <div style="font-size:16px;font-weight:700">Forging Plan Tracker</div>
-          <div class="text-sm text-muted">Today's &amp; yesterday's plan vs actual, by shift</div>
-        </div>
-        <button class="btn btn-ghost btn-sm" onclick="exportPlanTrackerExcel()"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Export</button>
-      </div>
-      <div style="padding:0 16px 16px">
-        <div style="font-size:11px;font-weight:800;color:var(--txt-muted);letter-spacing:.06em;margin:12px 0 6px">TODAY — ${fmtDate(today)}</div>
-        ${shiftRowsTable(todayRows, 'No forging shifts planned for today.')}
-        <div style="font-size:11px;font-weight:800;color:var(--txt-muted);letter-spacing:.06em;margin:16px 0 6px">YESTERDAY — ${fmtDate(yesterday)}</div>
-        ${shiftRowsTable(yestRows, 'No forging shifts were planned for yesterday.')}
-      </div>
-    </div>
-    <div class="imf-tablewrap" style="margin-bottom:16px">
-      <div class="imf-table-toolbar">
-        <div class="grow">
-          <div style="font-size:16px;font-weight:700">Forging Plan Lots — Overall Progress</div>
-          <div class="text-sm text-muted">Total planned vs total actual across all shift rows, any date</div>
-        </div>
-        <button class="btn btn-ghost btn-sm" onclick="exportOverallProgressExcel()"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Export</button>
-      </div>
-      ${lots.length === 0 ? emptyState('ti-calendar-event', 'No forging plans yet', 'Add a plan in the Forging Plan tab to see progress here.') : `
-      <div class="imf-table-scroll">
-        <table class="imf-table">
-          <thead><tr><th class="pin">FPN</th><th>Hammer</th><th class="num">Planned</th><th class="num">Actual</th><th class="num">Shifts</th><th>Status</th></tr></thead>
-          <tbody>${lots.map(({ p, totalPlanned, totalActual, status }) => `
-            <tr>
-              <td class="pin"><span class="mono">${p.fpn}</span>${fpnName(p.fpn) ? `<div class="text-xs text-muted">${fpnName(p.fpn)}</div>` : ''}</td>
-              <td>${p.hammerName || '—'}</td>
-              <td class="num mono">${totalPlanned.toLocaleString('en-IN')}</td>
-              <td class="num mono">${totalActual.toLocaleString('en-IN')}</td>
-              <td class="num">${(p.shiftPlan || []).length}</td>
-              <td>${imfBadge(status, PLAN_STATUS_META)}</td>
-            </tr>`).join('')}</tbody>
-        </table>
-      </div>`}
-    </div>`;
-}
-
-function controlTowerStats(bottleneck, wipRows) {
+function controlTowerStats(bottleneck, wipRows, rollup) {
   const agedCount = bottleneck.filter(b => b.ageLevel !== 'ok').length;
   const totalInternalWip = bottleneck.reduce((s, b) => s + b.internalWip, 0);
   const totalSupplierWip = wipRows.reduce((s, r) => s + r.wip, 0);
   const anomalyCount = wipRows.filter(r => r.anomaly).length;
-  const totalPlannedQty = S.forgingPlans.reduce((s, p) => s + planLotProgress(p).totalPlanned, 0);
+  const totalPlannedQty = rollup.reduce((s, r) => s + r.planned, 0);
 
   const stat = (icon, label, value, tone = '') => `
     <div class="card" style="padding:14px">
@@ -1578,7 +1803,8 @@ function bottleneckSection(rows) {
           <div style="font-size:16px;font-weight:700">Internal Bottleneck — Normalizing &amp; Shot Blast</div>
           <div class="text-sm text-muted">FIFO-aged undispatched forging stock, by FPN</div>
         </div>
-        <button class="btn btn-ghost btn-sm" onclick="exportBottleneckExcel()"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Export</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportBottleneck('excel')"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Excel</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportBottleneck('pdf')"><i class="ti ti-file-text" aria-hidden="true"></i> PDF</button>
       </div>
       ${rows.length === 0 ? emptyState('ti-circle-check', 'No internal WIP outstanding', 'All forged material has been dispatched to suppliers.') : `
       <div class="imf-table-scroll">
@@ -1626,7 +1852,8 @@ function supplierWipSection(rows) {
           <div style="font-size:16px;font-weight:700">Live Supplier WIP — All CNC Suppliers</div>
           <div class="text-sm text-muted">Opening + Dispatched − Received − Approved Scrap</div>
         </div>
-        <button class="btn btn-ghost btn-sm" onclick="exportSupplierWipExcel()"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Export</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportSupplierWip('excel')"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Excel</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportSupplierWip('pdf')"><i class="ti ti-file-text" aria-hidden="true"></i> PDF</button>
       </div>
       ${rows.length === 0 ? emptyState('ti-truck-delivery', 'No supplier WIP yet', 'Log dispatches and set opening balances to populate this view.') : `
       <div class="imf-table-scroll">
@@ -1657,7 +1884,8 @@ function forecastSection(forecast) {
           <div style="font-size:16px;font-weight:700">5-Day Arrival Forecast — Incoming Gear Blanks</div>
           <div class="text-sm text-muted">Projected per supplier+CPN from measured lead time × outstanding dispatch lots</div>
         </div>
-        <button class="btn btn-ghost btn-sm" onclick="exportArrivalForecastExcel()"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Export</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportArrivalForecast('excel')"><i class="ti ti-file-spreadsheet" aria-hidden="true"></i> Excel</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportArrivalForecast('pdf')"><i class="ti ti-file-text" aria-hidden="true"></i> PDF</button>
       </div>
       ${forecast.length === 0 ? emptyState('ti-calendar-stats', 'No forecast available', 'Forecasts appear once a supplier has at least one outstanding dispatch.') : `
       <div class="imf-table-scroll">
@@ -1679,20 +1907,24 @@ function forecastSection(forecast) {
     </div>`;
 }
 
-/* ── Excel Exports ───────────────────────────────────────────────────── */
-async function exportPlanExcel() {
+/* ── Unified SCM Exports (Excel / PDF) ────────────────────────────────── */
+async function exportPlan(format) {
   const q = searchQ.trim().toLowerCase();
-  const list = S.forgingPlans.filter(p =>
-    !q || (p.fpn || '').toLowerCase().includes(q) || (p.hammerName || '').toLowerCase().includes(q)
-  ).slice().sort((a, b) => (b.shiftPlan?.[0]?.date || '').localeCompare(a.shiftPlan?.[0]?.date || ''));
+  const wm = getActiveWorkingMonth();
+  const today = dateStr();
+  const list = getFilteredPlans();
 
   if (!list.length) { toast('Nothing to export — no forging plans match the current filters.'); return; }
 
-  // One row per shift entry — mirrors the flattened UI table exactly
-  // (planLotTableRows), instead of collapsing each lot into one row.
   const rows = [];
   list.forEach(p => {
-    const shiftRows = (p.shiftPlan || []).slice().sort((a, b) => a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift));
+    let shiftRows = (p.shiftPlan || []).slice().sort((a, b) => a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift));
+    if (_planFilter === 'active') {
+      shiftRows = shiftRows.filter(r => r.date >= wm.start && r.date <= wm.end);
+    } else if (_planFilter === 'today_plus') {
+      shiftRows = shiftRows.filter(r => r.date >= today);
+    }
+
     shiftRows.forEach(r => {
       const qtyActual = S.forgingProduction
         .filter(prod => prod.planId === p.id && prod.date === r.date && prod.shift === r.shift)
@@ -1700,11 +1932,10 @@ async function exportPlanExcel() {
       const qtyPlanned = +r.qtyPlanned || 0;
       const status = planShiftRowStatus(r.date, qtyActual, qtyPlanned);
       rows.push({
-        fpn: p.fpn,
-        fpnName: fpnName(p.fpn) || '—',
-        hammer: p.hammerName || '—',
         date: r.date,
         shift: FORGING_SHIFTS[r.shift]?.label || r.shift,
+        fpn: p.fpn,
+        hammer: p.hammerName || '—',
         qtyPlanned,
         qtyActual,
         status: PLAN_STATUS_META[status]?.label || status,
@@ -1712,32 +1943,43 @@ async function exportPlanExcel() {
     });
   });
 
+  // Sort chronologically: Date earliest first, then Shift
+  rows.sort((a, b) => a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift));
+
   const totals = {
     shift: `${rows.length} shift${rows.length !== 1 ? 's' : ''}`,
     qtyPlanned: rows.reduce((s, r) => s + r.qtyPlanned, 0),
     qtyActual: rows.reduce((s, r) => s + r.qtyActual, 0),
   };
 
-  await exportToExcel({
-    filename: `IMF_Forging_Plan_Report_${dateStr()}.xlsx`,
+  const cycleLabel = _planFilter === 'active' ? `Cycle: ${fmtDate(wm.start)} to ${fmtDate(wm.end)}`
+                   : _planFilter === 'today_plus' ? 'Today Onwards' : 'All History';
+
+  const opts = {
+    filename: `IMF_Forging_Plan_Report_${dateStr()}.${format === 'pdf' ? 'pdf' : 'xlsx'}`,
     reportTitle: 'Forging Plan Report',
-    filterSummary: q ? `Search: "${searchQ}"` : 'All Plans',
+    filterSummary: `${cycleLabel}${q ? ` · Search: "${searchQ}"` : ''}`,
     columns: [
-      { header: 'FPN', key: 'fpn', width: 15 },
-      { header: 'Forging Name', key: 'fpnName', width: 22 },
-      { header: 'Hammer', key: 'hammer', width: 22 },
       { header: 'Date', key: 'date', width: 12 },
       { header: 'Shift', key: 'shift', width: 12 },
+      { header: 'FPN', key: 'fpn', width: 15 },
+      { header: 'Hammer', key: 'hammer', width: 22 },
       { header: 'Planned', key: 'qtyPlanned', width: 14, align: 'right', numFmt: '#,##0' },
       { header: 'Actual', key: 'qtyActual', width: 14, align: 'right', numFmt: '#,##0' },
-      { header: 'Status', key: 'status', width: 15 },
+      { header: 'Status', key: 'status', width: 15 }
     ],
     rows,
     totals
-  });
+  };
+
+  if (format === 'pdf') {
+    await exportToPdf(opts);
+  } else {
+    await exportToExcel(opts);
+  }
 }
 
-async function exportProductionExcel() {
+async function exportProduction(format) {
   const q = searchQ.trim().toLowerCase();
   const list = S.forgingProduction.filter(p => !q || (p.fpn || '').toLowerCase().includes(q))
     .slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
@@ -1749,7 +1991,6 @@ async function exportProductionExcel() {
     return {
       lotNo: p.lotNo || p.id,
       fpn: p.fpn || '—',
-      fpnName: fpnName(p.fpn) || '—',
       hammer: p.hammerName || '—',
       date: p.date,
       qtyForged: +p.qtyForged || 0,
@@ -1765,28 +2006,33 @@ async function exportProductionExcel() {
     remaining: rows.reduce((s, r) => s + r.remaining, 0)
   };
 
-  await exportToExcel({
-    filename: `IMF_Forging_Production_Log_${dateStr()}.xlsx`,
+  const opts = {
+    filename: `IMF_Forging_Production_Log_${dateStr()}.${format === 'pdf' ? 'pdf' : 'xlsx'}`,
     reportTitle: 'Forging Production Log',
     filterSummary: q ? `Search: "${searchQ}"` : 'All Production Logs',
     columns: [
       { header: 'Lot No.', key: 'lotNo', width: 18 },
       { header: 'FPN', key: 'fpn', width: 15 },
-      { header: 'Forging Name', key: 'fpnName', width: 22 },
       { header: 'Hammer', key: 'hammer', width: 22 },
       { header: 'Date', key: 'date', width: 12 },
       { header: 'Qty Forged', key: 'qtyForged', width: 16, align: 'right', numFmt: '#,##0' },
       { header: 'Remaining', key: 'remaining', width: 16, align: 'right', numFmt: '#,##0' },
       { header: 'Shift', key: 'shift', width: 10 },
-      { header: 'Plan Link', key: 'plan', width: 12 },
+      { header: 'Plan', key: 'plan', width: 12 },
       { header: 'Logged By', key: 'loggedBy', width: 20 }
     ],
     rows,
     totals
-  });
+  };
+
+  if (format === 'pdf') {
+    await exportToPdf(opts);
+  } else {
+    await exportToExcel(opts);
+  }
 }
 
-async function exportDispatchExcel() {
+async function exportDispatch(format) {
   const q = searchQ.trim().toLowerCase();
   const list = S.supplierDispatches.filter(d =>
     !q || (d.fpn || '').toLowerCase().includes(q) || (d.cpn || '').toLowerCase().includes(q) || (d.supplierName || '').toLowerCase().includes(q)
@@ -1794,128 +2040,110 @@ async function exportDispatchExcel() {
 
   if (!list.length) { toast('Nothing to export — no dispatches match the current filters.'); return; }
 
-  const rows = list.map(d => ({
-    supplier: d.supplierName || '—',
-    fpn: d.fpn || '—',
-    fpnName: fpnName(d.fpn) || '—',
-    cpn: d.cpn || '—',
-    date: d.date,
-    qtyDispatched: +d.qtyDispatched || 0,
-    docNo: d.docNo || '—',
-    loggedBy: d.loggedByName || '—'
-  }));
+  const rows = list.map(d => {
+    const lotCount = (d.lotAllocations || []).length;
+    return {
+      supplier: d.supplierName || '—',
+      fpn: d.fpn || '—',
+      cpn: d.cpn || '—',
+      date: d.date,
+      qtyDispatched: +d.qtyDispatched || 0,
+      docNo: d.docNo || '—',
+      lots: `${lotCount} lot${lotCount !== 1 ? 's' : ''}`
+    };
+  });
 
   const totals = {
     qtyDispatched: rows.reduce((s, r) => s + r.qtyDispatched, 0)
   };
 
-  await exportToExcel({
-    filename: `IMF_Supplier_Dispatch_Log_${dateStr()}.xlsx`,
+  const opts = {
+    filename: `IMF_Supplier_Dispatch_Log_${dateStr()}.${format === 'pdf' ? 'pdf' : 'xlsx'}`,
     reportTitle: 'Supplier Dispatch Log',
     filterSummary: q ? `Search: "${searchQ}"` : 'All Supplier Dispatches',
     columns: [
       { header: 'Supplier', key: 'supplier', width: 25 },
       { header: 'FPN', key: 'fpn', width: 15 },
-      { header: 'Forging Name', key: 'fpnName', width: 22 },
       { header: 'CPN', key: 'cpn', width: 15 },
       { header: 'Date', key: 'date', width: 12 },
       { header: 'Qty Dispatched', key: 'qtyDispatched', width: 18, align: 'right', numFmt: '#,##0' },
       { header: 'Invoice/DC No.', key: 'docNo', width: 16 },
-      { header: 'Logged By', key: 'loggedBy', width: 20 }
+      { header: 'Lots', key: 'lots', width: 12 }
     ],
     rows,
     totals
-  });
-}
-
-async function exportPlanTrackerExcel() {
-  const today = dateStr();
-  const yesterday = addDaysStr(today, -1);
-  const todayRows = getForgingPlanShiftRollup(today, false).map(r => ({ date: today, ...r }));
-  const yestRows = getForgingPlanShiftRollup(yesterday, true).map(r => ({ date: yesterday, ...r }));
-  const combined = [...todayRows, ...yestRows];
-
-  if (!combined.length) { toast('Nothing to export — no active plans for today or yesterday.'); return; }
-
-  const rows = combined.map(r => ({
-    date: r.date,
-    fpn: r.fpn,
-    fpnName: fpnName(r.fpn) || '—',
-    hammer: r.hammerName,
-    shift: FORGING_SHIFTS[r.shift]?.label || r.shift,
-    qtyPlanned: r.qtyPlanned,
-    qtyActual: r.qtyActual,
-    status: PLAN_STATUS_META[r.status]?.label || r.status
-  }));
-
-  const totals = {
-    qtyPlanned: rows.reduce((s, r) => s + r.qtyPlanned, 0),
-    qtyActual: rows.reduce((s, r) => s + r.qtyActual, 0)
   };
 
-  await exportToExcel({
-    filename: `IMF_Forging_Plan_Tracker_${dateStr()}.xlsx`,
-    reportTitle: 'Forging Plan Tracker (Today & Yesterday)',
-    filterSummary: `Today: ${fmtDate(today)} · Yesterday: ${fmtDate(yesterday)}`,
-    columns: [
-      { header: 'Date', key: 'date', width: 12 },
-      { header: 'FPN', key: 'fpn', width: 15 },
-      { header: 'Forging Name', key: 'fpnName', width: 22 },
-      { header: 'Hammer', key: 'hammer', width: 22 },
-      { header: 'Shift', key: 'shift', width: 12 },
-      { header: 'Qty Planned', key: 'qtyPlanned', width: 16, align: 'right', numFmt: '#,##0' },
-      { header: 'Qty Actual', key: 'qtyActual', width: 16, align: 'right', numFmt: '#,##0' },
-      { header: 'Status', key: 'status', width: 15 }
-    ],
-    rows,
-    totals
-  });
+  if (format === 'pdf') {
+    await exportToPdf(opts);
+  } else {
+    await exportToExcel(opts);
+  }
 }
 
-async function exportOverallProgressExcel() {
-  const list = S.forgingPlans.map(p => ({ p, ...planLotProgress(p) }));
-  if (!list.length) { toast('Nothing to export — no plans available.'); return; }
+async function exportMonthlyPlanRollup(format) {
+  const wm = getActiveWorkingMonth();
+  const rollup = getMonthlyPlanRollup(wm);
+  if (!rollup.length) { toast('Nothing to export — no plan summary data for this month.'); return; }
 
-  const rows = list.map(({ p, totalPlanned, totalActual, status }) => ({
-    fpn: p.fpn,
-    fpnName: fpnName(p.fpn) || '—',
-    hammer: p.hammerName || '—',
-    qtyPlanned: totalPlanned,
-    qtyActual: totalActual,
-    shifts: (p.shiftPlan || []).length,
-    status: PLAN_STATUS_META[status]?.label || status
-  }));
+  const rangeLabel = `${fmtDate(wm.start)} – ${fmtDate(wm.end)}`;
+  const rows = rollup.map(r => {
+    const pct = r.planned > 0 ? Math.round((r.actual / r.planned) * 100) : 0;
+    const pctLabel = r.planned > 0 ? `${pct}%` : 'Unplanned';
+    
+    let status = 'not_started';
+    if (r.planned > 0) {
+      if (r.actual >= r.planned) status = 'Completed';
+      else if (r.actual > 0) status = 'In Progress';
+    } else {
+      status = 'Completed';
+    }
+
+    return {
+      fpn: r.fpn,
+      name: r.name,
+      planned: r.planned,
+      actual: r.actual,
+      progress: pctLabel,
+      status
+    };
+  });
 
   const totals = {
-    qtyPlanned: rows.reduce((s, r) => s + r.qtyPlanned, 0),
-    qtyActual: rows.reduce((s, r) => s + r.qtyActual, 0)
+    name: `${rows.length} Part${rows.length !== 1 ? 's' : ''}`,
+    planned: rows.reduce((s, r) => s + r.planned, 0),
+    actual: rows.reduce((s, r) => s + r.actual, 0),
   };
 
-  await exportToExcel({
-    filename: `IMF_Forging_Plans_Overall_Progress_${dateStr()}.xlsx`,
-    reportTitle: 'Forging Plan Lots — Overall Progress',
-    filterSummary: 'All Scheduled Forging Lots',
+  const opts = {
+    filename: `IMF_Monthly_Forging_Plan_Report_${wm.start}_to_${wm.end}.${format === 'pdf' ? 'pdf' : 'xlsx'}`,
+    reportTitle: 'Monthly Forging Plan Summary',
+    filterSummary: `Active Cycle: ${rangeLabel}`,
     columns: [
       { header: 'FPN', key: 'fpn', width: 15 },
-      { header: 'Forging Name', key: 'fpnName', width: 22 },
-      { header: 'Hammer', key: 'hammer', width: 22 },
-      { header: 'Total Planned', key: 'qtyPlanned', width: 16, align: 'right', numFmt: '#,##0' },
-      { header: 'Total Actual', key: 'qtyActual', width: 16, align: 'right', numFmt: '#,##0' },
-      { header: 'Shifts', key: 'shifts', width: 10, align: 'right', numFmt: '#,##0' },
-      { header: 'Status', key: 'status', width: 15 }
+      { header: 'Forging Name', key: 'name', width: 25 },
+      { header: 'Planned (pcs)', key: 'planned', width: 16, align: 'right', numFmt: '#,##0' },
+      { header: 'Actual (pcs)', key: 'actual', width: 16, align: 'right', numFmt: '#,##0' },
+      { header: 'Progress', key: 'progress', width: 14, align: 'right' },
+      { header: 'Status', key: 'status', width: 18 }
     ],
     rows,
     totals
-  });
+  };
+
+  if (format === 'pdf') {
+    await exportToPdf(opts);
+  } else {
+    await exportToExcel(opts);
+  }
 }
 
-async function exportBottleneckExcel() {
+async function exportBottleneck(format) {
   const list = getBottleneckData();
   if (!list.length) { toast('Nothing to export — no internal WIP bottleneck found.'); return; }
 
   const rows = list.map(r => ({
     fpn: r.fpn,
-    fpnName: fpnName(r.fpn) || '—',
     internalWip: r.internalWip,
     oldestAge: `${r.oldestAgeDays}d`,
     status: AGE_META[r.ageLevel]?.label || r.ageLevel
@@ -1925,23 +2153,28 @@ async function exportBottleneckExcel() {
     internalWip: rows.reduce((s, r) => s + r.internalWip, 0)
   };
 
-  await exportToExcel({
-    filename: `IMF_Internal_Bottleneck_Aging_${dateStr()}.xlsx`,
+  const opts = {
+    filename: `IMF_Internal_Bottleneck_Aging_${dateStr()}.${format === 'pdf' ? 'pdf' : 'xlsx'}`,
     reportTitle: 'Internal Bottleneck — Aging Forged Stock',
     filterSummary: 'Shot Blast & Normalizing Inventory (Aged Stock by FPN)',
     columns: [
       { header: 'FPN', key: 'fpn', width: 15 },
-      { header: 'Forging Name', key: 'fpnName', width: 22 },
-      { header: 'Internal WIP', key: 'internalWip', width: 18, align: 'right', numFmt: '#,##0' },
+      { header: 'Internal WIP (pcs)', key: 'internalWip', width: 18, align: 'right', numFmt: '#,##0' },
       { header: 'Oldest Lot Age', key: 'oldestAge', width: 16, align: 'right' },
       { header: 'Status', key: 'status', width: 15 }
     ],
     rows,
     totals
-  });
+  };
+
+  if (format === 'pdf') {
+    await exportToPdf(opts);
+  } else {
+    await exportToExcel(opts);
+  }
 }
 
-async function exportSupplierWipExcel() {
+async function exportSupplierWip(format) {
   const list = getSupplierWipData();
   if (!list.length) { toast('Nothing to export — no supplier WIP records.'); return; }
 
@@ -1949,7 +2182,6 @@ async function exportSupplierWipExcel() {
     supplier: r.supplierName,
     cpn: r.cpn,
     fpn: r.fpn,
-    fpnName: fpnName(r.fpn) || '—',
     dispatched: r.dispatched,
     received: r.received,
     scrap: r.approvedScrap,
@@ -1964,37 +2196,40 @@ async function exportSupplierWipExcel() {
     wip: rows.reduce((s, r) => s + r.wip, 0)
   };
 
-  await exportToExcel({
-    filename: `IMF_Live_Supplier_WIP_${dateStr()}.xlsx`,
+  const opts = {
+    filename: `IMF_Live_Supplier_WIP_${dateStr()}.${format === 'pdf' ? 'pdf' : 'xlsx'}`,
     reportTitle: 'Live Supplier WIP — All CNC Suppliers',
     filterSummary: 'Active Supplier Inventory',
     columns: [
       { header: 'Supplier', key: 'supplier', width: 25 },
       { header: 'CPN', key: 'cpn', width: 15 },
       { header: 'FPN', key: 'fpn', width: 15 },
-      { header: 'Forging Name', key: 'fpnName', width: 22 },
       { header: 'Dispatched', key: 'dispatched', width: 15, align: 'right', numFmt: '#,##0' },
       { header: 'Received', key: 'received', width: 15, align: 'right', numFmt: '#,##0' },
-      { header: 'Scrap Approved', key: 'scrap', width: 16, align: 'right', numFmt: '#,##0' },
+      { header: 'Scrap (Apprvd)', key: 'scrap', width: 16, align: 'right', numFmt: '#,##0' },
       { header: 'Yield', key: 'yield', width: 12, align: 'right' },
       { header: 'Current WIP', key: 'wip', width: 15, align: 'right', numFmt: '#,##0' }
     ],
     rows,
     totals
-  });
+  };
+
+  if (format === 'pdf') {
+    await exportToPdf(opts);
+  } else {
+    await exportToExcel(opts);
+  }
 }
 
-async function exportArrivalForecastExcel() {
+async function exportArrivalForecast(format) {
   const list = getForecastData(getSupplierWipData());
   if (!list.length) { toast('Nothing to export — no forecast data available.'); return; }
 
   const cols = [
     { header: 'Supplier', key: 'supplier', width: 25 },
     { header: 'CPN', key: 'cpn', width: 15 },
-    { header: 'FPN', key: 'fpn', width: 15 },
-    { header: 'Forging Name', key: 'fpnName', width: 22 },
     { header: 'Lead Time', key: 'leadTime', width: 14, align: 'right' },
-    { header: 'Overdue', key: 'overdue', width: 12, align: 'right', numFmt: '#,##0' },
+    { header: 'Overdue', key: 'overdue', width: 12, align: 'right', numFmt: '#,##0' }
   ];
 
   const sample = list[0];
@@ -2007,8 +2242,6 @@ async function exportArrivalForecastExcel() {
     const rowObj = {
       supplier: f.supplierName,
       cpn: f.cpn,
-      fpn: f.fpn,
-      fpnName: fpnName(f.fpn) || '—',
       leadTime: `${f.leadTimeDays}d${f.estimated ? ' (Est)' : ''}`,
       overdue: f.overdueQty,
       total: f.total
@@ -2027,14 +2260,20 @@ async function exportArrivalForecastExcel() {
     totals[`day_${idx}`] = rows.reduce((s, r) => s + r[`day_${idx}`], 0);
   });
 
-  await exportToExcel({
-    filename: `IMF_5-Day_Arrival_Forecast_${dateStr()}.xlsx`,
+  const opts = {
+    filename: `IMF_5-Day_Arrival_Forecast_${dateStr()}.${format === 'pdf' ? 'pdf' : 'xlsx'}`,
     reportTitle: '5-Day Arrival Forecast — Incoming Gear Blanks',
     filterSummary: 'Projected Arrival Schedule from outstanding dispatch lots',
     columns: cols,
     rows,
     totals
-  });
+  };
+
+  if (format === 'pdf') {
+    await exportToPdf(opts);
+  } else {
+    await exportToExcel(opts);
+  }
 }
 
 async function deleteForgingPlan(id) {
