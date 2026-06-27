@@ -2789,4 +2789,63 @@ a.alert-title:hover { color: var(--imf-navy); }
   }
 }
 
+/* Wide Modal for SO/PO Forms on Desktop */
+@media (min-width: 768px) {
+  .modal.modal-wide {
+    max-width: 1020px !important;
+    width: 95% !important;
+  }
+}
+
+/* SO Form Table Styles */
+.so-table-container {
+  width: 100%;
+  overflow-x: auto;
+  margin-bottom: 16px;
+  border-radius: var(--rs);
+  border: 1px solid var(--line);
+  background: var(--sur);
+}
+.so-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 950px;
+}
+.so-table th, .so-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.so-table th {
+  background: var(--fill);
+  font-weight: 700;
+  color: var(--txt-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.so-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.so-table td input, .so-table td select {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--rxs);
+  background: var(--sur);
+  color: var(--txt);
+  font-size: 12.5px;
+  transition: border-color 0.15s;
+}
+.so-table td input:focus, .so-table td select:focus {
+  border-color: var(--imf-navy);
+  outline: none;
+}
+.so-table td input[type="number"] {
+  text-align: center;
+}
+
+
 

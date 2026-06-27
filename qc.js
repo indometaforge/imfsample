@@ -719,7 +719,7 @@ function iqcHistTableRow(r) {
   if (r.iqcStatus === 'rejected') bcls = 'rag-r';
 
   return `
-    <tr>
+    <tr onclick="openIqcDetailModal('${r.id}')" style="cursor:pointer">
       <td class="pin">${r.supplierName || '—'}</td>
       <td class="num">${fmtDate(r.date)}</td>
       <td class="mono">${r.masterLotCode||'—'}</td>
@@ -740,7 +740,7 @@ function iqcHistCard(r) {
   if (r.iqcStatus === 'rejected') bcls = 'rag-r';
 
   return `
-    <div class="imf-card">
+    <div class="imf-card" onclick="openIqcDetailModal('${r.id}')" style="cursor:pointer">
       <div class="imf-card-top">
         <span class="nm">${r.supplierName || '—'}</span>
         <div class="grow"></div>
@@ -1125,7 +1125,7 @@ function inspTableRow(r) {
   const pct   = total > 0 ? Math.round((ok / total) * 100) : 100;
   
   let row = `
-    <tr>
+    <tr onclick="openInspectionDetailModal('${r.id}')" style="cursor:pointer">
       <td class="pin mono">${r.tagId}</td>
       <td>${r.partName || '—'}</td>
       <td>${r.customerName || '—'}</td>
@@ -1155,7 +1155,7 @@ function inspCard(r) {
   const pct   = total > 0 ? Math.round((ok / total) * 100) : 100;
 
   return `
-    <div class="imf-card">
+    <div class="imf-card" onclick="openInspectionDetailModal('${r.id}')" style="cursor:pointer">
       <div class="imf-card-top">
         <span class="imf-mono">${r.tagId}</span>
         <div class="grow"></div>
@@ -1295,6 +1295,245 @@ function clearedCard(c) {
         <span>Heat: <strong class="mono">${c.heatCode || '—'}</strong></span>
       </div>
     </div>`;
+}
+
+/* ── QC Inspection & IQC Edit/Delete Functions ── */
+function openInspectionDetailModal(id) {
+  const r = S_QC.inspections.find(x => x.id === id);
+  if (!r) return;
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Inspection Details</div>
+    <div style="background:var(--sur2);border-radius:var(--rs);padding:12px;margin-bottom:14px;font-size:13px">
+      <div class="row-2">
+        <div><strong>TAG ID:</strong> <span class="imf-mono" style="font-weight:700">${r.tagId}</span></div>
+        <div><strong>Date:</strong> ${fmtDate(r.date)}</div>
+      </div>
+      <div class="row-2" style="margin-top:6px">
+        <div><strong>Part:</strong> ${r.partName} (${r.partNo})</div>
+        <div><strong>Customer:</strong> ${r.customerName || '—'}</div>
+      </div>
+      <div class="row-2" style="margin-top:6px">
+        <div><strong>Inspected By:</strong> ${r.inspectedByName || '—'}</div>
+        <div><strong>Heat Code:</strong> <span class="imf-mono">${r.heatCode || '—'}</span></div>
+      </div>
+    </div>
+
+    <div class="imf-split" style="margin-bottom:14px">
+      <div style="background:var(--ok-bg)">
+        <div class="k" style="color:var(--ok)">OK</div>
+        <div class="v" style="color:var(--ok)">${r.okQty || 0}</div>
+      </div>
+      <div style="background:var(--warn-bg)">
+        <div class="k" style="color:var(--warn)">Rework</div>
+        <div class="v" style="color:var(--warn)">${r.reworkQty || 0}</div>
+      </div>
+      <div style="background:var(--err-bg)">
+        <div class="k" style="color:var(--err)">Scrap</div>
+        <div class="v" style="color:var(--err)">${r.scrapQty || 0}</div>
+      </div>
+    </div>
+
+    ${r.defectDescription ? `<div class="ebox" style="margin-bottom:12px"><strong>Defect:</strong> ${r.defectDescription}</div>` : ''}
+    ${r.reworkTagId ? `<div class="wbox" style="margin-bottom:12px"><strong>Rework TAG:</strong> <span class="imf-mono">${r.reworkTagId}</span></div>` : ''}
+
+    <div style="display:flex;gap:10px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Close</button>
+      ${isAdmin() ? `<button class="btn btn-p" style="flex:1" onclick="openEditInspectionModal('${r.id}')"><i class="ti ti-edit"></i> Edit Notes</button>` : ''}
+    </div>
+    ${isTanmay() ? `
+    <button class="btn btn-d w-full mt-8" onclick="deleteQCInspection('${r.id}')">
+      <i class="ti ti-trash"></i> Delete Inspection
+    </button>` : ''}
+  `);
+}
+
+function openEditInspectionModal(id) {
+  if (!isAdmin()) { toast('Access denied'); return; }
+  const r = S_QC.inspections.find(x => x.id === id);
+  if (!r) return;
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Edit Inspection Notes</div>
+    <div class="f" style="margin-bottom:16px">
+      <label>Defect Description / Notes</label>
+      <textarea id="edit-qc-defect" rows="3" style="resize:vertical; width: 100%">${r.defectDescription || ''}</textarea>
+    </div>
+    <div style="display:flex;gap:10px">
+      <button class="btn btn-s" style="flex:1" onclick="openInspectionDetailModal('${r.id}')">Back</button>
+      <button class="btn btn-p" style="flex:1" onclick="saveEditInspection('${r.id}')">Save Changes</button>
+    </div>
+  `);
+}
+
+async function saveEditInspection(id) {
+  if (!isAdmin()) { toast('Access denied'); return; }
+  const r = S_QC.inspections.find(x => x.id === id);
+  if (!r) return;
+
+  const defect = document.getElementById('edit-qc-defect')?.value || '';
+  try {
+    await db.collection('qcInspections').doc(id).update({
+      defectDescription: defect,
+      updatedAt: serverTS()
+    });
+
+    if (r.scrapQty > 0) {
+      const scrapSnap = await db.collection('scrapLedger')
+        .where('tagId', '==', r.tagId)
+        .where('qtyRejected', '==', r.scrapQty)
+        .get();
+      if (!scrapSnap.empty) {
+        const batch = db.batch();
+        scrapSnap.docs.forEach(doc => {
+          batch.update(db.collection('scrapLedger').doc(doc.id), { defectDescription: defect });
+        });
+        await batch.commit();
+      }
+    }
+
+    await logAudit('EDIT_QC_INSPECTION', 'QC', id, r, { defectDescription: defect });
+    closeModal();
+    await refreshQC();
+    toast('Inspection notes updated ✓');
+  } catch (e) {
+    toast('Error: ' + friendlyError(e));
+  }
+}
+
+async function deleteQCInspection(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
+  const r = S_QC.inspections.find(x => x.id === id);
+  if (!r) return;
+
+  if (!confirm(`Delete QC inspection for TAG ${r.tagId}? This will revert its status to QC Pending, restore quantity, and delete any rework/scrap records.`)) return;
+
+  try {
+    const parentRef = db.collection('routeCards').doc(r.tagId);
+    const rwkRef    = db.collection('routeCards').doc(r.tagId + '-RWK');
+
+    const [parentSnap, rwkSnap, scrapSnap] = await Promise.all([
+      parentRef.get(),
+      rwkRef.get(),
+      db.collection('scrapLedger').where('tagId', '==', r.tagId).get()
+    ]);
+
+    if (parentSnap.exists) {
+      const card = parentSnap.data();
+      if (card.status !== 'qc_cleared' && card.status !== 'scrapped') {
+        toast(`Can't delete: Tag ${r.tagId} has moved downstream (status: ${card.status})`, 5500);
+        return;
+      }
+    }
+
+    if (rwkSnap.exists) {
+      const rwk = rwkSnap.data();
+      if (rwk.status !== 'hard_wip' || (rwk.opHistory || []).length > 0) {
+        toast(`Can't delete: Rework card ${r.tagId}-RWK has already been processed downstream`, 5500);
+        return;
+      }
+    }
+
+    const batch = db.batch();
+
+    if (parentSnap.exists) {
+      const card = parentSnap.data();
+      const keptHistory = (card.opHistory || []).filter(h => h.type !== 'QC_INSPECTION');
+      batch.update(parentRef, {
+        status: 'qc_pending',
+        currentQty: r.totalQty,
+        qty_oem: 0,
+        qty_spares: 0,
+        qty_market: 0,
+        qcInspectedBy: firebase.firestore.FieldValue.delete(),
+        qcInspectedByName: firebase.firestore.FieldValue.delete(),
+        qcInspectedAt: firebase.firestore.FieldValue.delete(),
+        opHistory: keptHistory,
+        updatedAt: serverTS()
+      });
+    }
+
+    if (rwkSnap.exists) {
+      batch.delete(rwkRef);
+    }
+
+    const scrapDocs = scrapSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    for (const sd of scrapDocs) {
+      if (sd.qtyRejected === r.scrapQty) {
+        batch.delete(db.collection('scrapLedger').doc(sd.id));
+      }
+    }
+
+    batch.delete(db.collection('qcInspections').doc(id));
+
+    await batch.commit();
+    await logAudit('DELETE_QC_INSPECTION', 'QC', id, r, null);
+
+    closeModal();
+    await refreshQC();
+    toast('QC inspection deleted ✓');
+  } catch (e) {
+    console.error('deleteQCInspection error:', e);
+    toast('Delete failed: ' + friendlyError(e));
+  }
+}
+
+function openIqcDetailModal(inwId) {
+  const r = S_QC.inward.find(x => x.id === inwId);
+  if (!r) return;
+  const result = S_QC.iqcResults.find(q => q.inwId === inwId);
+
+  let bcls = 'rag-gr';
+  if (r.iqcStatus === 'accepted') bcls = 'st-qc_cleared';
+  if (r.iqcStatus === 'conditional') bcls = 'rag-a';
+  if (r.iqcStatus === 'rejected') bcls = 'rag-r';
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Inward QC Details</div>
+    <div style="background:var(--sur2);border-radius:var(--rs);padding:12px;margin-bottom:14px;font-size:13px">
+      <div><strong>Supplier:</strong> ${r.supplierName || '—'}</div>
+      <div style="margin-top:4px"><strong>Date:</strong> ${fmtDate(r.date)}</div>
+      <div style="margin-top:4px"><strong>Master Lot:</strong> <span class="imf-mono">${r.masterLotCode || '—'}</span></div>
+      <div style="margin-top:4px"><strong>IQC Status:</strong> <span class="imf-badge ${bcls}">${IQC_LABEL[r.iqcStatus]||r.iqcStatus}</span></div>
+    </div>
+
+    ${result?.notes ? `<div class="wbox" style="margin-bottom:14px"><strong>Inspection Notes:</strong> ${result.notes}</div>` : ''}
+
+    <div style="display:flex;gap:10px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Close</button>
+    </div>
+    ${result && isTanmay() ? `
+    <button class="btn btn-d w-full mt-8" onclick="deleteIqcResult('${result.id}')">
+      <i class="ti ti-trash"></i> Delete IQC Result
+    </button>` : ''}
+  `);
+}
+
+async function deleteIqcResult(iqcId) {
+  if (!isTanmay()) { toast('Access denied'); return; }
+  const result = S_QC.iqcResults.find(q => q.id === iqcId);
+  if (!result) return;
+
+  if (!confirm('Are you sure you want to delete this IQC inspection result? The inward receipt status will revert to Pending.')) return;
+
+  try {
+    const batch = db.batch();
+    batch.delete(db.collection('iqcResults').doc(iqcId));
+    batch.update(db.collection('inward').doc(result.inwId), {
+      iqcStatus: 'pending',
+      updatedAt: serverTS(),
+    });
+    await batch.commit();
+    await logAudit('DELETE_IQC_RESULT', 'QC', iqcId, result, null);
+    closeModal();
+    await refreshQC();
+    toast('IQC inspection result deleted ✓');
+  } catch (e) {
+    toast('Error: ' + friendlyError(e));
+  }
 }
 
 /* ── Boot ────────────────────────────────────────────────────────────── */

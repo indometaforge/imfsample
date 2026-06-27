@@ -217,7 +217,7 @@ function modalActions(saveLabel, saveOnclick) {
 
 /** Standalone "Delete" button shown only to admins, when editing an existing record */
 function modalDeleteButton(onclick, label = 'Delete') {
-  if (S.sess?.role !== 'admin') return '';
+  if (!isTanmay()) return '';
   return `
     <button class="btn btn-d w-full mt-8" onclick="${onclick}">
       <i class="ti ti-trash" aria-hidden="true"></i> ${label}
@@ -374,7 +374,7 @@ function inwardTableRows(r) {
       <td>${invPending ? '<span class="imf-badge rag-a"><i class="ti ti-alert-triangle" aria-hidden="true"></i>Invoice Pending</span>' : '<span class="dim">—</span>'}</td>
       <td>${iqcStatus ? imfBadge(iqcStatus, IQC_META) : '<span class="dim">—</span>'}</td>
       <td style="white-space:nowrap">
-        ${canDo('inward') ? `<button class="imf-rowact" onclick="openInwardModal('${r.id}')" aria-label="Edit receipt"><i class="ti ti-edit" aria-hidden="true"></i></button>` : ''}
+        ${isAdmin() ? `<button class="imf-rowact" onclick="openInwardModal('${r.id}')" aria-label="Edit receipt"><i class="ti ti-edit" aria-hidden="true"></i></button>` : ''}
         <button class="imf-rowact" onclick="_inwExpanded['${r.id}']=!_inwExpanded['${r.id}'];renderSection()" aria-expanded="${expanded}" aria-label="Toggle part breakdown"><i class="ti ti-chevron-${expanded ? 'up' : 'down'}" aria-hidden="true"></i></button>
       </td>
     </tr>`;
@@ -478,7 +478,7 @@ function inwardCard(r) {
       </div>
       <div class="imf-card-meta"><span class="mono">${fmtDate(r.date)}</span><span>·</span><span>${partLabel}</span></div>
       ${expanded ? inwardPartBreakdown(r) : ''}
-      ${canDo('inward') ? `
+      ${isAdmin() ? `
         <button class="btn btn-s btn-sm w-full mt-8" onclick="openInwardModal('${r.id}')">
           <i class="ti ti-edit" aria-hidden="true"></i> Edit Receipt
         </button>` : ''}
@@ -2072,7 +2072,7 @@ async function exportRouteCardsExcel() {
 
 function routeCardTableRow(rc) {
   const locked = (+rc.qty_oem || 0) + (+rc.qty_spares || 0) + (+rc.qty_market || 0) > 0;
-  const canDelete = S.sess?.email === 'tanmay@indometaforge.in';
+  const canDelete = isTanmay();
   return `
     <tr>
       <td class="pin mono">${rc.tagId}</td>
@@ -2091,7 +2091,7 @@ function routeCardTableRow(rc) {
 
 function routeCardCard(rc) {
   const locked = (+rc.qty_oem || 0) + (+rc.qty_spares || 0) + (+rc.qty_market || 0) > 0;
-  const canDelete = S.sess?.email === 'tanmay@indometaforge.in';
+  const canDelete = isTanmay();
   return `
     <div class="imf-card">
       <div class="imf-card-top">

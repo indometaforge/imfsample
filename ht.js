@@ -1094,6 +1094,12 @@ function renderHTDetail(id) {
           ⚡ Quick Fill Entire Report Data
         </button>
       </div>` : ''}
+    ${(isAdmin() || isTanmay()) ? `
+      <div class="card" style="margin-top:14px; border:1px solid var(--line); padding:16px; display:flex; gap:10px">
+        ${isAdmin() ? `<button class="btn btn-s flex-1" onclick="openEditHTChargeModal('${c.id}')"><i class="ti ti-edit"></i> Edit Charge Header</button>` : ''}
+        ${isTanmay() ? `<button class="btn btn-d flex-1" onclick="deleteHTCharge('${c.id}')"><i class="ti ti-trash"></i> Delete Charge</button>` : ''}
+      </div>
+    ` : ''}
   `;
 }
 
@@ -2337,6 +2343,12 @@ function renderSbSessionDetail(id) {
         </table>
       </div>
     </div>
+    ${(isAdmin() || isTanmay()) ? `
+      <div class="card" style="margin-top:14px; border:1px solid var(--line); padding:16px; display:flex; gap:10px">
+        ${isAdmin() ? `<button class="btn btn-s flex-1" onclick="openEditSbSessionModal('${s.id}')"><i class="ti ti-edit"></i> Edit Session Header</button>` : ''}
+        ${isTanmay() ? `<button class="btn btn-d flex-1" onclick="deleteSbSession('${s.id}')"><i class="ti ti-trash"></i> Delete Session</button>` : ''}
+      </div>
+    ` : ''}
   `;
 }
 
@@ -2562,6 +2574,307 @@ function viewHistoryItemDetail(type, id) {
     _selSbSessionId = id;
   }
   render();
+}
+
+/* ── HT & Shot Blast Edit/Delete Functions ── */
+function openEditHTChargeModal(id) {
+  if (!isAdmin()) { toast('Access denied'); return; }
+  const c = S_HT.charges.find(x => x.id === id);
+  if (!c) return;
+
+  const shiftOpts = Object.entries(S.shifts || {})
+    .map(([k,v])=>`<option value="${k}" ${c.shift===k?'selected':''}>${v.label}</option>`).join('');
+
+  const furnaceOpts = HT_FURNACES_CAR.map(f=>`<option value="${f}" ${c.furnaceNo===f?'selected':''}>${f}</option>`).join('');
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Edit HT Charge Header</div>
+    <div class="row-2">
+      <div class="f">
+        <label>Date</label>
+        <input id="edit-ht-date" type="date" value="${c.date || ''}">
+      </div>
+      <div class="f">
+        <label>Shift</label>
+        <select id="edit-ht-shift">${shiftOpts}</select>
+      </div>
+    </div>
+    <div class="row-2" style="margin-top:10px">
+      <div class="f">
+        <label>Carburizing Furnace</label>
+        <select id="edit-ht-cfno">${furnaceOpts}</select>
+      </div>
+      <div class="f">
+        <label>Rev No.</label>
+        <input id="edit-ht-rev" type="text" value="${c.revNo || ''}">
+      </div>
+    </div>
+
+    <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin:14px 0 8px;text-transform:uppercase">Pre-Wash Logs</div>
+    <div class="row-2">
+      <div class="f">
+        <label>Start Time</label>
+        <input id="edit-ht-wash-start" type="time" value="${c.prewash?.startTime || ''}">
+      </div>
+      <div class="f">
+        <label>End Time</label>
+        <input id="edit-ht-wash-end" type="time" value="${c.prewash?.endTime || ''}">
+      </div>
+    </div>
+    <div class="row-2" style="margin-top:10px">
+      <div class="f">
+        <label>Pre-wash Temp (°C)</label>
+        <input id="edit-ht-wash-temp" type="number" value="${c.prewash?.temp || ''}">
+      </div>
+      <div class="f">
+        <label>Pre-wash pH</label>
+        <input id="edit-ht-wash-ph" type="number" step="0.1" value="${c.prewash?.ph || ''}">
+      </div>
+    </div>
+
+    <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin:14px 0 8px;text-transform:uppercase">Dot Punching</div>
+    <div class="f">
+      <label><input type="checkbox" id="edit-ht-dp-done" ${c.dotPunch?.done ? 'checked' : ''}> Dot Punching Done</label>
+    </div>
+    <div class="row-2" style="margin-top:10px">
+      <div class="f">
+        <label>Done By</label>
+        <input id="edit-ht-dp-who" type="text" value="${c.dotPunch?.who || ''}">
+      </div>
+      <div class="f">
+        <label>Done Time</label>
+        <input id="edit-ht-dp-time" type="time" value="${c.dotPunch?.time || ''}">
+      </div>
+    </div>
+
+    <div id="edit-ht-err" style="display:none;color:var(--err);font-size:12px;margin-bottom:8px"></div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-p" style="flex:1" onclick="saveEditHTCharge('${c.id}')">Save Changes</button>
+    </div>
+  `);
+}
+
+async function saveEditHTCharge(id) {
+  if (!isAdmin()) { toast('Access denied'); return; }
+  const c = S_HT.charges.find(x => x.id === id);
+  if (!c) return;
+
+  const date = document.getElementById('edit-ht-date')?.value;
+  const shift = document.getElementById('edit-ht-shift')?.value;
+  const furnace = document.getElementById('edit-ht-cfno')?.value;
+  const revNo = document.getElementById('edit-ht-rev')?.value;
+
+  const washStart = document.getElementById('edit-ht-wash-start')?.value || '';
+  const washEnd = document.getElementById('edit-ht-wash-end')?.value || '';
+  const washTemp = parseInt(document.getElementById('edit-ht-wash-temp')?.value) || null;
+  const washPh = parseFloat(document.getElementById('edit-ht-wash-ph')?.value) || null;
+
+  const dpDone = document.getElementById('edit-ht-dp-done')?.checked || false;
+  const dpWho = document.getElementById('edit-ht-dp-who')?.value || '';
+  const dpTime = document.getElementById('edit-ht-dp-time')?.value || '';
+
+  if (!date || !shift || !furnace) { toast('Date, Shift, and Furnace are required'); return; }
+
+  try {
+    await db.collection('htCharges').doc(id).update({
+      date, shift, furnaceNo: furnace, revNo,
+      prewash: { startTime: washStart, endTime: washEnd, temp: washTemp, ph: washPh },
+      dotPunch: { done: dpDone, who: dpWho, time: dpTime },
+      updatedAt: serverTS(),
+    });
+    await logAudit('EDIT_HT_CHARGE', 'HT', id, c, { date, shift, furnaceNo: furnace, revNo });
+    closeModal();
+    await refreshHT();
+    renderHTDetail(id);
+    toast('HT Charge updated ✓');
+  } catch (e) {
+    toast('Error: ' + friendlyError(e));
+  }
+}
+
+async function deleteHTCharge(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
+  const c = S_HT.charges.find(x => x.id === id);
+  if (!c) return;
+  if (!confirm(`Delete HT Charge ${c.chargeNo || c.id}? This will revert all its route cards to Soft Done and cannot be undone.`)) return;
+
+  try {
+    const batch = db.batch();
+    for (const comp of c.components || []) {
+      batch.update(db.collection('routeCards').doc(comp.tagId), {
+        status: 'soft_done',
+        htChargeId: firebase.firestore.FieldValue.delete(),
+        updatedAt: serverTS()
+      });
+    }
+    batch.delete(db.collection('htCharges').doc(id));
+    await batch.commit();
+    await logAudit('DELETE_HT_CHARGE', 'HT', id, c, null);
+    toast('HT Charge deleted ✓');
+    _chargeMode = 'list';
+    await refreshHT();
+    render();
+  } catch (e) {
+    toast('Error: ' + friendlyError(e));
+  }
+}
+
+function openEditSbSessionModal(id) {
+  if (!isAdmin()) { toast('Access denied'); return; }
+  const s = S_HT.sbSessions.find(x => x.id === id);
+  if (!s) return;
+
+  const shiftOpts = Object.entries(S.shifts || {})
+    .map(([k,v])=>`<option value="${k}" ${s.shift===k?'selected':''}>${v.label}</option>`).join('');
+
+  const machs = S.machines.filter(m => m.stage === 'ht' && m.active !== false);
+  const machOpts = machs.map(m => `<option value="${m.name}" ${s.machineId===m.name?'selected':''}>${m.name}</option>`).join('');
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Edit Shot Blast Session</div>
+    <div class="row-2">
+      <div class="f">
+        <label>Date</label>
+        <input id="edit-sb-date" type="date" value="${s.date || ''}">
+      </div>
+      <div class="f">
+        <label>Shift</label>
+        <select id="edit-sb-shift">${shiftOpts}</select>
+      </div>
+    </div>
+    <div class="row-2" style="margin-top:10px">
+      <div class="f">
+        <label>Shot Blast Machine</label>
+        <select id="edit-sb-mach">${machOpts}</select>
+      </div>
+      <div class="f">
+        <label>Operator Name</label>
+        <input id="edit-sb-operator" type="text" value="${s.operator || ''}">
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-p" style="flex:1" onclick="saveEditSbSession('${s.id}')">Save Changes</button>
+    </div>
+  `);
+}
+
+async function saveEditSbSession(id) {
+  if (!isAdmin()) { toast('Access denied'); return; }
+  const s = S_HT.sbSessions.find(x => x.id === id);
+  if (!s) return;
+
+  const date = document.getElementById('edit-sb-date')?.value;
+  const shift = document.getElementById('edit-sb-shift')?.value;
+  const machine = document.getElementById('edit-sb-mach')?.value;
+  const operator = document.getElementById('edit-sb-operator')?.value;
+
+  if (!date || !shift || !machine) { toast('Date, Shift, and Machine are required'); return; }
+
+  try {
+    await db.collection('shotBlastSessions').doc(id).update({
+      date, shift, machineId: machine, operator,
+      updatedAt: serverTS(),
+    });
+    await logAudit('EDIT_SB_SESSION', 'HT', id, s, { date, shift, machineId: machine, operator });
+    closeModal();
+    await refreshHT();
+    renderSbSessionDetail(id);
+    toast('Shot Blast session updated ✓');
+  } catch (e) {
+    toast('Error: ' + friendlyError(e));
+  }
+}
+
+async function deleteSbSession(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
+  const s = S_HT.sbSessions.find(x => x.id === id);
+  if (!s) return;
+
+  if (!confirm(`Delete Shot Blast session ${s.sessionNo || s.id}? This will revert route cards, restore split quantities, and delete the session.`)) return;
+
+  try {
+    const tagIds = (s.tags || []).map(t => t.tagId);
+    if (!tagIds.length) {
+      await db.collection('shotBlastSessions').doc(id).delete();
+      await logAudit('DELETE_SB_SESSION', 'HT', id, s, null);
+      closeModal();
+      await refreshHT();
+      render();
+      return;
+    }
+
+    const cardRefs = tagIds.map(tid => db.collection('routeCards').doc(tid));
+    const [cardDocs, childSnap, scrapSnap] = await Promise.all([
+      Promise.all(cardRefs.map(ref => ref.get())),
+      db.collection('routeCards').where('parentCardUid', 'in', tagIds).get(),
+      db.collection('scrapLedger').where('tagId', 'in', tagIds).get()
+    ]);
+
+    const childDocs = childSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const scrapDocs = scrapSnap.docs.map(d => ({ id: d.id, ...d.data() })).filter(d => d.stage === 'shot_blast');
+
+    for (let i = 0; i < tagIds.length; i++) {
+      if (cardDocs[i].exists) {
+        const card = cardDocs[i].data();
+        if (card.status !== 'ht_done' && card.status !== 'scrapped' && card.status !== 'sb_wip' && card.status !== 'sb_pending') {
+          toast(`Can't delete: Tag ${tagIds[i]} has moved downstream to ${card.status}`, 5500);
+          return;
+        }
+      }
+    }
+
+    for (const child of childDocs) {
+      if (child.status !== 'sb_pending' && child.status !== 'sb_wip' && child.status !== 'ht_done') {
+        toast(`Can't delete: Split child card ${child.tagId} has moved downstream to ${child.status}`, 5500);
+        return;
+      }
+    }
+
+    const batch = db.batch();
+
+    for (let i = 0; i < tagIds.length; i++) {
+      const parentId = tagIds[i];
+      if (!cardDocs[i].exists) continue;
+      const parentData = cardDocs[i].data();
+      const child = childDocs.find(c => c.parentCardUid === parentId);
+
+      let newQty = parentData.currentQty;
+      if (child) {
+        newQty += child.currentQty;
+        batch.delete(db.collection('routeCards').doc(child.tagId));
+      }
+
+      batch.update(cardRefs[i], {
+        currentQty: newQty,
+        status: 'sb_pending',
+        sbFailed: firebase.firestore.FieldValue.delete(),
+        sbYielded: firebase.firestore.FieldValue.delete(),
+        updatedAt: serverTS(),
+      });
+    }
+
+    for (const scrap of scrapDocs) {
+      batch.delete(db.collection('scrapLedger').doc(scrap.id));
+    }
+
+    batch.delete(db.collection('shotBlastSessions').doc(id));
+
+    await batch.commit();
+    await logAudit('DELETE_SB_SESSION', 'HT', id, s, null);
+
+    _sbMode = 'list';
+    closeModal();
+    await refreshHT();
+    render();
+    toast('Shot Blast session deleted, route cards restored ✓');
+  } catch (e) {
+    console.error('deleteSbSession error:', e);
+    toast('Delete failed: ' + friendlyError(e));
+  }
 }
 
 /* ── DOM Load ── */

@@ -722,6 +722,10 @@ function sparesCard(s, isPending) {
         <button class="btn btn-s" style="margin-top:8px;width:100%" onclick="printSparesMRO('${s.id}')">
           <i class="ti ti-printer" aria-hidden="true"></i> Print Approved Spares
         </button>` : ''}
+      ${isTanmay() ? `
+        <button class="btn btn-d btn-sm w-full" style="margin-top:8px" onclick="deleteSparesRequest('${s.id}')">
+          <i class="ti ti-trash"></i> Delete Spares Request
+        </button>` : ''}
     </div>`;
 }
 
@@ -779,6 +783,32 @@ async function _commitRejectSpares(id, s, rmk) {
     toast('Spares request rejected');
     await refreshAll();
   } catch (e) { toast(friendlyError(e)); }
+}
+
+async function deleteSparesRequest(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
+  const s = S_APR.sparesRequests.find(x => x.id === id);
+  if (!s) return;
+
+  if (!confirm(`Delete spares request for machine ${s.machineName || s.machineId}?`)) return;
+
+  try {
+    const batch = db.batch();
+    batch.delete(db.collection('sparesRequests').doc(id));
+
+    if (s.breakdownId) {
+      batch.update(db.collection('breakdowns').doc(s.breakdownId), {
+        sparesRequestId: firebase.firestore.FieldValue.delete()
+      });
+    }
+
+    await batch.commit();
+    await logAudit('DELETE_SPARES_REQUEST', 'APPROVALS', id, s, null);
+    await refreshAll();
+    toast('Spares request deleted ✓');
+  } catch (e) {
+    toast('Error: ' + friendlyError(e));
+  }
 }
 
 /* ── Card: SCM Supplier Scrap ──────────────────────────────────────── */

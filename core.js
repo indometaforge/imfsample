@@ -34,7 +34,7 @@ db.enablePersistence({ synchronizeTabs: true }).catch(() => {});
  * When true, all transactional writes go to TEST_ prefixed collections.
  * Master data (users, machines, parts, etc.) always reads from live collections.
  */
-const TEST_MODE = true;
+const TEST_MODE = false;
 
 const TRANSACTIONAL_COLLECTIONS = new Set([
   'inward', 'iqcResults', 'requisitions', 'routeCards',
@@ -183,6 +183,9 @@ const setSess = (data) => {
 };
 
 const clearSess = () => sessionStorage.removeItem(SESS_KEY);
+
+const isAdmin = () => S.sess?.role === 'admin';
+const isTanmay = () => S.sess?.name === 'Tanmay Indani' || S.sess?.email === 'tanmay@indometaforge.in';
 
 /* ══════════════════════════════════════════════════════════════════════
    PERMISSIONS
@@ -460,6 +463,8 @@ function openModal(html) {
 
 function closeModal() {
   const mov = document.getElementById('modal-overlay');
+  const cont = document.getElementById('modal-content');
+  if (cont) cont.classList.remove('modal-wide');
   if (!mov) return;
   mov.classList.remove('open');
   document.body.style.overflow = '';

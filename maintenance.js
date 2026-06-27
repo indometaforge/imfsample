@@ -309,7 +309,7 @@ function bdCard(b) {
   const canRelease = b.status === 'diagnosed'    && (canDo('maintenance') || S.sess?.role === 'admin');
 
   return `
-    <div class="card" style="margin-bottom:12px;border:1.5px solid ${stepCol}">
+    <div class="card" onclick="openBreakdownDetailModal('${b.id}')" style="cursor:pointer; margin-bottom:12px;border:1.5px solid ${stepCol}">
       <!-- Header -->
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px">
         <div>
@@ -359,7 +359,7 @@ function bdCard(b) {
             </div>`).join('')}
           <div style="text-align:right;font-size:12px;font-weight:800;margin-top:4px">Total: ${fmtINR(b.sparesTotal || 0)}</div>
           ${spReq && spReq.status === 'approved' ? `
-          <button class="btn btn-s" style="margin-top:8px;width:100%" onclick="printSparesMRO_bd('${spReq.id}')">
+          <button class="btn btn-s" style="margin-top:8px;width:100%" onclick="event.stopPropagation();printSparesMRO_bd('${spReq.id}')">
             <i class="ti ti-printer" aria-hidden="true"></i> Print Approved Spares
           </button>` : ''}
         </div>`;
@@ -378,9 +378,9 @@ function bdCard(b) {
         </div>` : ''}
 
       <!-- Action buttons -->
-      ${canAck     ? `<button class="btn btn-ok" style="width:100%;margin-top:8px" onclick="openAcknowledgeModal('${b.id}')"><i class="ti ti-eye"></i> Acknowledge</button>` : ''}
-      ${canDiag    ? `<button class="btn btn-p"  style="width:100%;margin-top:8px" onclick="openDiagnoseModal('${b.id}')"><i class="ti ti-stethoscope"></i> Diagnose</button>` : ''}
-      ${canRelease ? `<button class="btn btn-ok" style="width:100%;margin-top:8px" onclick="openReleaseModal('${b.id}')"><i class="ti ti-circle-check"></i> Release Machine</button>` : ''}
+      ${canAck     ? `<button class="btn btn-ok" style="width:100%;margin-top:8px" onclick="event.stopPropagation();openAcknowledgeModal('${b.id}')"><i class="ti ti-eye"></i> Acknowledge</button>` : ''}
+      ${canDiag    ? `<button class="btn btn-p"  style="width:100%;margin-top:8px" onclick="event.stopPropagation();openDiagnoseModal('${b.id}')"><i class="ti ti-stethoscope"></i> Diagnose</button>` : ''}
+      ${canRelease ? `<button class="btn btn-ok" style="width:100%;margin-top:8px" onclick="event.stopPropagation();openReleaseModal('${b.id}')"><i class="ti ti-circle-check"></i> Release Machine</button>` : ''}
     </div>`;
 }
 
@@ -834,13 +834,38 @@ function renderPM() {
   const machines = S.machines || [];
   const canLog   = canDo('maintenance') || S.sess?.role === 'admin';
 
+  const recentLogs = [...S_MNT.pmLogs]
+    .sort((a,b) => (b.date || '').localeCompare(a.date || ''))
+    .slice(0, 20);
+
+  const recentHtml = recentLogs.length ? `
+    <div style="border-top:1px solid var(--line);margin:24px 0 12px;padding-top:16px">
+      <div style="font-size:11px;font-weight:700;color:var(--txt-muted);letter-spacing:.06em;margin-bottom:10px;text-transform:uppercase">Recent PM Logs</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${recentLogs.map(l => `
+          <div class="card" onclick="openPmLogDetailModal('${l.id}')" style="cursor:pointer;padding:10px 12px;margin-bottom:0">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-weight:700;font-size:13px">${l.machineName || l.machineId}</span>
+              <span class="imf-badge st-qc_cleared"><i class="ti ti-circle-check"></i> ${PM_INTERVALS.find(iv => iv.key === l.interval)?.label || l.interval}</span>
+            </div>
+            <div style="font-size:11.5px;color:var(--txt-muted);margin-top:4px">
+              Done by: ${l.doneByName || '—'} · Date: <strong>${fmtDate(l.date)}</strong>
+            </div>
+            ${l.notes ? `<div style="font-size:11px;color:var(--txt-dim);margin-top:4px;font-style:italic">Notes: ${l.notes}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  ` : '';
+
   el.innerHTML = `
     <div style="display:flex;justify-content:flex-end;margin-bottom:10px">
       <button class="btn btn-s btn-sm" onclick="refreshMaint()"><i class="ti ti-refresh"></i> Refresh</button>
     </div>
     ${machines.length
       ? machines.map(m => pmMachineBlock(m, canLog)).join('')
-      : `<div class="empty"><div class="empty-ic"><i class="ti ti-tool"></i></div><h3>No machines</h3><p>Add machines in Master Data.</p></div>`}`;
+      : `<div class="empty"><div class="empty-ic"><i class="ti ti-tool"></i></div><h3>No machines</h3><p>Add machines in Master Data.</p></div>`}
+    ${recentHtml}`;
 }
 
 function pmMachineBlock(m, canLog) {
@@ -1047,6 +1072,252 @@ function printSparesMRO_bd(sparesId) {
   </body></html>`);
   win.document.close();
   win.print();
+}
+
+/* ── Breakdown & PM Edit/Delete Functions ── */
+function openBreakdownDetailModal(id) {
+  const b = S_MNT.breakdowns.find(x => x.id === id);
+  if (!b) return;
+  const mach = (S.machines || []).find(m => m.id === b.machineId);
+  const dateShift = `${b.date || ''} · ${b.shift ? 'Shift ' + b.shift : ''} · ${b.breakdownTime || ''}`;
+
+  const stColor = b.status==='open'?'var(--err)':b.status==='acknowledged'?'var(--warn)':'var(--ok)';
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Breakdown Details</div>
+    <div style="background:var(--sur2);border-radius:var(--rs);padding:12px;margin-bottom:14px;font-size:13px;border-left:4px solid ${stColor}">
+      <div style="font-weight:800;font-size:15px;color:var(--imf-navy);margin-bottom:6px">${b.machineName || mach?.name || '—'}</div>
+      <div><strong>Date/Shift:</strong> ${dateShift}</div>
+      <div style="margin-top:4px"><strong>Status:</strong> <span class="imf-badge" style="background:${stColor};color:#fff;padding:2px 6px">${b.status}</span></div>
+      <div style="margin-top:4px"><strong>Reported By:</strong> ${b.reportedByName || '—'}</div>
+    </div>
+
+    <div class="f" style="margin-bottom:12px">
+      <label>Description</label>
+      <div style="background:var(--bg);padding:8px 10px;border-radius:6px;font-size:13px;border:1px solid var(--line); white-space:pre-wrap">${b.description || '—'}</div>
+    </div>
+
+    ${b.faultDescription ? `
+      <div style="margin-bottom:12px">
+        <label>Fault details</label>
+        <div style="background:var(--bg);padding:8px 10px;border-radius:6px;font-size:13px;border:1px solid var(--line); white-space:pre-wrap">
+          ${b.faultCategory ? `<strong>${b.faultCategory}</strong> — ` : ''}${b.faultDescription}
+        </div>
+      </div>` : ''}
+
+    <div style="display:flex;gap:10px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Close</button>
+      ${isAdmin() ? `<button class="btn btn-p" style="flex:1" onclick="openEditBreakdownModal('${b.id}')"><i class="ti ti-edit"></i> Edit</button>` : ''}
+    </div>
+    ${isTanmay() ? `
+    <button class="btn btn-d w-full mt-8" onclick="deleteBreakdown('${b.id}')">
+      <i class="ti ti-trash"></i> Delete Breakdown
+    </button>` : ''}
+  `);
+}
+
+function openEditBreakdownModal(id) {
+  if (!isAdmin()) { toast('Access denied'); return; }
+  const b = S_MNT.breakdowns.find(x => x.id === id);
+  if (!b) return;
+
+  const allMachines = (S.machines || []).filter(m => m.active !== false)
+    .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+
+  const machOpts = allMachines.map(m => `<option value="${m.id}|${m.name}" ${b.machineId===m.id?'selected':''}>${m.name}</option>`).join('');
+  const shiftOpts = Object.entries(S.shifts || {})
+    .map(([k, v]) => `<option value="${k}" ${b.shift===k?'selected':''}>${v.label}</option>`).join('');
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Edit Breakdown Log</div>
+    <div class="f">
+      <label>Machine</label>
+      <select id="edit-bd-mach">${machOpts}</select>
+    </div>
+    <div class="row-2" style="margin-top:10px">
+      <div class="f">
+        <label>Date</label>
+        <input id="edit-bd-date" type="date" value="${b.date || ''}">
+      </div>
+      <div class="f">
+        <label>Shift</label>
+        <select id="edit-bd-shift">${shiftOpts}</select>
+      </div>
+    </div>
+    <div class="row-2" style="margin-top:10px">
+      <div class="f">
+        <label>Breakdown Time</label>
+        <input id="edit-bd-time" type="time" value="${b.breakdownTime || ''}">
+      </div>
+      <div class="f">
+        <label>Status</label>
+        <select id="edit-bd-status">
+          <option value="open" ${b.status==='open'?'selected':''}>Open</option>
+          <option value="acknowledged" ${b.status==='acknowledged'?'selected':''}>Acknowledged</option>
+          <option value="diagnosed" ${b.status==='diagnosed'?'selected':''}>Diagnosed</option>
+          <option value="released" ${b.status==='released'?'selected':''}>Released (Resolved)</option>
+        </select>
+      </div>
+    </div>
+    <div class="f" style="margin-top:10px">
+      <label>Description</label>
+      <textarea id="edit-bd-desc" rows="3" style="resize:vertical; width: 100%">${b.description || ''}</textarea>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn btn-s" style="flex:1" onclick="openBreakdownDetailModal('${b.id}')">Back</button>
+      <button class="btn btn-p" style="flex:1" onclick="saveEditBreakdown('${b.id}')">Save Changes</button>
+    </div>
+  `);
+}
+
+async function saveEditBreakdown(id) {
+  if (!isAdmin()) { toast('Access denied'); return; }
+  const b = S_MNT.breakdowns.find(x => x.id === id);
+  if (!b) return;
+
+  const machVal = document.getElementById('edit-bd-mach')?.value || '';
+  const [machId, machName] = machVal.split('|');
+  const date = document.getElementById('edit-bd-date')?.value;
+  const shift = document.getElementById('edit-bd-shift')?.value;
+  const time = document.getElementById('edit-bd-time')?.value;
+  const status = document.getElementById('edit-bd-status')?.value;
+  const desc = document.getElementById('edit-bd-desc')?.value;
+
+  if (!machId || !date || !shift || !desc) { toast('All fields marked * are required'); return; }
+
+  try {
+    await db.collection('breakdowns').doc(id).update({
+      machineId: machId, machineName: machName,
+      date, shift, breakdownTime: time, status, description: desc,
+      updatedAt: serverTS()
+    });
+    await logAudit('EDIT_BREAKDOWN', 'MAINTENANCE', id, b, { machineId: machId, status });
+    closeModal();
+    await refreshMaint();
+    toast('Breakdown updated ✓');
+  } catch (e) {
+    toast('Error: ' + friendlyError(e));
+  }
+}
+
+async function deleteBreakdown(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
+  const b = S_MNT.breakdowns.find(x => x.id === id);
+  if (!b) return;
+
+  if (!confirm(`Delete breakdown log for machine ${b.machineName || b.machineId}? This cannot be undone.`)) return;
+
+  try {
+    const batch = db.batch();
+    batch.delete(db.collection('breakdowns').doc(id));
+
+    const machStatusRef = db.collection('machineStatus').doc(b.machineId);
+    const msSnap = await machStatusRef.get();
+    if (msSnap.exists) {
+      const ms = msSnap.data();
+      if (ms.activeBreakdownId === id) {
+        batch.update(machStatusRef, {
+          status: 'idle',
+          activeBreakdownId: firebase.firestore.FieldValue.delete(),
+          updatedAt: serverTS()
+        });
+      }
+    }
+
+    await batch.commit();
+    await logAudit('DELETE_BREAKDOWN', 'MAINTENANCE', id, b, null);
+    closeModal();
+    await refreshMaint();
+    toast('Breakdown log deleted ✓');
+  } catch (e) {
+    toast('Error: ' + friendlyError(e));
+  }
+}
+
+function openPmLogDetailModal(id) {
+  const l = S_MNT.pmLogs.find(x => x.id === id);
+  if (!l) return;
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">PM Log Details</div>
+    <div style="background:var(--sur2);border-radius:var(--rs);padding:12px;margin-bottom:14px;font-size:13px">
+      <div><strong>Machine:</strong> ${l.machineName || l.machineId}</div>
+      <div style="margin-top:4px"><strong>Interval:</strong> ${PM_INTERVALS.find(iv => iv.key === l.interval)?.label || l.interval}</div>
+      <div style="margin-top:4px"><strong>Date Done:</strong> ${fmtDate(l.date)}</div>
+      <div style="margin-top:4px"><strong>Done By:</strong> ${l.doneByName || '—'}</div>
+    </div>
+
+    <div class="f" style="margin-bottom:12px">
+      <label>Notes</label>
+      <div style="background:var(--bg);padding:8px 10px;border-radius:6px;font-size:13px;border:1px solid var(--line); white-space:pre-wrap">${l.notes || '—'}</div>
+    </div>
+
+    <div style="display:flex;gap:10px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Close</button>
+      ${isAdmin() ? `<button class="btn btn-p" style="flex:1" onclick="openEditPmLogModal('${l.id}')"><i class="ti ti-edit"></i> Edit Notes</button>` : ''}
+    </div>
+    ${isTanmay() ? `
+    <button class="btn btn-d w-full mt-8" onclick="deletePmLog('${l.id}')">
+      <i class="ti ti-trash"></i> Delete PM Log
+    </button>` : ''}
+  `);
+}
+
+function openEditPmLogModal(id) {
+  if (!isAdmin()) { toast('Access denied'); return; }
+  const l = S_MNT.pmLogs.find(x => x.id === id);
+  if (!l) return;
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Edit PM Log Notes</div>
+    <div class="f" style="margin-bottom:16px">
+      <label>Notes</label>
+      <textarea id="edit-pm-notes" rows="3" style="resize:vertical; width: 100%">${l.notes || ''}</textarea>
+    </div>
+    <div style="display:flex;gap:10px">
+      <button class="btn btn-s" style="flex:1" onclick="openPmLogDetailModal('${l.id}')">Back</button>
+      <button class="btn btn-p" style="flex:1" onclick="saveEditPmLog('${l.id}')">Save Changes</button>
+    </div>
+  `);
+}
+
+async function saveEditPmLog(id) {
+  if (!isAdmin()) { toast('Access denied'); return; }
+  const l = S_MNT.pmLogs.find(x => x.id === id);
+  if (!l) return;
+
+  const notes = document.getElementById('edit-pm-notes')?.value || '';
+  try {
+    await db.collection('pmLogs').doc(id).update({ notes, updatedAt: serverTS() });
+    await logAudit('EDIT_PM_LOG', 'MAINTENANCE', id, l, { notes });
+    closeModal();
+    await refreshMaint();
+    toast('PM Log notes updated ✓');
+  } catch (e) {
+    toast('Error: ' + friendlyError(e));
+  }
+}
+
+async function deletePmLog(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
+  const l = S_MNT.pmLogs.find(x => x.id === id);
+  if (!l) return;
+
+  if (!confirm(`Delete PM log for machine ${l.machineName || l.machineId}?`)) return;
+
+  try {
+    await db.collection('pmLogs').doc(id).delete();
+    await logAudit('DELETE_PM_LOG', 'MAINTENANCE', id, l, null);
+    closeModal();
+    await refreshMaint();
+    toast('PM Log deleted ✓');
+  } catch (e) {
+    toast('Error: ' + friendlyError(e));
+  }
 }
 
 /* ── Boot ────────────────────────────────────────────────────────────── */

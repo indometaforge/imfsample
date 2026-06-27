@@ -1038,11 +1038,12 @@ function confirmAddRun() {
   _machineData[machId].used = true;
 
   const tagId = _runTagId;
+  const part = (S.parts || []).find(p => p.id === _runCard.partId);
   _machineData[machId].runs.push({
     tagId,
-    partId:        _runCard.partId,
-    partName:      _runCard.partName,
-    partNo:        _runCard.partNo,
+    partId:        _runCard.partId || '',
+    partName:      _runCard.partName || part?.name || '',
+    partNo:        _runCard.partNo || part?.no || '',
     opId:          _runCard.nextOp?.opId || '',
     opName:        (S.operations || []).find(o => o.id === _runCard.nextOp?.opId)?.name || '',
     cycleTimeSecs: _runCard.cycleTimeSecs || 0,
@@ -1055,7 +1056,7 @@ function confirmAddRun() {
   closeModal();
   triggerAutoSave();
   renderMachineDetail();
-  toast(`Run added: \${processed} pcs ✓`);
+  toast(`Run added: ${processed} pcs ✓`);
 }
 
 /* — Add Downtime Modal — */
@@ -1410,8 +1411,8 @@ async function _doFinalizeShift() {
    Delete= reverse the report's route-card effects and remove it.
    Both REFUSE if any affected card was split or has moved downstream
    (HT/QC/Dispatch) — auto-reversal isn't safe then. */
-const canManageReports = () =>
-  S.sess?.email === 'tanmay@indometaforge.in' || S.sess?.role === 'admin';
+const canManageReports = () => isAdmin();
+const isOwner = () => isTanmay();
 
 /* Reverse a report's effect on every route card it touched, then delete the
    report doc. Returns { ok:true } or { ok:false, error }. */
@@ -2623,7 +2624,7 @@ function breakdownCard(b) {
   const mach = (S.machines || []).find(m => m.id === b.machineId);
   const dateShift = `${b.date || ''} · ${b.shift ? 'Shift ' + b.shift : ''} · ${b.breakdownTime || ''}`;
   return `
-    <div class="imf-card" style="margin-bottom:12px; border-left: 3px solid ${b.status==='open'?'var(--err)':b.status==='acknowledged'?'var(--warn)':'var(--ok)'}">
+    <div class="imf-card" onclick="openBreakdownDetailModal('${b.id}')" style="cursor:pointer; margin-bottom:12px; border-left: 3px solid ${b.status==='open'?'var(--err)':b.status==='acknowledged'?'var(--warn)':'var(--ok)'}">
       <div class="imf-card-top">
         <span style="font-weight:700;font-size:14.5px;color:var(--imf-navy)">${b.machineName || mach?.name || '—'}</span>
         <div class="grow"></div>
@@ -3681,6 +3682,169 @@ async function loadAndRenderPlans() {
     </div>
     ${results.length ? `<div class="imf-cards" style="margin-top:12px">${cardsHtml}</div>` : ''}
   `;
+}
+/* ── Breakdown Details & Edit/Delete Functions ── */
+function openBreakdownDetailModal(id) {
+  const b = S.breakdowns.find(x => x.id === id);
+  if (!b) return;
+  const mach = (S.machines || []).find(m => m.id === b.machineId);
+  const dateShift = `${b.date || ''} · ${b.shift ? 'Shift ' + b.shift : ''} · ${b.breakdownTime || ''}`;
+
+  const stColor = b.status==='open'?'var(--err)':b.status==='acknowledged'?'var(--warn)':'var(--ok)';
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Breakdown Details</div>
+    <div style="background:var(--sur2);border-radius:var(--rs);padding:12px;margin-bottom:14px;font-size:13px;border-left:4px solid ${stColor}">
+      <div style="font-weight:800;font-size:15px;color:var(--imf-navy);margin-bottom:6px">${b.machineName || mach?.name || '—'}</div>
+      <div><strong>Date/Shift:</strong> ${dateShift}</div>
+      <div style="margin-top:4px"><strong>Status:</strong> <span class="imf-badge" style="background:${stColor};color:#fff;padding:2px 6px">${b.status}</span></div>
+      <div style="margin-top:4px"><strong>Reported By:</strong> ${b.reportedByName || '—'}</div>
+    </div>
+
+    <div class="f" style="margin-bottom:12px">
+      <label>Description</label>
+      <div style="background:var(--bg);padding:8px 10px;border-radius:6px;font-size:13px;border:1px solid var(--line); white-space:pre-wrap">${b.description || '—'}</div>
+    </div>
+
+    ${b.faultDescription ? `
+      <div style="margin-bottom:12px">
+        <label>Fault details</label>
+        <div style="background:var(--bg);padding:8px 10px;border-radius:6px;font-size:13px;border:1px solid var(--line); white-space:pre-wrap">
+          ${b.faultCategory ? `<strong>${b.faultCategory}</strong> — ` : ''}${b.faultDescription}
+        </div>
+      </div>` : ''}
+
+    <div style="display:flex;gap:10px">
+      <button class="btn btn-s" style="flex:1" onclick="closeModal()">Close</button>
+      ${isAdmin() ? `<button class="btn btn-p" style="flex:1" onclick="openEditBreakdownModal('${b.id}')"><i class="ti ti-edit"></i> Edit</button>` : ''}
+    </div>
+    ${isTanmay() ? `
+    <button class="btn btn-d w-full mt-8" onclick="deleteBreakdown('${b.id}')">
+      <i class="ti ti-trash"></i> Delete Breakdown
+    </button>` : ''}
+  `);
+}
+
+function openEditBreakdownModal(id) {
+  if (!isAdmin()) { toast('Access denied'); return; }
+  const b = S.breakdowns.find(x => x.id === id);
+  if (!b) return;
+
+  const allMachines = (S.machines || []).filter(m => m.active !== false)
+    .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+
+  const machOpts = allMachines.map(m => `<option value="${m.id}|${m.name}" ${b.machineId===m.id?'selected':''}>${m.name}</option>`).join('');
+  const shiftOpts = Object.entries(S.shifts || {})
+    .map(([k, v]) => `<option value="${k}" ${b.shift===k?'selected':''}>${v.label}</option>`).join('');
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <div class="modal-title">Edit Breakdown Log</div>
+    <div class="f">
+      <label>Machine</label>
+      <select id="edit-bd-mach">${machOpts}</select>
+    </div>
+    <div class="row-2" style="margin-top:10px">
+      <div class="f">
+        <label>Date</label>
+        <input id="edit-bd-date" type="date" value="${b.date || ''}">
+      </div>
+      <div class="f">
+        <label>Shift</label>
+        <select id="edit-bd-shift">${shiftOpts}</select>
+      </div>
+    </div>
+    <div class="row-2" style="margin-top:10px">
+      <div class="f">
+        <label>Breakdown Time</label>
+        <input id="edit-bd-time" type="time" value="${b.breakdownTime || ''}">
+      </div>
+      <div class="f">
+        <label>Status</label>
+        <select id="edit-bd-status">
+          <option value="open" ${b.status==='open'?'selected':''}>Open</option>
+          <option value="acknowledged" ${b.status==='acknowledged'?'selected':''}>Acknowledged</option>
+          <option value="diagnosed" ${b.status==='diagnosed'?'selected':''}>Diagnosed</option>
+          <option value="released" ${b.status==='released'?'selected':''}>Released (Resolved)</option>
+        </select>
+      </div>
+    </div>
+    <div class="f" style="margin-top:10px">
+      <label>Description</label>
+      <textarea id="edit-bd-desc" rows="3" style="resize:vertical; width: 100%">${b.description || ''}</textarea>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn btn-s" style="flex:1" onclick="openBreakdownDetailModal('${b.id}')">Back</button>
+      <button class="btn btn-p" style="flex:1" onclick="saveEditBreakdown('${b.id}')">Save Changes</button>
+    </div>
+  `);
+}
+
+async function saveEditBreakdown(id) {
+  if (!isAdmin()) { toast('Access denied'); return; }
+  const b = S.breakdowns.find(x => x.id === id);
+  if (!b) return;
+
+  const machVal = document.getElementById('edit-bd-mach')?.value || '';
+  const [machId, machName] = machVal.split('|');
+  const date = document.getElementById('edit-bd-date')?.value;
+  const shift = document.getElementById('edit-bd-shift')?.value;
+  const time = document.getElementById('edit-bd-time')?.value;
+  const status = document.getElementById('edit-bd-status')?.value;
+  const desc = document.getElementById('edit-bd-desc')?.value;
+
+  if (!machId || !date || !shift || !desc) { toast('All fields marked * are required'); return; }
+
+  try {
+    await db.collection('breakdowns').doc(id).update({
+      machineId: machId, machineName: machName,
+      date, shift, breakdownTime: time, status, description: desc,
+      updatedAt: serverTS()
+    });
+    await logAudit('EDIT_BREAKDOWN', 'PRODUCTION', id, b, { machineId: machId, status });
+    closeModal();
+    await loadData();
+    render();
+    toast('Breakdown updated ✓');
+  } catch (e) {
+    toast('Error: ' + friendlyError(e));
+  }
+}
+
+async function deleteBreakdown(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
+  const b = S.breakdowns.find(x => x.id === id);
+  if (!b) return;
+
+  if (!confirm(`Delete breakdown log for machine ${b.machineName || b.machineId}? This cannot be undone.`)) return;
+
+  try {
+    const batch = db.batch();
+    batch.delete(db.collection('breakdowns').doc(id));
+
+    const machStatusRef = db.collection('machineStatus').doc(b.machineId);
+    const msSnap = await machStatusRef.get();
+    if (msSnap.exists) {
+      const ms = msSnap.data();
+      if (ms.activeBreakdownId === id) {
+        batch.update(machStatusRef, {
+          status: 'idle',
+          activeBreakdownId: firebase.firestore.FieldValue.delete(),
+          updatedAt: serverTS()
+        });
+      }
+    }
+
+    await batch.commit();
+    await logAudit('DELETE_BREAKDOWN', 'PRODUCTION', id, b, null);
+    closeModal();
+    await loadData();
+    render();
+    toast('Breakdown log deleted ✓');
+  } catch (e) {
+    toast('Error: ' + friendlyError(e));
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════

@@ -197,7 +197,7 @@ function modalActions(saveLabel, saveOnclick) {
 
 /** Standalone "Delete" button shown only to admins, when editing an existing record */
 function modalDeleteButton(onclick, label = 'Delete') {
-  if (S.sess?.role !== 'admin') return '';
+  if (!isTanmay()) return '';
   return `
     <button class="btn btn-d w-full mt-8" onclick="${onclick}">
       <i class="ti ti-trash" aria-hidden="true"></i> ${label}
@@ -322,6 +322,7 @@ function openMachineModal(id) {
 }
 
 async function deleteMachine(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
   if (!confirm('Delete this machine? This cannot be undone.')) return;
   try {
     const before = S.machines.find(x => x.id === id);
@@ -485,9 +486,10 @@ function routingRow(po, stepNum, totalSteps) {
         <button class="btn btn-s btn-sm" onclick="openRoutingModal('${po.partId}','${po.id}')" title="Edit">
           <i class="ti ti-edit" aria-hidden="true"></i>
         </button>
+        ${isTanmay() ? `
         <button class="btn btn-d btn-sm" onclick="deleteRouting('${po.id}','${po.partId}')" title="Remove">
           <i class="ti ti-trash" aria-hidden="true"></i>
-        </button>
+        </button>` : ''}
       </div>
     </div>`;
 }
@@ -537,6 +539,7 @@ function openPartModal(id) {
 }
 
 async function deletePart(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
   if (!confirm('Delete this part? Its operations routing will also be removed. This cannot be undone.')) return;
   try {
     const before = S.parts.find(x => x.id === id);
@@ -754,6 +757,7 @@ async function saveRouting(partId, poId) {
 }
 
 async function deleteRouting(poId, partId) {
+  if (!isTanmay()) { toast('Access denied'); return; }
   if (!confirm('Remove this operation from the routing for this part?')) return;
   try {
     const before = S.partOps.find(x => x.id === poId);
@@ -834,6 +838,7 @@ function openOperationModal(id) {
 }
 
 async function deleteOperation(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
   if (!confirm('Delete this operation? This cannot be undone.')) return;
   try {
     const before = S.operations.find(x => x.id === id);
@@ -977,6 +982,7 @@ function openCustomerModal(id) {
 }
 
 async function deleteCustomer(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
   if (!confirm('Delete this customer? This cannot be undone.')) return;
   try {
     const before = S.customers.find(x => x.id === id);
@@ -1026,6 +1032,7 @@ function openMergeModal(deleteId) {
 }
 
 async function confirmMergeCustomer(deleteId) {
+  if (!isTanmay()) { showModalError('Access denied'); return; }
   const keepId = document.getElementById('mg-keep')?.value;
   if (!keepId) { showModalError('Select the customer to keep.'); return; }
 
@@ -1182,6 +1189,7 @@ function openSupplierModal(id) {
 }
 
 async function deleteSupplier(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
   if (!confirm('Delete this supplier? This cannot be undone.')) return;
   try {
     const before = S.suppliers.find(x => x.id === id);
@@ -1441,6 +1449,7 @@ function renderFcChips() {
 }
 
 async function deleteFpnCpn(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
   if (!confirm('Delete this FPN ↔ CPN mapping? This cannot be undone.')) return;
   try {
     const before = S.fpnCpnMap.find(x => x.id === id);
@@ -1652,6 +1661,7 @@ function openSupplierWipModal(id) {
 }
 
 async function deleteSupplierWip(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
   if (!confirm('Delete this opening balance? This cannot be undone.')) return;
   try {
     const before = S.supplierWipOpening.find(x => x.id === id);
@@ -1760,6 +1770,7 @@ function openPersonnelModal(id) {
 }
 
 async function deletePersonnel(id) {
+  if (!isTanmay()) { toast('Access denied'); return; }
   if (!confirm('Delete this person? This cannot be undone.')) return;
   try {
     const before = S.users.find(x => x.id === id);
@@ -1952,6 +1963,7 @@ async function sendUserPasswordReset(email) {
 }
 
 async function deleteUserAccess(id) {
+  if (!isTanmay()) { showModalError('Access denied'); return; }
   const u = S.users.find(x => x.id === id);
   if (u && u.id === S.sess.userId) {
     showModalError('You cannot delete your own account.');
