@@ -1131,172 +1131,206 @@ async function savePo() {
   } catch (e) { toast(friendlyError(e)); }
 }
 
-/* ── Export SO function (Voucher Style Print Layout) ── */
+/* ── Export single SO voucher (jsPDF, mirrors the original print-layout) ──
+   IMPORTANT — do not revert this to window.print(). That approach opens the
+   browser print dialog (slow, inconsistent rendering of the injected
+   #imf-print-section, and on file:// pages the @media print rules can fail
+   to apply at all — producing a broken multi-page CSS dump instead of the
+   voucher). jsPDF generates the file directly and instantly instead.
+   NOTE: never pass the literal ₹ glyph to doc.text() — jsPDF's standard
+   "helvetica" font has no Rupee glyph in WinAnsiEncoding and silently
+   substitutes a garbled character (visually "broken" output). Use "Rs."
+   NOTE: the jsPDF constructor below MUST keep compress:true — without it,
+   the embedded logo PNG is stored raw/uncompressed and balloons the file
+   to ~2MB instead of ~30KB. */
 function exportSoToPDF(soId) {
   const p = S_DSP.pos.find(x => x.id === soId);
   if (!p) { toast('Sales Order not found'); return; }
+
+  if (typeof window.jspdf === 'undefined') {
+    toast('PDF export library failed to load. Check your connection and retry.', 4000);
+    return;
+  }
 
   const lines = p.lines || [];
   const uniqueParts = new Set(lines.map(l => l.partId)).size;
   const totalQty = lines.reduce((acc, l) => acc + (l.scheduledQty || 0), 0);
   const totalVal = lines.reduce((acc, l) => acc + ((l.scheduledQty || 0) * (l.pieceRateINR || 0)), 0);
+  const fmtRs = (n) => 'Rs. ' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
-  // Create or reuse temporary container for printing
-  let printDiv = document.getElementById('imf-print-section');
-  if (!printDiv) {
-    printDiv = document.createElement('div');
-    printDiv.id = 'imf-print-section';
-    document.body.appendChild(printDiv);
-  } else {
-    printDiv.innerHTML = '';
-  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
+  const pageWidth = 210, pageHeight = 297, margin = 14, rightMargin = pageWidth - margin;
+  const footerY = pageHeight - 10;
 
-  // Create style element
-  const styleEl = document.createElement('style');
-  styleEl.innerHTML = `
-    #imf-print-section { display: none !important; }
-    @media print {
-      body > *:not(#imf-print-section) { display: none !important; }
-      #imf-print-section, #imf-print-section * { display: block !important; }
-      #imf-print-section { 
-        display: block !important; 
-        position: absolute; 
-        left: 0; 
-        top: 0; 
-        width: 100%; 
-        padding: 20px; 
-        background: #ffffff !important; 
-        color: #1e293b !important;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        line-height: 1.5;
-      }
-      .print-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #1e2b6b; padding-bottom: 20px; margin-bottom: 20px; }
-      .print-title { font-size: 22px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: #1e2b6b; margin-top: 5px; }
-      .print-meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 24px; }
-      .print-meta-box { background: #f8fafc; padding: 12px; border-radius: 6px; border: 1px solid #e2e8f0; }
-      .print-meta-title { font-size: 11px; text-transform: uppercase; color: #64748b; font-weight: 700; margin-bottom: 4px; }
-      .print-meta-val { font-size: 14px; font-weight: 700; color: #0f172a; }
-      .print-table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
-      .print-table th { background: #1e2b6b !important; color: #ffffff !important; text-align: left; padding: 10px 12px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; border: none; }
-      .print-table td { padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-size: 13px; color: #334155; }
-      .print-num { text-align: right; }
-      .print-summary-box { display: flex; justify-content: flex-end; gap: 40px; background: #f1f5f9 !important; padding: 15px 20px; border-radius: 6px; font-size: 14px; margin-bottom: 24px; border: 1px solid #cbd5e1; }
-      .print-notes { background: #fffbeb !important; border: 1px solid #fef3c7; color: #713f12 !important; padding: 15px; border-radius: 6px; font-size: 12.5px; }
-      .print-footer { text-align: center; margin-top: 40px; font-size: 11px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 20px; }
+  const drawHeader = () => {
+    /* Logo top-left + title below it (white background, no navy bar) */
+    if (typeof IMF_LOGO_BASE64 !== 'undefined') {
+      try {
+        const logoH = 13, logoW = logoH * 2.26;
+        doc.addImage('data:image/png;base64,' + IMF_LOGO_BASE64, 'PNG', margin, 12, logoW, logoH);
+      } catch (e) { console.warn('PDF logo render failed:', e); }
     }
-  `;
-  printDiv.appendChild(styleEl);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(17);
+    doc.setTextColor(30, 43, 107);
+    doc.text('SALES ORDER VOUCHER', margin, 36);
 
-  // Print Header
-  const headerDiv = document.createElement('div');
-  headerDiv.className = 'print-header';
-  
-  const logoWrapper = document.createElement('div');
-  if (typeof IMF_LOGO_BASE64 !== 'undefined') {
-    const logoImg = document.createElement('img');
-    logoImg.style.maxHeight = '48px';
-    logoImg.style.width = 'auto';
-    logoImg.alt = 'Logo';
-    // Programmatically setting src avoids parsing delay of 1.5MB HTML string
-    logoImg.src = 'data:image/png;base64,' + IMF_LOGO_BASE64;
-    logoWrapper.appendChild(logoImg);
-  } else {
-    const logoText = document.createElement('div');
-    logoText.style.fontWeight = '800';
-    logoText.style.fontSize = '20px';
-    logoText.style.color = '#1e2b6b';
-    logoText.textContent = 'INDO META FORGE';
-    logoWrapper.appendChild(logoText);
+    /* SO number + date, top right */
+    doc.setFont('courier', 'bold');
+    doc.setFontSize(14);
+    doc.setTextColor(30, 43, 107);
+    doc.text(p.poNo || '—', rightMargin, 20, { align: 'right' });
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Date: ${fmtDate(p.poDate)}`, rightMargin, 26, { align: 'right' });
+
+    /* Navy rule under header */
+    doc.setDrawColor(30, 43, 107);
+    doc.setLineWidth(0.7);
+    doc.line(margin, 42, rightMargin, 42);
+    doc.setLineWidth(0.1);
+
+    return 50;
+  };
+
+  const drawFooter = (pageNum, pageCount) => {
+    doc.setDrawColor(226, 232, 240);
+    doc.setLineWidth(0.1);
+    doc.line(margin, footerY - 6, rightMargin, footerY - 6);
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(8);
+    doc.setTextColor(148, 163, 184);
+    doc.text('Generated automatically via IMF ProTrack · Confirmed and locked document', margin, footerY);
+    doc.text(`Page ${pageNum} of ${pageCount}`, rightMargin, footerY, { align: 'right' });
+  };
+
+  let y = drawHeader();
+
+  /* Meta boxes: Customer Details / Delivery Schedule */
+  const boxW = (pageWidth - margin * 2 - 6) / 2;
+  const boxH = 20;
+  [
+    { x: margin, title: 'CUSTOMER DETAILS', lines: [
+      [p.customerName || '—', true],
+      ...(p.custPoNo ? [[`Customer PO Ref: ${p.custPoNo}`, false]] : [])
+    ] },
+    { x: margin + boxW + 6, title: 'DELIVERY SCHEDULE', lines: [
+      [`Month: ${fmtMonth(p.deliveryMonth) || '—'}`, true],
+      ...(p.remarks ? [[`Remarks: ${p.remarks}`, false]] : [])
+    ] }
+  ].forEach(box => {
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(226, 232, 240);
+    doc.roundedRect(box.x, y, boxW, boxH, 2, 2, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+    doc.text(box.title, box.x + 4, y + 6);
+    let ly = y + 12;
+    box.lines.forEach(([text, emphasis]) => {
+      doc.setFont('helvetica', emphasis ? 'bold' : 'normal');
+      doc.setFontSize(emphasis ? 11 : 9);
+      doc.setTextColor(emphasis ? 15 : 71, emphasis ? 23 : 85, emphasis ? 42 : 105);
+      doc.text(text, box.x + 4, ly);
+      ly += emphasis ? 6 : 5;
+    });
+  });
+  y += boxH + 8;
+
+  /* Lines table */
+  const headers = ['#', 'Part Name / Number', 'PO Qty', 'Accepted Qty', 'This Schedule Qty', 'Rate (Rs.)', 'Subtotal (Rs.)'];
+  const bodyRows = lines.map((l, idx) => [
+    idx + 1,
+    `${l.partName || '—'}\nDue: ${fmtLineDue(l, p.deliveryMonth)}`,
+    (l.customerPoQty || 0).toLocaleString('en-IN'),
+    (l.totalScheduleQty || 0).toLocaleString('en-IN'),
+    (l.scheduledQty || 0).toLocaleString('en-IN'),
+    (l.pieceRateINR || 0).toFixed(2),
+    ((l.scheduledQty || 0) * (l.pieceRateINR || 0)).toFixed(2)
+  ]);
+
+  doc.autoTable({
+    head: [headers],
+    body: bodyRows,
+    startY: y,
+    margin: { left: margin, right: margin, top: 50, bottom: 20 },
+    theme: 'grid',
+    styles: { font: 'helvetica', fontSize: 9, cellPadding: 2.5, lineColor: [226, 232, 240], lineWidth: 0.1 },
+    headStyles: { fillColor: [30, 43, 107], textColor: [255, 255, 255], fontStyle: 'bold' },
+    columnStyles: {
+      0: { halign: 'center', cellWidth: 8 },
+      2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' },
+      5: { halign: 'right' }, 6: { halign: 'right', fontStyle: 'bold' }
+    },
+    didDrawPage: () => { if (doc.internal.getCurrentPageInfo().pageNumber > 1) drawHeader(); }
+  });
+
+  y = doc.lastAutoTable.finalY + 10;
+
+  /* Page-break guard: summary + notes need ~60mm of room */
+  if (y + 60 > pageHeight - 18) {
+    doc.addPage();
+    y = drawHeader();
   }
 
-  const titleDiv = document.createElement('div');
-  titleDiv.className = 'print-title';
-  titleDiv.textContent = 'Sales Order Voucher';
-  logoWrapper.appendChild(titleDiv);
-  headerDiv.appendChild(logoWrapper);
+  /* Summary box */
+  doc.setFillColor(241, 245, 249);
+  doc.setDrawColor(203, 213, 225);
+  doc.roundedRect(margin, y, pageWidth - margin * 2, 13, 2, 2, 'FD');
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9.5);
+  doc.setTextColor(51, 65, 85);
+  doc.text(`Unique Parts: ${uniqueParts}`, margin + 5, y + 8);
+  doc.text(`Total Quantity: ${totalQty.toLocaleString('en-IN')} pcs`, margin + 55, y + 8);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(30, 43, 107);
+  doc.text(`Total Estimated Value: ${fmtRs(totalVal)}`, rightMargin - 5, y + 8, { align: 'right' });
+  y += 21;
 
-  const metaRight = document.createElement('div');
-  metaRight.style.textAlign = 'right';
-  metaRight.innerHTML = `
-    <div style="font-size: 18px; font-weight: 800; color: #1e2b6b; font-family: monospace;">${p.poNo}</div>
-    <div style="font-size: 12px; color: #64748b; margin-top: 2px;">Date: ${fmtDate(p.poDate)}</div>
-  `;
-  headerDiv.appendChild(metaRight);
-  printDiv.appendChild(headerDiv);
+  /* Standard notes */
+  const notes = [
+    'All taxes, custom duties, and GST will be applicable additionally as per standard rates at the time of invoicing/dispatch.',
+    `Quantities scheduled above represent the accepted manufacturing plan for delivery within the month of ${fmtMonth(p.deliveryMonth) || 'specified delivery month'}.`,
+    'Any deviation in dispatch schedules must be reported and aligned with production heads at least 3 business days in advance.'
+  ];
+  const noteBoxH = noteHeight(notes, pageWidth - margin * 2 - 8, doc);
+  doc.setFillColor(255, 251, 235);
+  doc.setDrawColor(254, 243, 199);
+  doc.roundedRect(margin, y, pageWidth - margin * 2, noteBoxH, 2, 2, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.setTextColor(113, 63, 18);
+  doc.text('Standard Notes & Terms:', margin + 4, y + 6);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  let noteY = y + 11;
+  notes.forEach(n => {
+    const wrapped = doc.splitTextToSize(`•  ${n}`, pageWidth - margin * 2 - 8);
+    doc.text(wrapped, margin + 4, noteY);
+    noteY += wrapped.length * 4.2;
+  });
 
-  // Voucher Info Content (Meta, Table, Notes)
-  const contentDiv = document.createElement('div');
-  contentDiv.innerHTML = `
-    <div class="print-meta-grid">
-      <div class="print-meta-box">
-        <div class="print-meta-title">Customer Details</div>
-        <div class="print-meta-val">${p.customerName || '—'}</div>
-        ${p.custPoNo ? `<div style="font-size: 12px; color: #475569; margin-top: 4px;">Customer PO Ref: <strong style="color:#1e2b6b">${p.custPoNo}</strong></div>` : ''}
-      </div>
-      <div class="print-meta-box">
-        <div class="print-meta-title">Delivery Schedule</div>
-        <div class="print-meta-val">Month: ${fmtMonth(p.deliveryMonth) || '—'}</div>
-        ${p.remarks ? `<div style="font-size: 12px; color: #475569; margin-top: 4px;">Remarks: ${p.remarks}</div>` : ''}
-      </div>
-    </div>
+  /* Footer + page numbers on every page */
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    drawFooter(i, pageCount);
+  }
 
-    <table class="print-table">
-      <thead>
-        <tr>
-          <th style="width: 40px">#</th>
-          <th>Part Name / Number</th>
-          <th class="print-num">PO Qty</th>
-          <th class="print-num">Accepted Qty</th>
-          <th class="print-num">This Schedule Qty</th>
-          <th class="print-num">Rate (₹)</th>
-          <th class="print-num">Subtotal (₹)</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${lines.map((l, idx) => `
-          <tr>
-            <td>${idx + 1}</td>
-            <td><strong>${l.partName || '—'}</strong><br><span style="font-size:11px; color:#64748b">Due: ${fmtLineDue(l, p.deliveryMonth)}</span></td>
-            <td class="print-num">${l.customerPoQty || 0}</td>
-            <td class="print-num">${l.totalScheduleQty || 0}</td>
-            <td class="print-num">${l.scheduledQty || 0}</td>
-            <td class="print-num">${(l.pieceRateINR || 0).toFixed(2)}</td>
-            <td class="print-num"><strong>${((l.scheduledQty || 0) * (l.pieceRateINR || 0)).toFixed(2)}</strong></td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
+  doc.save(`Sales Order-${p.poNo}.pdf`);
+}
 
-    <div class="print-summary-box">
-      <div>Unique Parts: <strong>${uniqueParts}</strong></div>
-      <div>Total Quantity: <strong>${totalQty} pcs</strong></div>
-      <div>Total Estimated Value: <strong style="color: #1e2b6b; font-size: 16px">${fmtINR(totalVal)}</strong></div>
-    </div>
-
-    <div class="print-notes">
-      <strong>Standard Notes & Terms:</strong>
-      <ul style="margin: 8px 0 0 16px; padding: 0;">
-        <li>All taxes, custom duties, and GST will be applicable additionally as per standard rates at the time of invoicing/dispatch.</li>
-        <li>Quantities scheduled above represent the accepted manufacturing plan for delivery within the month of ${fmtMonth(p.deliveryMonth) || 'specified delivery month'}.</li>
-        <li>Any deviation in dispatch schedules must be reported and aligned with production heads at least 3 business days in advance.</li>
-      </ul>
-    </div>
-
-    <div class="print-footer">
-      Generated automatically via IMF PROTRACK System &middot; Confirmed and locked document.
-    </div>
-  `;
-  printDiv.appendChild(contentDiv);
-
-  // Set document title temporarily to ensure correct downloaded file naming
-  const originalTitle = document.title;
-  document.title = `Sales Order - ${p.poNo}`;
-
-  // Trigger print with 50ms delay to let Safari finish layout calculation instantly
-  setTimeout(() => {
-    window.print();
-    document.title = originalTitle;
-  }, 50);
+/* Computes wrapped-notes block height in mm so the notes box can be sized to fit */
+function noteHeight(notes, maxWidth, doc) {
+  let h = 11;
+  notes.forEach(n => {
+    const wrapped = doc.splitTextToSize(`•  ${n}`, maxWidth);
+    h += wrapped.length * 4.2;
+  });
+  return h;
 }
 
 /* ── Export All Sales Orders (SCM layout matching) ── */
