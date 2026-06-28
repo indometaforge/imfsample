@@ -16,6 +16,7 @@ let searchQ   = '';
 let _dispExpanded = {};   /* dispatchId -> bool, lot-allocation breakdown toggle */
 let _bnExpanded    = {};   /* fpn -> bool, internal-bottleneck lot breakdown toggle */
 let _planFilter = 'active'; /* 'active', 'today_plus', 'all' */
+let _selectedCalDate = null;
 
 /* Edit/Delete on every SCM entry: edit is admin-only, delete is restricted
    to one named person by explicit request — mirrors the existing
@@ -51,6 +52,7 @@ const defectLabel = (v) => (SCRAP_DEFECT_CODES.find(d => d.v === v) || {}).l || 
 
 const TABS = [
   { key: 'plan',        label: 'Forging Plan',       icon: 'ti-calendar-event', perm: 'scm_production' },
+  { key: 'calendar',    label: 'Calendar View',      icon: 'ti-calendar',       perm: 'scm_production' },
   { key: 'production',  label: 'Forging Production', icon: 'ti-stack-2',        perm: 'scm_production' },
   { key: 'dispatch',    label: 'Supplier Dispatch',  icon: 'ti-truck-delivery', perm: 'scm_dispatch' },
   { key: 'tower',       label: "Control Tower",      icon: 'ti-radar-2',       perm: 'scm_admin' },
@@ -158,7 +160,13 @@ function switchTab(key) {
 }
 
 function renderSection() {
-  const map = { plan: renderPlan, production: renderProduction, dispatch: renderDispatch, tower: renderControlTower };
+  const map = { 
+    plan: renderPlan, 
+    calendar: renderCalendar,
+    production: renderProduction, 
+    dispatch: renderDispatch, 
+    tower: renderControlTower 
+  };
   (map[activeTab] || renderPlan)();
 }
 
@@ -500,7 +508,9 @@ function renderPlan() {
 
     shifts.forEach(r => {
       const actual = S.forgingProduction
-        .filter(prod => prod.planId === p.id && prod.date === r.date && prod.shift === r.shift)
+        .filter(prod => prod.planId === p.id && 
+          (prod.targetPlanDate ? (prod.targetPlanDate === r.date && prod.targetPlanShift === r.shift) : (prod.date === r.date && prod.shift === r.shift))
+        )
         .reduce((s, prod) => s + (+prod.qtyForged || 0), 0);
       const status = planShiftRowStatus(r.date, actual, +r.qtyPlanned || 0);
 
@@ -576,7 +586,7 @@ function renderPlan() {
                 <td>${imfBadge(r.status, PLAN_STATUS_META)}</td>
                 <td style="white-space:nowrap">
                   ${isScmAdmin() ? `<button class="imf-rowact" onclick="openPlanModal('${r.planId}')" title="Edit forging plan" aria-label="Edit"><i class="ti ti-edit" aria-hidden="true"></i></button>` : ''}
-                  ${isTanmay ? `<button class="btn-delete-plan" onclick="deleteForgingPlan('${r.planId}')" title="Delete forging plan"><i class="ti ti-trash" aria-hidden="true"></i></button>` : ''}
+                  ${isTanmay ? `<button class="btn-delete-plan" onclick="deleteForgingPlanRow('${r.planId}', '${r.date}', '${r.shift}')" title="Delete plan row" aria-label="Delete"><i class="ti ti-trash" aria-hidden="true"></i></button>` : ''}
                 </td>
               </tr>
             `;
@@ -623,7 +633,7 @@ function planShiftCard(r) {
             <i class="ti ti-edit" aria-hidden="true"></i> Edit
           </button>` : ''}
         ${isScmTanmay() ? `
-          <button class="btn-delete-plan" onclick="deleteForgingPlan('${r.planId}')" title="Delete forging plan" style="margin-left:auto">
+          <button class="btn-delete-plan" onclick="deleteForgingPlanRow('${r.planId}', '${r.date}', '${r.shift}')" title="Delete plan row" style="margin-left:auto">
             <i class="ti ti-trash" aria-hidden="true"></i> Delete
           </button>` : ''}
       </div>
@@ -919,13 +929,19 @@ function productionCard(p) {
     </div>`;
 }
 
-function openProductionModal(id) {
+function openProductionModal(id, prefill) {
   if (id && !isScmAdmin()) { toast('Access denied'); return; }
   const p = id ? S.forgingProduction.find(x => x.id === id) : null;
   const consumed = p ? (+p.qtyForged || 0) - (p.qtyRemaining ?? p.qtyForged ?? 0) : 0;
-  const locked = consumed > 0; // FPN/Date can't change once a dispatch has consumed from this lot
+  const locked = consumed > 0;
   const fpns = distinctFpns();
   const hammers = S.machines.filter(m => m.stage === 'forging' && m.isActive !== false);
+
+  const initFpn = prefill?.fpn || p?.fpn || '';
+  const initHammerId = prefill?.hammerId || p?.hammerId || '';
+  const initDate = prefill?.date || p?.date || dateStr();
+  const initShift = prefill?.shift || p?.shift || '';
+  const initQty = p?.qtyForged ?? '';
 
   openModal(`
     <div class="modal-title">${p ? 'Edit Forging Production' : 'Log Forging Production'}</div>
@@ -938,40 +954,110 @@ function openProductionModal(id) {
     <div class="row-2">
       <div class="f">
         <label for="pf-fpn" class="f-req">Forging Part No. (FPN)</label>
-        <select id="pf-fpn" ${locked ? 'disabled' : ''}>
+        <select id="pf-fpn" ${locked ? 'disabled' : ''} onchange="updateProductionModalPlanDropdown(undefined, ${p ? `'${p.id}'` : 'null'})">
           <option value="">Select FPN...</option>
-          ${fpns.map(f => `<option value="${f.fpn}" ${p?.fpn === f.fpn ? 'selected' : ''}>${fpnLabel(f.fpn)}</option>`).join('')}
+          ${fpns.map(f => `<option value="${f.fpn}" ${initFpn === f.fpn ? 'selected' : ''}>${fpnLabel(f.fpn)}</option>`).join('')}
         </select>
       </div>
       <div class="f">
         <label for="pf-hammer" class="f-req">Hammer</label>
-        <select id="pf-hammer">
+        <select id="pf-hammer" onchange="updateProductionModalPlanDropdown(undefined, ${p ? `'${p.id}'` : 'null'})">
           <option value="">Select hammer...</option>
-          ${buildOpts(hammers, 'id', x => `${x.name}${x.id_code ? ' (' + x.id_code + ')' : ''}`, p?.hammerId || '')}
+          ${buildOpts(hammers, 'id', x => `${x.name}${x.id_code ? ' (' + x.id_code + ')' : ''}`, initHammerId)}
         </select>
       </div>
     </div>
     <div class="row-2">
       <div class="f">
         <label for="pf-date" class="f-req">Date</label>
-        <input type="date" id="pf-date" value="${p?.date || dateStr()}" max="${dateStr()}" ${locked ? 'disabled' : ''}>
+        <input type="date" id="pf-date" value="${initDate}" max="${dateStr()}" ${locked ? 'disabled' : ''}>
       </div>
       <div class="f">
         <label for="pf-qty" class="f-req">Qty Forged (pcs)</label>
-        <input type="number" id="pf-qty" min="${locked ? consumed : 1}" value="${p?.qtyForged ?? ''}" placeholder="e.g. 500">
+        <input type="number" id="pf-qty" min="${locked ? consumed : 1}" value="${initQty}" placeholder="e.g. 500">
       </div>
     </div>
-    <div class="f">
-      <label for="pf-shift">Shift</label>
-      <select id="pf-shift">
-        ${Object.entries(FORGING_SHIFTS).map(([k, s]) => `<option value="${k}" ${p?.shift === k ? 'selected' : ''}>${s.label}</option>`).join('')}
-      </select>
+    <div class="row-2">
+      <div class="f">
+        <label for="pf-shift">Shift</label>
+        <select id="pf-shift">
+          ${Object.entries(FORGING_SHIFTS).map(([k, s]) => `<option value="${k}" ${initShift === k ? 'selected' : ''}>${s.label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="f">
+        <label for="pf-plan-row">Link to Plan (Optional)</label>
+        <select id="pf-plan-row">
+          <!-- Populated dynamically -->
+        </select>
+      </div>
     </div>
-    <div class="text-xs text-muted mt-8">If this matches a Forging Plan shift row (same FPN, Hammer, Date and Shift), it will be linked automatically.</div>
 
     ${modalActions('Save Production', `saveProduction(${p ? `'${p.id}'` : 'null'})`)}
   `);
+
+  // Initialize plan row selection dropdown
+  let initialLinkVal = 'none';
+  if (prefill?.planRowVal) {
+    initialLinkVal = prefill.planRowVal;
+  } else if (p) {
+    if (p.planId) {
+      if (p.targetPlanDate) {
+        initialLinkVal = `${p.planId}|${p.targetPlanDate}|${p.targetPlanShift}`;
+      } else {
+        initialLinkVal = 'auto';
+      }
+    }
+  }
+  updateProductionModalPlanDropdown(initialLinkVal, p?.id);
 }
+
+window.updateProductionModalPlanDropdown = function(initialVal, excludeProdId) {
+  const fpnSelect = document.getElementById('pf-fpn');
+  const hammerSelect = document.getElementById('pf-hammer');
+  const planRowSelect = document.getElementById('pf-plan-row');
+  if (!planRowSelect) return;
+
+  const currentVal = initialVal !== undefined ? initialVal : planRowSelect.value;
+  const fpn = fpnSelect ? fpnSelect.value : '';
+  const hammerId = hammerSelect ? hammerSelect.value : '';
+
+  if (!fpn || !hammerId) {
+    planRowSelect.innerHTML = '<option value="none">No plans available (select FPN & Hammer)</option>';
+    planRowSelect.value = 'none';
+    return;
+  }
+
+  const plans = S.forgingPlans.filter(x => x.fpn === fpn && x.hammerId === hammerId);
+  
+  let html = `
+    <option value="auto">Auto-link (Match by date and shift)</option>
+    <option value="none">Unplanned (No link)</option>
+  `;
+
+  plans.forEach(plan => {
+    const shiftRows = plan.shiftPlan || [];
+    const sortedRows = shiftRows.slice().sort((a, b) => a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift));
+    
+    sortedRows.forEach(r => {
+      const actual = S.forgingProduction
+        .filter(prod => prod.id !== excludeProdId && prod.planId === plan.id && 
+          (prod.targetPlanDate ? (prod.targetPlanDate === r.date && prod.targetPlanShift === r.shift) : (prod.date === r.date && prod.shift === r.shift))
+        )
+        .reduce((s, prod) => s + (+prod.qtyForged || 0), 0);
+      const remaining = Math.max(0, (+r.qtyPlanned || 0) - actual);
+      const val = `${plan.id}|${r.date}|${r.shift}`;
+      html += `<option value="${val}">${fmtDate(r.date)} - Shift ${FORGING_SHIFTS[r.shift]?.label || r.shift} (Planned: ${r.qtyPlanned.toLocaleString('en-IN')}, Rem: ${remaining.toLocaleString('en-IN')} pcs)</option>`;
+    });
+  });
+
+  planRowSelect.innerHTML = html;
+  
+  if (currentVal && Array.from(planRowSelect.options).some(o => o.value === currentVal)) {
+    planRowSelect.value = currentVal;
+  } else {
+    planRowSelect.value = 'none';
+  }
+};
 
 async function saveProduction(id) {
   if (id && !isScmAdmin()) { toast('Access denied'); return; }
@@ -985,6 +1071,8 @@ async function saveProduction(id) {
   const date = locked ? existing.date : getField('pf-date');
   const qtyForged = Number(getField('pf-qty'));
   const shift = document.getElementById('pf-shift').value;
+  
+  const planRowVal = document.getElementById('pf-plan-row').value;
 
   if (!fpn || !hammerId || !date || !Number.isFinite(qtyForged) || qtyForged < 1) {
     showModalError('FPN, Hammer, Date and a valid Qty Forged are required.');
@@ -995,17 +1083,28 @@ async function saveProduction(id) {
     return;
   }
 
-  // Auto-link to a Forging Plan shift row with the exact same FPN+Hammer+Date+Shift.
-  const matchedPlan = S.forgingPlans.find(p =>
-    p.fpn === fpn && p.hammerId === hammerId &&
-    (p.shiftPlan || []).some(r => r.date === date && r.shift === shift));
-  const planId = matchedPlan ? matchedPlan.id : null;
+  let planId = null;
+  let targetPlanDate = null;
+  let targetPlanShift = null;
+
+  if (planRowVal === 'auto') {
+    const matchedPlan = S.forgingPlans.find(p =>
+      p.fpn === fpn && p.hammerId === hammerId &&
+      (p.shiftPlan || []).some(r => r.date === date && r.shift === shift));
+    planId = matchedPlan ? matchedPlan.id : null;
+  } else if (planRowVal !== 'none') {
+    const parts = planRowVal.split('|');
+    planId = parts[0];
+    targetPlanDate = parts[1];
+    targetPlanShift = parts[2];
+  }
 
   try {
     if (id) {
       const data = {
         fpn, hammerId, hammerName: hammer?.name || '—', hammerCode: hammer?.id_code || '',
         date, qtyForged, qtyRemaining: qtyForged - consumed, shift, planId,
+        targetPlanDate, targetPlanShift
       };
       await db.collection('forgingProduction').doc(id).update({ ...data, updatedBy: S.sess.userId, updatedByName: S.sess.name, updatedAt: serverTS() });
       await logAudit('UPDATE_FORGING_PRODUCTION', 'SCM', id, existing, data);
@@ -1014,15 +1113,12 @@ async function saveProduction(id) {
       renderSection();
       toast('Production updated');
     } else {
-      // Lot number: FPN-YYYYMMDD-## — ## increments per FPN per day, same
-      // convention as masterLotCode in store.js. This is the traceable unit
-      // dispatches consume against (see saveDispatch's lot allocation).
       const sameDay = S.forgingProduction.filter(p => p.fpn === fpn && p.date === date).length;
       const lotNo = `${fpn}-${date.replace(/-/g, '')}-${String(sameDay + 1).padStart(2, '0')}`;
       const data = {
         date, fpn, qtyForged, qtyRemaining: qtyForged, lotNo, shift,
         hammerId, hammerName: hammer?.name || '—', hammerCode: hammer?.id_code || '',
-        planId, loggedBy: S.sess.userId, loggedByName: S.sess.name,
+        planId, targetPlanDate, targetPlanShift, loggedBy: S.sess.userId, loggedByName: S.sess.name,
       };
       const ref = await db.collection('forgingProduction').add({ ...data, createdAt: serverTS() });
       await logAudit('CREATE_FORGING_PRODUCTION', 'SCM', ref.id, null, data);
@@ -1056,6 +1152,639 @@ async function deleteProduction(id) {
     toast('Error: ' + friendlyError(e));
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   CALENDAR VIEW & RESCHEDULING/LINKING FUNCTIONALITIES
+   ══════════════════════════════════════════════════════════════════════ */
+function getCalendarGridDates(startStr, endStr) {
+  const dates = [];
+  const startDt = new Date(startStr + 'T00:00:00');
+  const endDt = new Date(endStr + 'T00:00:00');
+  
+  const startDay = startDt.getDay();
+  const calendarStart = new Date(startDt.getTime() - startDay * 86400000);
+  
+  const endDay = endDt.getDay();
+  const calendarEnd = new Date(endDt.getTime() + (6 - endDay) * 86400000);
+  
+  let curr = new Date(calendarStart);
+  while (curr <= calendarEnd) {
+    dates.push(curr.toISOString().slice(0, 10));
+    curr.setDate(curr.getDate() + 1);
+  }
+  return dates;
+}
+
+window.selectCalendarDate = function(date) {
+  _selectedCalDate = date;
+  renderCalendar();
+};
+
+window.openPrefilledProductionModal = function(fpn, hammerId, date, shift, planId) {
+  openProductionModal(null, {
+    fpn,
+    hammerId,
+    date,
+    shift,
+    planRowVal: `${planId}|${date}|${shift}`
+  });
+};
+
+window.openReschedulePlanModal = function(planId, date, shift) {
+  const p = S.forgingPlans.find(x => x.id === planId);
+  if (!p) return;
+  const r = (p.shiftPlan || []).find(row => row.date === date && row.shift === shift);
+  
+  openModal(`
+    <div class="modal-title">Reschedule Job Card</div>
+    <div id="modal-err"></div>
+    <div style="font-size:12px;color:var(--txt-muted);margin-bottom:12px">
+      Rescheduling plan row for part <b>${p.fpn}</b> on hammer <b>${p.hammerName}</b>.
+    </div>
+    
+    <div class="f">
+      <label class="f-req">New Date</label>
+      <input type="date" id="resched-date" value="${date}">
+    </div>
+    <div class="row-2">
+      <div class="f">
+        <label class="f-req">New Shift</label>
+        <select id="resched-shift">
+          ${Object.entries(FORGING_SHIFTS).map(([k, s]) => `<option value="${k}" ${shift === k ? 'selected' : ''}>${s.label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="f">
+        <label class="f-req">Qty Planned (pcs)</label>
+        <input type="number" id="resched-qty" value="${r?.qtyPlanned || ''}" min="1">
+      </div>
+    </div>
+    
+    ${modalActions('Save Changes', `saveRescheduledPlanRow('${planId}', '${date}', '${shift}')`)}
+  `);
+};
+
+window.saveRescheduledPlanRow = async function(planId, oldDate, oldShift) {
+  const newDate = document.getElementById('resched-date').value;
+  const newShift = document.getElementById('resched-shift').value;
+  const newQty = Number(document.getElementById('resched-qty').value);
+
+  if (!newDate || !newShift || !Number.isFinite(newQty) || newQty < 1) {
+    showModalError('Please enter a valid Date, Shift and Qty.');
+    return;
+  }
+
+  try {
+    const plan = S.forgingPlans.find(x => x.id === planId);
+    if (!plan) throw new Error('Plan not found.');
+
+    const before = JSON.parse(JSON.stringify(plan));
+    const shiftPlan = (plan.shiftPlan || []).map(r => {
+      if (r.date === oldDate && r.shift === oldShift) {
+        return { date: newDate, shift: newShift, qtyPlanned: newQty };
+      }
+      return r;
+    });
+
+    const totalQtyPlanned = shiftPlan.reduce((s, r) => s + r.qtyPlanned, 0);
+    const data = { shiftPlan, totalQtyPlanned };
+
+    await db.collection('forgingPlans').doc(planId).update({ ...data, updatedBy: S.sess.userId, updatedByName: S.sess.name, updatedAt: serverTS() });
+    await logAudit('UPDATE_FORGING_PLAN', 'SCM', planId, before, { ...plan, ...data });
+
+    const linkedProds = S.forgingProduction.filter(prod => prod.planId === planId && prod.targetPlanDate === oldDate && prod.targetPlanShift === oldShift);
+    
+    for (const prod of linkedProds) {
+      await db.collection('forgingProduction').doc(prod.id).update({
+        targetPlanDate: newDate,
+        targetPlanShift: newShift,
+        updatedBy: S.sess.userId,
+        updatedByName: S.sess.name,
+        updatedAt: serverTS()
+      });
+    }
+
+    closeModal();
+    await refreshScm('forgingPlans');
+    await refreshScm('forgingProduction');
+    _selectedCalDate = newDate;
+    renderSection();
+    toast('Plan row rescheduled successfully');
+  } catch (e) {
+    showModalError(friendlyError(e));
+  }
+};
+
+window.openLinkProductionModal = function(prodId) {
+  const prod = S.forgingProduction.find(x => x.id === prodId);
+  if (!prod) return;
+
+  const plans = S.forgingPlans.filter(x => x.fpn === prod.fpn && x.hammerId === prod.hammerId);
+  
+  let htmlOptions = `
+    <option value="auto">Auto-link (Match by date and shift)</option>
+    <option value="none">Unplanned (No link)</option>
+  `;
+
+  plans.forEach(plan => {
+    const sortedRows = (plan.shiftPlan || []).slice().sort((a, b) => a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift));
+    sortedRows.forEach(r => {
+      const actual = S.forgingProduction
+        .filter(p => p.id !== prodId && p.planId === plan.id && 
+          (p.targetPlanDate ? (p.targetPlanDate === r.date && p.targetPlanShift === r.shift) : (p.date === r.date && p.shift === r.shift))
+        )
+        .reduce((s, p) => s + (+p.qtyForged || 0), 0);
+      const remaining = Math.max(0, (+r.qtyPlanned || 0) - actual);
+      const val = `${plan.id}|${r.date}|${r.shift}`;
+      
+      htmlOptions += `<option value="${val}">${fmtDate(r.date)} - Shift ${FORGING_SHIFTS[r.shift]?.label || r.shift} (Planned: ${r.qtyPlanned.toLocaleString('en-IN')}, Rem: ${remaining.toLocaleString('en-IN')} pcs)</option>`;
+    });
+  });
+
+  openModal(`
+    <div class="modal-title">Link Production Lot to Job Card</div>
+    <div id="modal-err"></div>
+    <div style="font-size:12px;color:var(--txt-muted);margin-bottom:12px">
+      Linking Lot <b>${prod.lotNo || prod.id}</b> (${prod.fpn}, ${prod.qtyForged} pcs) to a forging plan.
+    </div>
+    
+    <div class="f">
+      <label class="f-req">Select Plan Row</label>
+      <select id="link-plan-select">
+        ${htmlOptions}
+      </select>
+    </div>
+
+    ${modalActions('Save Link', `saveProductionLink('${prodId}')`)}
+  `);
+  
+  const selectEl = document.getElementById('link-plan-select');
+  if (selectEl) {
+    if (prod.planId) {
+      if (prod.targetPlanDate) {
+        selectEl.value = `${prod.planId}|${prod.targetPlanDate}|${prod.targetPlanShift}`;
+      } else {
+        selectEl.value = 'auto';
+      }
+    } else {
+      selectEl.value = 'none';
+    }
+  }
+};
+
+window.saveProductionLink = async function(prodId) {
+  const selectVal = document.getElementById('link-plan-select').value;
+  const prod = S.forgingProduction.find(x => x.id === prodId);
+  if (!prod) return;
+
+  let planId = null;
+  let targetPlanDate = null;
+  let targetPlanShift = null;
+
+  if (selectVal === 'auto') {
+    const matchedPlan = S.forgingPlans.find(p =>
+      p.fpn === prod.fpn && p.hammerId === prod.hammerId &&
+      (p.shiftPlan || []).some(r => r.date === prod.date && r.shift === prod.shift));
+    planId = matchedPlan ? matchedPlan.id : null;
+  } else if (selectVal !== 'none') {
+    const parts = selectVal.split('|');
+    planId = parts[0];
+    targetPlanDate = parts[1];
+    targetPlanShift = parts[2];
+  }
+
+  try {
+    const before = JSON.parse(JSON.stringify(prod));
+    const data = { planId, targetPlanDate, targetPlanShift };
+    
+    await db.collection('forgingProduction').doc(prodId).update({
+      ...data,
+      updatedBy: S.sess.userId,
+      updatedByName: S.sess.name,
+      updatedAt: serverTS()
+    });
+    
+    await logAudit('UPDATE_FORGING_PRODUCTION', 'SCM', prodId, before, { ...prod, ...data });
+    
+    closeModal();
+    await refreshScm('forgingProduction');
+    renderSection();
+    toast('Production lot link updated successfully');
+  } catch (e) {
+    showModalError(friendlyError(e));
+  }
+};
+
+window.renderCalendar = function() {
+  const wm = getActiveWorkingMonth();
+  const today = dateStr();
+  
+  if (!_selectedCalDate) {
+    if (today >= wm.start && today <= wm.end) {
+      _selectedCalDate = today;
+    } else {
+      _selectedCalDate = wm.start;
+    }
+  }
+
+  const gridDates = getCalendarGridDates(wm.start, wm.end);
+
+  const styleTag = `
+    <style>
+      .imf-calendar-grid {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 8px;
+        background: var(--bg);
+        padding: 10px;
+        border-radius: var(--rs);
+        margin-top: 10px;
+      }
+      .imf-calendar-weekday {
+        text-align: center;
+        font-weight: 700;
+        font-size: 11px;
+        color: var(--txt-muted);
+        padding: 6px 0;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .imf-calendar-cell {
+        background: var(--sur);
+        border: 1px solid var(--bdr-mid);
+        border-radius: var(--rs);
+        padding: 8px;
+        min-height: 80px;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+      }
+      .imf-calendar-cell:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-md);
+        border-color: var(--imf-navy);
+      }
+      .imf-calendar-cell.today {
+        border: 2px solid var(--imf-navy) !important;
+      }
+      .imf-calendar-cell.selected {
+        background: var(--imf-navy-hover) !important;
+        border-color: var(--imf-navy) !important;
+      }
+      .imf-calendar-cell.dimmed {
+        opacity: 0.45;
+        background: var(--sur2);
+      }
+      .imf-calendar-date-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        width: 100%;
+      }
+      .imf-calendar-date-label {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--txt-muted);
+      }
+      .imf-calendar-cell.today .imf-calendar-date-label {
+        color: var(--imf-navy);
+      }
+      .imf-calendar-qtys {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        margin-top: 8px;
+      }
+      .imf-cal-qty-line {
+        font-size: 10px;
+        font-family: var(--mono-v2);
+        display: flex;
+        justify-content: space-between;
+      }
+      .imf-cal-qty-planned {
+        color: var(--txt-muted);
+      }
+      .imf-cal-qty-actual {
+        font-weight: 700;
+      }
+      /* Border accent colors for calendar status */
+      .status-achieved { border-left: 4px solid var(--ok) !important; }
+      .status-pending { border-left: 4px solid var(--warn) !important; }
+      .status-behind { border-left: 4px solid var(--err) !important; }
+      .status-unplanned { border-left: 4px solid var(--acc) !important; }
+
+      /* Details view */
+      .imf-cal-details-container {
+        margin-top: 20px;
+        background: var(--sur);
+        border: 1px solid var(--bdr-mid);
+        border-radius: var(--r);
+        padding: 16px;
+      }
+      .imf-cal-details-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid var(--bdr);
+        padding-bottom: 12px;
+        margin-bottom: 16px;
+      }
+      .imf-cal-details-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+      @media (max-width: 768px) {
+        .imf-cal-details-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .imf-cal-details-section-title {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--imf-navy);
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .imf-cal-detail-card {
+        background: var(--sur2);
+        border: 1px solid var(--bdr-mid);
+        border-radius: var(--rs);
+        padding: 12px;
+        margin-bottom: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .imf-cal-detail-card-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+      .imf-cal-detail-card-title {
+        font-weight: 700;
+        font-size: 13px;
+        font-family: var(--mono-v2);
+      }
+      .imf-cal-detail-card-meta {
+        font-size: 11px;
+        color: var(--txt-muted);
+      }
+      .imf-cal-detail-card-qty {
+        font-size: 12px;
+        font-family: var(--mono-v2);
+        margin: 4px 0;
+      }
+      .imf-cal-legend {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        font-size: 11px;
+        margin-top: 8px;
+        padding: 0 4px;
+      }
+      .imf-cal-legend-item {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--txt-muted);
+      }
+      .imf-cal-legend-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+    </style>
+  `;
+
+  const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const weekdayHtml = weekdays.map(w => `<div class="imf-calendar-weekday">${w}</div>`).join('');
+
+  const daysHtml = gridDates.map(date => {
+    const isToday = date === today;
+    const isDimmed = date < wm.start || date > wm.end;
+    const isSelected = date === _selectedCalDate;
+
+    let planned = 0;
+    S.forgingPlans.forEach(p => {
+      (p.shiftPlan || []).forEach(r => {
+        if (r.date === date) planned += (+r.qtyPlanned || 0);
+      });
+    });
+
+    let actual = 0;
+    S.forgingProduction.forEach(prod => {
+      const targetDate = prod.targetPlanDate || prod.date;
+      if (targetDate === date) actual += (+prod.qtyForged || 0);
+    });
+
+    let statusClass = '';
+    if (planned > 0) {
+      if (actual >= planned) statusClass = 'status-achieved';
+      else if (date < today) statusClass = 'status-behind';
+      else statusClass = 'status-pending';
+    } else if (actual > 0) {
+      statusClass = 'status-unplanned';
+    }
+
+    const [, mNum, dNum] = date.split('-');
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const monthLabel = monthNames[parseInt(mNum, 10) - 1];
+    const dateLabel = `${dNum} ${monthLabel}`;
+
+    const plannedDisplay = planned > 0 ? planned.toLocaleString('en-IN') : '—';
+    const actualDisplay = actual > 0 ? actual.toLocaleString('en-IN') : '—';
+
+    return `
+      <div class="imf-calendar-cell ${statusClass} ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''} ${isDimmed ? 'dimmed' : ''}" 
+           onclick="selectCalendarDate('${date}')">
+        <div class="imf-calendar-date-header">
+          <span class="imf-calendar-date-label">${dateLabel}</span>
+          ${isToday ? '<span class="today-badge" style="margin:0;font-size:8px;padding:1px 4px;">Today</span>' : ''}
+        </div>
+        <div class="imf-calendar-qtys">
+          <div class="imf-cal-qty-line imf-cal-qty-planned">
+            <span>Plan:</span>
+            <span>${plannedDisplay}</span>
+          </div>
+          <div class="imf-cal-qty-line imf-cal-qty-actual" style="${actual >= planned && planned > 0 ? 'color:var(--ok)' : (actual < planned && date < today ? 'color:var(--err)' : '')}">
+            <span>Act:</span>
+            <span>${actualDisplay}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  document.getElementById('section-content').innerHTML = `
+    ${styleTag}
+    <div class="imf-tablewrap">
+      <div class="imf-table-toolbar">
+        <div class="grow">
+          <div style="font-size:16px;font-weight:700">Forging Calendar Dashboard</div>
+          <div class="text-sm text-muted">Active Working Cycle: ${fmtDate(wm.start)} – ${fmtDate(wm.end)}</div>
+        </div>
+        <div class="imf-cal-legend">
+          <div class="imf-cal-legend-item"><div class="imf-cal-legend-dot" style="background:var(--ok)"></div> Achieved</div>
+          <div class="imf-cal-legend-item"><div class="imf-cal-legend-dot" style="background:var(--warn)"></div> Pending</div>
+          <div class="imf-cal-legend-item"><div class="imf-cal-legend-dot" style="background:var(--err)"></div> Behind</div>
+          <div class="imf-cal-legend-item"><div class="imf-cal-legend-dot" style="background:var(--acc)"></div> Unplanned Act</div>
+        </div>
+      </div>
+      
+      <div class="imf-calendar-grid">
+        ${weekdayHtml}
+        ${daysHtml}
+      </div>
+    </div>
+
+    <div id="imf-cal-details-wrap"></div>
+  `;
+
+  renderCalendarDayDetails(_selectedCalDate);
+};
+
+window.renderCalendarDayDetails = function(date) {
+  const wrap = document.getElementById('imf-cal-details-wrap');
+  if (!wrap) return;
+
+  const plansForDate = [];
+  S.forgingPlans.forEach(p => {
+    (p.shiftPlan || []).forEach(r => {
+      if (r.date === date) {
+        const actual = S.forgingProduction
+          .filter(prod => prod.planId === p.id && 
+            (prod.targetPlanDate ? (prod.targetPlanDate === r.date && prod.targetPlanShift === r.shift) : (prod.date === r.date && prod.shift === r.shift))
+          )
+          .reduce((s, prod) => s + (+prod.qtyForged || 0), 0);
+        
+        plansForDate.push({
+          planId: p.id,
+          fpn: p.fpn,
+          hammerId: p.hammerId,
+          hammerName: p.hammerName || '—',
+          date: r.date,
+          shift: r.shift,
+          qtyPlanned: +r.qtyPlanned || 0,
+          qtyActual: actual,
+          status: planShiftRowStatus(r.date, actual, +r.qtyPlanned || 0)
+        });
+      }
+    });
+  });
+
+  const productionForDate = S.forgingProduction.filter(prod => {
+    const targetDate = prod.targetPlanDate || prod.date;
+    return targetDate === date;
+  });
+
+  plansForDate.sort((a, b) => a.shift.localeCompare(b.shift));
+  productionForDate.sort((a, b) => (a.shift || '').localeCompare(b.shift || '') || (a.lotNo || '').localeCompare(b.lotNo || ''));
+
+  const plansHtml = plansForDate.length === 0 
+    ? `<div class="text-xs text-muted" style="padding:12px;background:var(--sur2);border-radius:var(--rs);border:1px dashed var(--bdr-mid)">No jobs planned for this date.</div>`
+    : plansForDate.map(p => {
+        const isScm = canDo('scm_production');
+        return `
+          <div class="imf-cal-detail-card" style="border-left:4px solid ${p.status === 'completed' ? 'var(--ok)' : (p.status === 'behind' ? 'var(--err)' : 'var(--warn)')}">
+            <div class="imf-cal-detail-card-top">
+              <div>
+                <span class="imf-cal-detail-card-title">${p.fpn}</span>
+                <span class="text-xs text-muted" style="margin-left:4px">${fpnName(p.fpn) ? `(${fpnName(p.fpn)})` : ''}</span>
+              </div>
+              ${imfBadge(p.status, PLAN_STATUS_META)}
+            </div>
+            <div class="imf-cal-detail-card-meta">
+              <span>Hammer: ${p.hammerName}</span> · <span>Shift: ${FORGING_SHIFTS[p.shift]?.label || p.shift}</span>
+            </div>
+            <div class="imf-cal-detail-card-qty" style="display:flex;justify-content:space-between;align-items:center">
+              <span>Planned: <b>${p.qtyPlanned.toLocaleString('en-IN')}</b> | Actual: <b>${p.qtyActual.toLocaleString('en-IN')}</b></span>
+            </div>
+            ${isScm ? `
+              <div style="display:flex;gap:8px;margin-top:6px;border-top:1px solid var(--bdr);padding-top:6px">
+                <button class="btn btn-ghost btn-xs" onclick="openPrefilledProductionModal('${p.fpn}', '${p.hammerId}', '${p.date}', '${p.shift}', '${p.planId}')">
+                  <i class="ti ti-plus"></i> Log Production
+                </button>
+                <button class="btn btn-ghost btn-xs" onclick="openReschedulePlanModal('${p.planId}', '${p.date}', '${p.shift}')">
+                  <i class="ti ti-calendar-event"></i> Reschedule
+                </button>
+                <button class="btn btn-ghost btn-xs" onclick="openPlanModal('${p.planId}')">
+                  <i class="ti ti-edit"></i> Edit Full Plan
+                </button>
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }).join('');
+
+  const productionHtml = productionForDate.length === 0
+    ? `<div class="text-xs text-muted" style="padding:12px;background:var(--sur2);border-radius:var(--rs);border:1px dashed var(--bdr-mid)">No production logs found.</div>`
+    : productionForDate.map(p => {
+        const isScm = canDo('scm_production');
+        const isLinked = !!p.planId;
+        const linkInfo = isLinked 
+          ? `Linked to plan of ${fmtDate(p.targetPlanDate || p.date)} Shift ${FORGING_SHIFTS[p.targetPlanShift || p.shift]?.label || p.targetPlanShift || p.shift}`
+          : `Unplanned Production`;
+
+        return `
+          <div class="imf-cal-detail-card" style="border-left:4px solid ${isLinked ? 'var(--ok)' : 'var(--acc)'}">
+            <div class="imf-cal-detail-card-top">
+              <div>
+                <span class="imf-cal-detail-card-title">${p.lotNo || p.id}</span>
+                <span class="text-xs text-muted" style="margin-left:4px">${p.fpn}</span>
+              </div>
+              <span class="imf-badge ${isLinked ? 'rag-g' : 'rag-b'}">${isLinked ? 'Planned' : 'Unplanned'}</span>
+            </div>
+            <div class="imf-cal-detail-card-meta">
+              <span>Hammer: ${p.hammerName || '—'}</span> · <span>Shift: ${p.shift || '—'}</span> · <span>Logged by: ${p.loggedByName || '—'}</span>
+            </div>
+            <div class="imf-cal-detail-card-qty" style="display:flex;justify-content:space-between;align-items:center">
+              <span>Forged: <b>${(+p.qtyForged || 0).toLocaleString('en-IN')} pcs</b> (Rem: ${(+p.qtyRemaining ?? p.qtyForged ?? 0).toLocaleString('en-IN')} pcs)</span>
+            </div>
+            <div class="text-xs ${isLinked ? 'text-success' : 'text-muted'}" style="font-weight:600;margin-top:2px">
+              <i class="ti ${isLinked ? 'ti-link' : 'ti-link-off'}"></i> ${linkInfo}
+            </div>
+            ${isScm ? `
+              <div style="display:flex;gap:8px;margin-top:6px;border-top:1px solid var(--bdr);padding-top:6px">
+                <button class="btn btn-ghost btn-xs" onclick="openProductionModal('${p.id}')">
+                  <i class="ti ti-edit"></i> Edit Log
+                </button>
+                <button class="btn btn-ghost btn-xs" onclick="openLinkProductionModal('${p.id}')">
+                  <i class="ti ti-link"></i> Re-link Plan
+                </button>
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }).join('');
+
+  wrap.innerHTML = `
+    <div class="imf-cal-details-container">
+      <div class="imf-cal-details-header">
+        <div>
+          <span style="font-size:14px;font-weight:700;color:var(--txt)">Details for ${fmtDate(date)}</span>
+        </div>
+      </div>
+      <div class="imf-cal-details-grid">
+        <div>
+          <div class="imf-cal-details-section-title">
+            <i class="ti ti-calendar-event"></i> Scheduled Jobs (Plans)
+          </div>
+          ${plansHtml}
+        </div>
+        <div>
+          <div class="imf-cal-details-section-title">
+            <i class="ti ti-stack-2"></i> Logged Completion Reports (Actuals)
+          </div>
+          ${productionHtml}
+        </div>
+      </div>
+    </div>
+  `;
+};
 
 /* ══════════════════════════════════════════════════════════════════════
    TAB 2 — SUPPLIER DISPATCH ENTRY + SCRAP REQUEST
@@ -1927,7 +2656,9 @@ async function exportPlan(format) {
 
     shiftRows.forEach(r => {
       const qtyActual = S.forgingProduction
-        .filter(prod => prod.planId === p.id && prod.date === r.date && prod.shift === r.shift)
+        .filter(prod => prod.planId === p.id && 
+          (prod.targetPlanDate ? (prod.targetPlanDate === r.date && prod.targetPlanShift === r.shift) : (prod.date === r.date && prod.shift === r.shift))
+        )
         .reduce((s, prod) => s + (+prod.qtyForged || 0), 0);
       const qtyPlanned = +r.qtyPlanned || 0;
       const status = planShiftRowStatus(r.date, qtyActual, qtyPlanned);
@@ -2276,19 +3007,47 @@ async function exportArrivalForecast(format) {
   }
 }
 
-async function deleteForgingPlan(id) {
+async function deleteForgingPlanRow(planId, date, shift) {
   if (!isScmTanmay()) {
     toast('Access denied');
     return;
   }
-  if (!confirm('Are you sure you want to delete this forging plan lot? This cannot be undone.')) return;
+  const plan = S.forgingPlans.find(x => x.id === planId);
+  if (!plan) return;
+
+  if (!confirm(`Delete plan row for ${fmtDate(date)} Shift ${FORGING_SHIFTS[shift]?.label || shift}? This cannot be undone.`)) return;
+
   try {
-    const before = S.forgingPlans.find(x => x.id === id);
-    await db.collection('forgingPlans').doc(id).delete();
-    await logAudit('DELETE_FORGING_PLAN', 'SCM', id, before, null);
+    const before = JSON.parse(JSON.stringify(plan));
+    const shiftPlan = (plan.shiftPlan || []).filter(r => !(r.date === date && r.shift === shift));
+
+    if (shiftPlan.length === 0) {
+      await db.collection('forgingPlans').doc(planId).delete();
+      await logAudit('DELETE_FORGING_PLAN', 'SCM', planId, before, null);
+      toast('Plan deleted (no shifts remaining)');
+    } else {
+      const totalQtyPlanned = shiftPlan.reduce((s, r) => s + r.qtyPlanned, 0);
+      const data = { shiftPlan, totalQtyPlanned };
+      await db.collection('forgingPlans').doc(planId).update({ ...data, updatedBy: S.sess.userId, updatedByName: S.sess.name, updatedAt: serverTS() });
+      await logAudit('UPDATE_FORGING_PLAN', 'SCM', planId, before, { ...plan, ...data });
+      toast('Plan shift row deleted');
+    }
+
+    const linkedProds = S.forgingProduction.filter(prod => prod.planId === planId && prod.targetPlanDate === date && prod.targetPlanShift === shift);
+    for (const prod of linkedProds) {
+      await db.collection('forgingProduction').doc(prod.id).update({
+        planId: null,
+        targetPlanDate: null,
+        targetPlanShift: null,
+        updatedBy: S.sess.userId,
+        updatedByName: S.sess.name,
+        updatedAt: serverTS()
+      });
+    }
+
     await refreshScm('forgingPlans');
+    await refreshScm('forgingProduction');
     renderSection();
-    toast('Plan deleted successfully ✓');
   } catch (e) {
     toast('Error: ' + friendlyError(e));
   }
