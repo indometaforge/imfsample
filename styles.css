@@ -2797,6 +2797,30 @@ a.alert-title:hover { color: var(--imf-navy); }
   }
 }
 
+/* Full-screen modal for data-table views (e.g. Total Schedule) — uses all
+   available width/height instead of the bottom-sheet card so wide tables
+   (progress ring column etc.) never get clipped. */
+.modal.modal-fullscreen {
+  max-width: 100% !important;
+  width: 100% !important;
+  height: 100%;
+  max-height: 100vh;
+  border-radius: 0;
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+.modal.modal-fullscreen .imf-table-scroll { max-height: none !important; flex: 1; }
+@media (min-width: 768px) {
+  .modal.modal-fullscreen {
+    width: 96vw !important;
+    height: 92vh;
+    max-height: 92vh;
+    border-radius: var(--rlg);
+    margin-bottom: 0;
+  }
+}
+
 /* SO Form Table Styles */
 .so-table-container {
   width: 100%;

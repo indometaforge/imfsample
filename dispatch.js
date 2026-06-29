@@ -214,11 +214,15 @@ function renderHub() {
     (p.lines || []).forEach(l => { allLines.push({ po: p, line: l }); });
   });
   const overdue  = allLines.filter(({ line: l }) => l.dueDate && l.dueDate < today && (l.dispatchedQty || 0) < l.scheduledQty).length;
-  const dueSoon  = allLines.filter(({ line: l }) => {
-    if (!l.dueDate || l.dueDate < today || (l.dispatchedQty || 0) >= l.scheduledQty) return false;
-    const d = new Date(today); d.setDate(d.getDate() + 7);
-    return l.dueDate <= d.toISOString().slice(0, 10);
-  }).length;
+
+  // Total schedule for the current delivery month, across all customers
+  const curMonth   = today.slice(0, 7);
+  const monthLines = [];
+  S_DSP.pos.filter(p => p.deliveryMonth === curMonth).forEach(p => {
+    (p.lines || []).forEach(l => { monthLines.push({ po: p, line: l }); });
+  });
+  const monthQty       = monthLines.reduce((s, { line: l }) => s + (l.scheduledQty || 0), 0);
+  const monthVarieties = new Set(monthLines.map(({ line: l }) => l.partNo || l.partName)).size;
 
   el.innerHTML = `
     ${overdue > 0 ? `
@@ -247,11 +251,11 @@ function renderHub() {
         <div class="stat-val imf-mono">${todayDsp}</div>
         <div class="stat-sub">${fmtDate(today)}</div>
       </div>
-      <div class="stat-card ${overdue > 0 ? 'err' : dueSoon > 0 ? 'warn' : 'ok'}">
-        <i class="ti ti-calendar-time stat-icon" aria-hidden="true"></i>
-        <div class="stat-lbl">Due This Week</div>
-        <div class="stat-val imf-mono">${dueSoon + overdue}</div>
-        <div class="stat-sub">${overdue > 0 ? `${overdue} overdue!` : 'On track'}</div>
+      <div class="stat-card ${monthQty > 0 ? 'ok' : ''}" onclick="openMonthScheduleModal()" style="cursor:pointer">
+        <i class="ti ti-calendar-stats stat-icon" aria-hidden="true"></i>
+        <div class="stat-lbl">Total Schedule This Month</div>
+        <div class="stat-val imf-mono">${monthQty.toLocaleString('en-IN')}</div>
+        <div class="stat-sub">${monthVarieties} variet${monthVarieties !== 1 ? 'ies' : 'y'} · ${fmtMonth(curMonth)}</div>
       </div>
     </div>
 
@@ -272,6 +276,110 @@ function renderHub() {
 
     <div style="display:flex;justify-content:flex-end;margin-top:12px">
       <button class="btn btn-s btn-sm" onclick="refreshDSP()"><i class="ti ti-refresh"></i> Refresh Data</button>
+    </div>`;
+}
+
+/* ── Total Schedule This Month — flat, customer-value-ranked table ───── */
+function openMonthScheduleModal(month) {
+  const curMonth = month || dateStr().slice(0, 7);
+  const monthPOs = S_DSP.pos.filter(p => p.deliveryMonth === curMonth);
+
+  const custValue = {};
+  const rows = [];
+  monthPOs.forEach(p => {
+    (p.lines || []).forEach(l => {
+      const qty    = l.scheduledQty || 0;
+      const rate   = l.pieceRateINR || 0;
+      const amount = qty * rate;
+      custValue[p.customerId] = (custValue[p.customerId] || 0) + amount;
+      rows.push({
+        customerId:   p.customerId,
+        customerName: p.customerName,
+        poNo:         p.poNo,
+        partNo:       l.partNo,
+        partName:     l.partName,
+        qty, rate, amount,
+        pct: qty > 0 ? Math.min(100, Math.round(((l.dispatchedQty || 0) / qty) * 100)) : 0
+      });
+    });
+  });
+
+  rows.sort((a, b) => (custValue[b.customerId] || 0) - (custValue[a.customerId] || 0));
+
+  const totalQty = rows.reduce((s, r) => s + r.qty, 0);
+  const totalVal = rows.reduce((s, r) => s + r.amount, 0);
+  const varieties = new Set(rows.map(r => r.partNo || r.partName)).size;
+  const custCount = new Set(rows.map(r => r.customerId)).size;
+
+  const cont = document.getElementById('modal-content');
+  if (cont) cont.classList.add('modal-fullscreen');
+
+  openModal(`
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      <div class="modal-title" style="margin-bottom:0">Total Schedule</div>
+      <select onchange="openMonthScheduleModal(this.value)" style="font-size:13.5px;font-weight:600;width:auto;min-width:160px">
+        ${getMonthDropdownOptions(curMonth)}
+      </select>
+    </div>
+    <div style="display:flex;gap:24px;margin-bottom:16px;flex-wrap:wrap">
+      <div style="font-size:12px;color:var(--txt-muted)">Qty Scheduled<br><strong class="imf-mono" style="color:var(--imf-navy);font-size:15px">${totalQty.toLocaleString('en-IN')}</strong></div>
+      <div style="font-size:12px;color:var(--txt-muted)">Varieties<br><strong class="imf-mono" style="color:var(--imf-navy);font-size:15px">${varieties}</strong></div>
+      <div style="font-size:12px;color:var(--txt-muted)">Schedule Value<br><strong class="imf-mono" style="color:var(--imf-navy);font-size:15px">${fmtINR(totalVal)}</strong></div>
+    </div>
+    <div class="imf-tablewrap">
+      <div class="imf-table-scroll" style="max-height:60vh">
+        <table class="imf-table">
+          <thead>
+            <tr>
+              <th class="pin">SO No.</th>
+              <th>Part</th>
+              <th class="num">Qty</th>
+              <th class="num">Rate</th>
+              <th class="num">Amount</th>
+              <th style="text-align:center">Progress</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(monthScheduleRow).join('') || `<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--txt-dim)">No SO lines scheduled for ${fmtMonth(curMonth)}</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+      <div class="imf-table-foot">${rows.length} line${rows.length !== 1 ? 's' : ''} across ${custCount} customer${custCount !== 1 ? 's' : ''}</div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-top:16px">
+      <button class="btn btn-s" onclick="closeModal()">Close</button>
+    </div>
+  `);
+}
+
+function monthScheduleRow(r) {
+  return `
+    <tr>
+      <td class="pin">${r.poNo || '—'}</td>
+      <td>
+        <div style="font-weight:700">${r.partName || '—'}</div>
+        <div class="cell-sub">${r.partNo || '—'} · ${r.customerName || '—'}</div>
+      </td>
+      <td class="num">${(r.qty || 0).toLocaleString('en-IN')}</td>
+      <td class="num">${fmtINR(r.rate)}</td>
+      <td class="num">${fmtINR(r.amount)}</td>
+      <td style="text-align:center">${monthScheduleRing(r.pct)}</td>
+    </tr>`;
+}
+
+function monthScheduleRing(pct) {
+  const clamped = Math.min(100, Math.max(0, pct));
+  const stroke  = clamped >= 100 ? 'var(--ok)' : clamped > 0 ? 'var(--warn)' : 'var(--bdr-mid)';
+  const circ    = 75.4; // 2 * PI * r(12)
+  const offset  = circ - (circ * clamped) / 100;
+  return `
+    <div style="position:relative;display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px" title="${clamped}% dispatched">
+      <svg width="34" height="34" style="transform:rotate(-90deg)">
+        <circle cx="17" cy="17" r="12" stroke="var(--sur2)" stroke-width="3" fill="transparent" />
+        <circle cx="17" cy="17" r="12" stroke="${stroke}" stroke-width="3" fill="transparent"
+          stroke-dasharray="${circ}" stroke-dashoffset="${offset}" stroke-linecap="round" />
+      </svg>
+      <div style="position:absolute;font-size:8.5px;font-weight:700;color:var(--txt)">${clamped}%</div>
     </div>`;
 }
 

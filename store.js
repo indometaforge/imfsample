@@ -41,7 +41,12 @@ let _issLot = null;    /* masterLotCode chosen by storeperson for this session *
 
 let _inwParts = [];     /* [{partId,partNo,partName,qty,rate}] — Inward modal */
 let _inwLinkedDispatchIds = [];  /* supplierDispatches ids picked as the source of this receipt — Inward modal */
+let _inwLinkedScheduleIds = [];  /* supplierSchedules ids this receipt counts against — Inward modal */
 let _reqLines = [];     /* [{lineNo,partId,partNo,partName,customerId,customerName,masterLotCode,qtyRequested,qtyApproved,qtyIssued}] */
+
+/* Supplier Schedule state */
+let _schedFilt  = 'open';  /* 'open' | 'closed' | 'all' */
+let _schedLines = [];      /* [{lineNo,dueType,dueWeek,dueDate,qtyPlanned}] — modal editing buffer */
 
 /* Issue-to-WIP session state */
 let _issReq      = null;
@@ -58,6 +63,7 @@ const TABS = [
   { key: 'issue',      label: 'Issue to WIP',  icon: 'ti-scan',   show: () => canDo('inward') },
   { key: 'stock',      label: 'Stock Balance', icon: 'ti-chart-pie' },
   { key: 'routeCards', label: 'Route Cards',   icon: 'ti-tags' },
+  { key: 'supplierSched', label: 'Supplier Schedule', icon: 'ti-truck-loading', show: () => canDo('inward') },
   { key: 'tags',       label: 'TAG Registry',  icon: 'ti-qrcode', show: () => S.sess?.role === 'admin' },
 ];
 /* NOTE: Requisitions tab moved → Production module (production guys initiate requests).
@@ -105,13 +111,15 @@ async function loadStoreData() {
   // dispatch(es) it physically arrived against (see openInwardModal),
   // carrying the forging lotNo through to the route card for traceability.
   S.supplierDispatches = S.supplierDispatches || [];
+  S.supplierSchedules  = S.supplierSchedules  || [];
 
-  const [inwSnap, reqSnap, rcSnap, tagDoc, dispSnap] = await Promise.all([
+  const [inwSnap, reqSnap, rcSnap, tagDoc, dispSnap, schedSnap] = await Promise.all([
     db.collection('inward').get(),
     db.collection('requisitions').get(),
     db.collection('routeCards').get(),
     db.collection('config').doc('tags').get(),
     db.collection('supplierDispatches').get(),
+    db.collection('supplierSchedules').get(),
   ]);
 
   S.inward       = inwSnap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -119,6 +127,7 @@ async function loadStoreData() {
   S.routeCards   = rcSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   S.tagConfig    = tagDoc.exists ? tagDoc.data() : { totalPrinted: 0, lastTagNum: 0 };
   S.supplierDispatches = dispSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+  S.supplierSchedules  = schedSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
 /** Reload a single Store collection (or the TAG config doc) into S */
@@ -160,16 +169,18 @@ function switchTab(key) {
   _stockPeriod = 'all'; _stockDateFrom = ''; _stockDateTo = '';
   _issReq = null; _issLine = null; _issTags = []; _issBatchCode = ''; _issLot = null; _issPendingTag = null;
   _rcPage = 1;
+  _schedLines = [];
   render();
 }
 
 function renderSection() {
   const map = {
-    inward:     renderInward,
-    issue:      renderIssue,
-    stock:      renderStock,
-    routeCards: renderRouteCards,
-    tags:       renderTagRegistry,
+    inward:        renderInward,
+    issue:         renderIssue,
+    stock:         renderStock,
+    routeCards:    renderRouteCards,
+    supplierSched: renderSupplierSchedule,
+    tags:          renderTagRegistry,
   };
   (map[activeTab] || renderInward)();
 }
@@ -490,6 +501,7 @@ function openInwardModal(id) {
   const activeSups = S.suppliers.filter(s => s.active !== false);
   _inwParts = r && r.parts ? r.parts.map(p => ({ ...p })) : [];
   _inwLinkedDispatchIds = r && r.linkedDispatchIds ? [...r.linkedDispatchIds] : [];
+  _inwLinkedScheduleIds = r && r.linkedScheduleIds ? [...r.linkedScheduleIds] : [];
 
   openModal(`
     <div class="modal-title">${r ? 'Edit Inward Receipt' : 'Add Inward Receipt'}</div>
@@ -502,7 +514,7 @@ function openInwardModal(id) {
       </div>
       <div class="f">
         <label for="iw-supplier" class="f-req">Supplier</label>
-        <select id="iw-supplier" onchange="previewLotCode();inwRenderDispatchPicker()">
+        <select id="iw-supplier" onchange="previewLotCode();inwRenderDispatchPicker();inwRenderSchedulePicker()">
           <option value="">— Select Supplier —</option>
           ${activeSups.map(s => `<option value="${s.id}" ${r && r.supplierId === s.id ? 'selected' : ''}>${s.name} [${s.code}]</option>`).join('')}
         </select>
@@ -515,6 +527,11 @@ function openInwardModal(id) {
     <div class="f" style="margin-top:14px">
       <label style="font-size:12px;font-weight:600;color:var(--txt-muted)">Link to Forging Dispatch(es) <span class="text-xs text-muted" style="font-weight:400">(optional — for RM lot traceability onto the TAG)</span></label>
       <div id="iw-dispatch-picker"></div>
+    </div>
+
+    <div class="f" style="margin-top:14px">
+      <label style="font-size:12px;font-weight:600;color:var(--txt-muted)">Link to Supplier Schedule <span class="text-xs text-muted" style="font-weight:400">(optional — counts this receipt against a delivery commitment in Reports)</span></label>
+      <div id="iw-schedule-picker"></div>
     </div>
 
     <div class="flex justify-between items-center mb-12" style="margin-top:14px">
@@ -567,6 +584,56 @@ function openInwardModal(id) {
   if (r && r.supplierId) setTimeout(() => previewLotCode(r), 50);
   setTimeout(() => inwRenderParts(), 50);
   setTimeout(() => inwRenderDispatchPicker(), 50);
+  setTimeout(() => inwRenderSchedulePicker(), 50);
+}
+
+/** Optional: pick which open supplierSchedules line(s) this receipt counts
+    against, so the Schedule vs Inward report (reports.js) can compute a
+    delta. Purely additive — never required, mirrors inwRenderDispatchPicker. */
+function inwRenderSchedulePicker() {
+  const wrap = document.getElementById('iw-schedule-picker');
+  if (!wrap) return;
+  const supplierId = document.getElementById('iw-supplier')?.value || '';
+  const candidates = (S.supplierSchedules || [])
+    .filter(s => s.supplierId === supplierId && (s.status || 'open') === 'open' && !_inwLinkedScheduleIds.includes(s.id))
+    .slice(0, 50);
+
+  const linked = _inwLinkedScheduleIds
+    .map(id => S.supplierSchedules.find(s => s.id === id))
+    .filter(Boolean);
+
+  wrap.innerHTML = `
+    ${!supplierId ? `<div class="text-xs text-muted">Select a supplier above to see their open schedules.</div>`
+      : !candidates.length && !linked.length ? `<div class="text-xs text-muted">No open schedules for this supplier — fine to leave unlinked.</div>` : ''}
+    ${supplierId && candidates.length ? `
+      <div class="flex gap-8" style="margin-bottom:8px">
+        <select id="iw-schedule-select" style="flex:1">
+          <option value="">Select a schedule...</option>
+          ${candidates.map(s => `<option value="${s.id}">${s.partNo || s.partName} · ${(s.scheduleLines || []).reduce((sum, l) => sum + (+l.qtyPlanned || 0), 0)} pcs planned</option>`).join('')}
+        </select>
+        <button type="button" class="btn btn-s btn-sm" onclick="inwAddScheduleLink()">Add</button>
+      </div>` : ''}
+    ${linked.length ? `
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${linked.map(s => `
+          <span class="bdg bdg-n" style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px">
+            ${s.partNo || s.partName}
+            <i class="ti ti-x" style="cursor:pointer" onclick="inwRemoveScheduleLink('${s.id}')" aria-label="Remove"></i>
+          </span>`).join('')}
+      </div>` : ''}
+  `;
+}
+
+function inwAddScheduleLink() {
+  const sel = document.getElementById('iw-schedule-select');
+  if (!sel || !sel.value) return;
+  _inwLinkedScheduleIds.push(sel.value);
+  inwRenderSchedulePicker();
+}
+
+function inwRemoveScheduleLink(id) {
+  _inwLinkedScheduleIds = _inwLinkedScheduleIds.filter(x => x !== id);
+  inwRenderSchedulePicker();
 }
 
 /** Optional: pick which SCM supplierDispatches this receipt physically
@@ -796,6 +863,11 @@ async function saveInward(editId) {
     // actual RM lot codes (issSubmitSession, the detail view) re-derives
     // them live via getLinkedLotNos() at the moment it needs them.
     linkedDispatchIds: [..._inwLinkedDispatchIds],
+    // Counts this receipt against an open supplier delivery commitment —
+    // read live by reports.js's Schedule vs Inward report, never cached
+    // as a derived total here (same re-derive-on-read rationale as
+    // getLinkedLotNos() above).
+    linkedScheduleIds: [..._inwLinkedScheduleIds],
   };
 
   try {
@@ -2245,6 +2317,254 @@ async function saveTagConfig() {
     await refreshStore('tags');
     renderSection();
     toast('TAG registry updated');
+  } catch (e) {
+    showModalError(friendlyError(e));
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   SECTION 8 — SUPPLIER SCHEDULING
+   supplierSchedules: one doc per supplier+part commitment, broken into
+   scheduleLines[] (date/week + qtyPlanned) — mirrors the SO-line pattern
+   in dispatch.js so the two stay visually/structurally consistent.
+   Received qty per line is derived live in reports.js by summing inward
+   receipts that opted to link against this schedule (inward.linkedScheduleIds)
+   — never stored here, so an edited/deleted receipt is always reflected
+   correctly instead of leaving a stale total behind.
+   ══════════════════════════════════════════════════════════════════════ */
+const SCHED_STATUS_META = {
+  open:   { cls: 'rag-b', icon: 'ti-clock',        label: 'Open' },
+  closed: { cls: 'rag-g', icon: 'ti-circle-check', label: 'Closed' },
+};
+
+function renderSupplierSchedule() {
+  const schedules = (S.supplierSchedules || []).filter(s => {
+    if (_schedFilt === 'all') return true;
+    return (s.status || 'open') === _schedFilt;
+  }).sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+
+  document.getElementById('section-content').innerHTML = `
+    <div class="imf-tablewrap">
+      <div class="imf-table-toolbar">
+        <div class="grow">
+          <div style="font-size:16px;font-weight:700">Supplier Schedule</div>
+          <div class="text-sm text-muted">${schedules.length} schedule${schedules.length !== 1 ? 's' : ''} · what each supplier is committed to deliver, by part, by date</div>
+        </div>
+        <select class="imf-ghost-select" onchange="_schedFilt=this.value;renderSection()">
+          <option value="open"   ${_schedFilt === 'open'   ? 'selected' : ''}>Open</option>
+          <option value="closed" ${_schedFilt === 'closed' ? 'selected' : ''}>Closed</option>
+          <option value="all"    ${_schedFilt === 'all'    ? 'selected' : ''}>All</option>
+        </select>
+        <a href="reports.html" class="btn btn-ghost btn-sm"><i class="ti ti-chart-bar" aria-hidden="true"></i> View Delta Report</a>
+        ${canDo('inward') ? `<button class="btn btn-p btn-sm" onclick="openSupplierScheduleModal()"><i class="ti ti-plus" aria-hidden="true"></i> New Schedule</button>` : ''}
+      </div>
+      ${schedules.length === 0 ? emptyState('ti-truck-loading', 'No supplier schedules yet',
+          'Create a schedule to commit a supplier to a delivery plan for a part, then track inward receipts against it.') : `
+      <div class="imf-table-scroll">
+        <table class="imf-table">
+          <thead><tr>
+            <th class="pin">Supplier / Part</th>
+            <th class="num">Lines</th>
+            <th class="num">Total Planned</th>
+            <th class="num">Rate</th>
+            <th>Status</th>
+            <th></th>
+          </tr></thead>
+          <tbody>${schedules.map(supplierScheduleRow).join('')}</tbody>
+        </table>
+      </div>`}
+    </div>
+  `;
+}
+
+function supplierScheduleRow(s) {
+  const lines = s.scheduleLines || [];
+  const totalPlanned = lines.reduce((sum, l) => sum + (+l.qtyPlanned || 0), 0);
+  return `
+    <tr>
+      <td class="pin">
+        <div style="font-weight:700">${s.supplierName || '—'}</div>
+        <div class="text-xs text-muted mono">${s.partNo || '—'} · ${s.partName || ''}</div>
+      </td>
+      <td class="num mono">${lines.length}</td>
+      <td class="num mono">${totalPlanned.toLocaleString('en-IN')}</td>
+      <td class="num mono">${s.pieceRateINR ? fmtINR(s.pieceRateINR) : '—'}</td>
+      <td>${imfBadge(s.status || 'open', SCHED_STATUS_META)}</td>
+      <td style="white-space:nowrap">
+        <button class="imf-rowact" onclick="openSupplierScheduleModal('${s.id}')" aria-label="Edit schedule"><i class="ti ti-edit" aria-hidden="true"></i></button>
+      </td>
+    </tr>`;
+}
+
+function openSupplierScheduleModal(id) {
+  const s = id ? S.supplierSchedules.find(x => x.id === id) : null;
+  const activeSups = S.suppliers.filter(sp => sp.active !== false);
+  _schedLines = s && s.scheduleLines ? s.scheduleLines.map(l => ({ ...l })) : [];
+
+  openModal(`
+    <div class="modal-title">${s ? 'Edit Supplier Schedule' : 'New Supplier Schedule'}</div>
+    <div id="modal-err"></div>
+
+    <div class="row-2">
+      <div class="f">
+        <label for="sch-supplier" class="f-req">Supplier</label>
+        <select id="sch-supplier">
+          <option value="">— Select Supplier —</option>
+          ${activeSups.map(sp => `<option value="${sp.id}" ${s && s.supplierId === sp.id ? 'selected' : ''}>${sp.name} [${sp.code}]</option>`).join('')}
+        </select>
+      </div>
+      <div class="f">
+        <label for="sch-rate">Rate (₹/pc)</label>
+        <input type="number" id="sch-rate" min="0" step="0.01" value="${s?.pieceRateINR || ''}" placeholder="Optional">
+      </div>
+    </div>
+
+    <div class="f">
+      <label for="sch-part-name" class="f-req">Part</label>
+      <input id="sch-part-name" type="text" placeholder="Type part name or number to search..." value="${s?.partName || ''}" oninput="schedPartSearch(this)" onblur="setTimeout(hidePartDrop,150)" autocomplete="off">
+      <input type="hidden" id="sch-part-id" value="${s?.partId || ''}">
+      <input type="hidden" id="sch-part-no" value="${s?.partNo || ''}">
+    </div>
+
+    ${s ? `
+    <div class="f">
+      <label for="sch-status">Status</label>
+      <select id="sch-status">
+        <option value="open"   ${(s.status || 'open') === 'open'   ? 'selected' : ''}>Open</option>
+        <option value="closed" ${s.status === 'closed' ? 'selected' : ''}>Closed</option>
+      </select>
+    </div>` : ''}
+
+    <div class="flex justify-between items-center mb-12" style="margin-top:14px">
+      <label style="font-size:12px;font-weight:600;color:var(--txt-muted)">Schedule Lines</label>
+      <button class="btn btn-s btn-sm" onclick="schedAddLine()"><i class="ti ti-plus" aria-hidden="true"></i> Add Line</button>
+    </div>
+    <div id="sch-lines-list"></div>
+
+    ${modalActions(s ? 'Update Schedule' : 'Save Schedule', `saveSupplierSchedule(${s ? `'${s.id}'` : 'null'})`)}
+    ${s ? modalDeleteButton(`deleteSupplierSchedule('${s.id}')`, 'Delete Schedule') : ''}
+  `);
+
+  setTimeout(() => schedRenderLines(), 50);
+}
+
+function schedPartSearch(inputEl) {
+  if (!inputEl.value.trim()) { hidePartDrop(); return; }
+  showPartDrop(inputEl, (p) => {
+    document.getElementById('sch-part-id').value = p.id;
+    document.getElementById('sch-part-no').value = p.no;
+  });
+}
+
+function schedAddLine() {
+  schedReadLines();
+  _schedLines.push({ lineNo: _schedLines.length + 1, dueType: 'date', dueWeek: 'Week 1', dueDate: tomStr(), qtyPlanned: 0 });
+  schedRenderLines();
+}
+
+function schedRemoveLine(idx) {
+  schedReadLines();
+  _schedLines.splice(idx, 1);
+  _schedLines = _schedLines.map((l, i) => ({ ...l, lineNo: i + 1 }));
+  schedRenderLines();
+}
+
+/* Pull current input values from the DOM into _schedLines before any
+   add/remove/save, the same read-before-mutate pattern dispatch.js uses
+   for SO lines (poReadLines), so in-progress edits never get clobbered. */
+function schedReadLines() {
+  _schedLines = _schedLines.map((l, i) => {
+    const dueType = document.getElementById(`sch-due-type-${i}`)?.value || l.dueType || 'date';
+    return {
+      ...l,
+      dueType,
+      dueWeek:    document.getElementById(`sch-week-${i}`)?.value || l.dueWeek || 'Week 1',
+      dueDate:    document.getElementById(`sch-due-${i}`)?.value  || l.dueDate || '',
+      qtyPlanned: parseFloat(document.getElementById(`sch-qty-${i}`)?.value || '0') || 0,
+    };
+  });
+}
+
+function schedRenderLines() {
+  const el = document.getElementById('sch-lines-list');
+  if (!el) return;
+  if (!_schedLines.length) {
+    el.innerHTML = `<div class="text-sm text-muted" style="padding:8px 0;text-align:center">No lines yet — add a delivery date/week and quantity.</div>`;
+    return;
+  }
+  el.innerHTML = _schedLines.map((l, i) => `
+    <div style="background:var(--sur);border:1px solid var(--bdr);border-radius:var(--rs);padding:10px 12px;margin-bottom:8px">
+      <div class="row-2">
+        <div class="f" style="margin:0">
+          <label style="font-size:11px;font-weight:600;color:var(--txt-muted)">Due</label>
+          <input type="date" id="sch-due-${i}" value="${l.dueDate || ''}" onchange="schedReadLines()">
+        </div>
+        <div class="f" style="margin:0">
+          <label style="font-size:11px;font-weight:600;color:var(--txt-muted)">Qty Planned (pcs)</label>
+          <input type="number" id="sch-qty-${i}" min="0" value="${l.qtyPlanned || ''}" onchange="schedReadLines()">
+        </div>
+      </div>
+      <button class="btn btn-d btn-sm mt-8" onclick="schedRemoveLine(${i})"><i class="ti ti-x" aria-hidden="true"></i> Remove Line</button>
+      <input type="hidden" id="sch-due-type-${i}" value="date">
+      <input type="hidden" id="sch-week-${i}" value="Week 1">
+    </div>`).join('');
+}
+
+async function saveSupplierSchedule(editId) {
+  schedReadLines();
+  const supplierId = getField('sch-supplier');
+  const partId      = getField('sch-part-id');
+  const partNo      = getField('sch-part-no');
+  const partName    = getField('sch-part-name');
+
+  if (!supplierId) { showModalError('Supplier is required.'); return; }
+  if (!partId) { showModalError('Search and select a part first.'); return; }
+  if (!_schedLines.length) { showModalError('Add at least one schedule line.'); return; }
+  if (_schedLines.some(l => !l.qtyPlanned || l.qtyPlanned < 1)) { showModalError('Every line needs a valid planned quantity.'); return; }
+
+  const sup = S.suppliers.find(sp => sp.id === supplierId);
+  if (!sup) { showModalError('Invalid supplier.'); return; }
+
+  const data = {
+    supplierId, supplierName: sup.name,
+    partId, partNo, partName,
+    pieceRateINR: parseFloat(getField('sch-rate')) || 0,
+    scheduleLines: _schedLines.map(l => ({ ...l })),
+    status: editId ? (getField('sch-status') || 'open') : 'open',
+    updatedAt: serverTS(),
+    updatedBy: S.sess.userId,
+  };
+
+  try {
+    if (editId) {
+      const before = S.supplierSchedules.find(x => x.id === editId);
+      await db.collection('supplierSchedules').doc(editId).update(data);
+      await logAudit('UPDATE_SUPPLIER_SCHEDULE', 'STORE', editId, before, data);
+    } else {
+      data.createdAt = serverTS();
+      data.createdBy = S.sess.userId;
+      const ref = await db.collection('supplierSchedules').add(data);
+      await logAudit('CREATE_SUPPLIER_SCHEDULE', 'STORE', ref.id, null, data);
+    }
+    await refreshStore('supplierSchedules');
+    closeModal();
+    renderSection();
+    toast(editId ? 'Schedule updated' : 'Schedule created');
+  } catch (e) {
+    showModalError(friendlyError(e));
+  }
+}
+
+async function deleteSupplierSchedule(id) {
+  if (!isTanmay()) return;
+  const before = S.supplierSchedules.find(x => x.id === id);
+  try {
+    await db.collection('supplierSchedules').doc(id).delete();
+    await logAudit('DELETE_SUPPLIER_SCHEDULE', 'STORE', id, before, null);
+    await refreshStore('supplierSchedules');
+    closeModal();
+    renderSection();
+    toast('Schedule deleted');
   } catch (e) {
     showModalError(friendlyError(e));
   }

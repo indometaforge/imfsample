@@ -42,7 +42,8 @@ const TRANSACTIONAL_COLLECTIONS = new Set([
   'htCharges', 'qcInspections', 'scrapLedger',
   'breakdowns', 'machineStatus', 'sparesRequests', 'pmLogs',
   'dispatches', 'pos', 'auditLogs', 'shotBlastSessions',
-  'forgingProduction', 'supplierDispatches', 'scmScrapLedger', 'forgingPlans'
+  'forgingProduction', 'supplierDispatches', 'scmScrapLedger', 'forgingPlans',
+  'supplierSchedules'
 ]);
 
 /* Proxy db.collection so TEST_ prefix is applied transparently */
@@ -464,7 +465,7 @@ function openModal(html) {
 function closeModal() {
   const mov = document.getElementById('modal-overlay');
   const cont = document.getElementById('modal-content');
-  if (cont) cont.classList.remove('modal-wide');
+  if (cont) cont.classList.remove('modal-wide', 'modal-fullscreen');
   if (!mov) return;
   mov.classList.remove('open');
   document.body.style.overflow = '';

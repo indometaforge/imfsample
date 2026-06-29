@@ -1998,9 +1998,10 @@ function openDispatchModal(id) {
 async function _allocateAndCreateDispatch(data, qtyDispatched, fpn) {
   return db.runTransaction(async (tx) => {
     const lotsSnap = await tx.get(
-      db.collection('forgingProduction').where('fpn', '==', fpn).orderBy('date', 'asc')
+      db.collection('forgingProduction').where('fpn', '==', fpn)
     );
     const lots = lotsSnap.docs.map(d => ({ ref: d.ref, id: d.id, ...d.data() }));
+    lots.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 
     let need = qtyDispatched;
     const allocations = [];
